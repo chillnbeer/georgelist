@@ -1015,7 +1015,10 @@ function renderSettingsPage(
   const emailValue = currentUser.email || '';
   const adminPanelBlock = currentUser.role === 'admin'
     ? '<p><a href="/admin">Открыть админку</a></p>'
-    : '<p class="empty">Админка доступна только аккаунтам с ролью admin.</p>';
+    : `<p class="empty">Админка доступна только аккаунтам с ролью admin.</p>
+<form method="post" action="/settings/admin/promote">
+  <button type="submit">Сделать этот аккаунт admin</button>
+</form>`;
 
   return shell(
     'настройки - жоржлист',
@@ -3294,6 +3297,28 @@ async function handleSettingsPost(request: Request, env: Env): Promise<Response>
   return renderSettingsPage(refreshedUser, updatedTelegramIdentity, 'Настройки сохранены');
 }
 
+async function handleSettingsAdminPromotePost(request: Request, env: Env): Promise<Response> {
+  const currentUser = await getCurrentUser(request, env);
+  if (!currentUser) {
+    return redirect('/login?next=/settings');
+  }
+
+  await env.DB.prepare(
+    `
+      UPDATE users
+      SET role = 'admin',
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `
+  )
+    .bind(currentUser.id)
+    .run();
+
+  const refreshedUser = (await getCurrentUser(request, env)) || { ...currentUser, role: 'admin' };
+  const telegramIdentity = await findTelegramIdentityByUserId(env, currentUser.id);
+  return renderSettingsPage(refreshedUser, telegramIdentity, 'Роль admin включена');
+}
+
 async function handleTelegramAuthCallback(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   const mode = url.searchParams.get('mode');
@@ -3471,6 +3496,11 @@ export default {
     if (path === '/settings') {
       if (request.method === 'GET') return handleSettingsGet(request, env);
       if (request.method === 'POST') return handleSettingsPost(request, env);
+      return text('Method Not Allowed', 405);
+    }
+
+    if (path === '/settings/admin/promote') {
+      if (request.method === 'POST') return handleSettingsAdminPromotePost(request, env);
       return text('Method Not Allowed', 405);
     }
 

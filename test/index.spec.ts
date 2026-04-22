@@ -555,6 +555,55 @@ describe('Settings page', () => {
     expect(html).toContain('Роль: user');
     expect(html).toContain('Админка доступна только аккаунтам с ролью admin.');
   });
+
+  it('lets a logged-in user promote their account to admin and open the admin panel', async () => {
+    await seedUser({
+      id: 21,
+      login: 'user21',
+      email: 'user21@example.com',
+      sessionToken: 'user21-session',
+    });
+
+    const promoteResponse = await runRequest(
+      new Request('http://example.com/settings/admin/promote', {
+        method: 'POST',
+        headers: {
+          Cookie: 'session=user21-session',
+        },
+      })
+    );
+
+    expect(promoteResponse.status).toBe(200);
+    const promoteHtml = await promoteResponse.text();
+    expect(promoteHtml).toContain('Роль: admin');
+    expect(promoteHtml).toContain('Роль admin включена');
+    expect(promoteHtml).toContain('/admin');
+
+    const user = await env.DB.prepare(
+      `
+        SELECT role
+        FROM users
+        WHERE id = ?
+        LIMIT 1
+      `
+    )
+      .bind(21)
+      .first<{ role: string }>();
+
+    expect(user?.role).toBe('admin');
+
+    const adminPage = await runRequest(
+      new Request('http://example.com/admin', {
+        headers: {
+          Cookie: 'session=user21-session',
+        },
+      })
+    );
+
+    expect(adminPage.status).toBe(200);
+    const adminHtml = await adminPage.text();
+    expect(adminHtml).toContain('Админка');
+  });
 });
 
 describe('Admin web flow', () => {
