@@ -229,7 +229,7 @@ let cachedEnsureUserAvatarColumnsPromise: Promise<void> | null = null;
 const NOOP_EXECUTION_CONTEXT = {
   waitUntil(): void {},
   passThroughOnException(): void {},
-} as ExecutionContext;
+} as unknown as ExecutionContext;
 
 function htmlEscape(value: string): string {
   return value
@@ -298,8 +298,10 @@ function escapeLikePattern(value: string): string {
   return value.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_');
 }
 
+const ALLOWED_IMAGE_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+
 function isImageMimeType(mimeType: string): boolean {
-  return mimeType.startsWith('image/');
+  return ALLOWED_IMAGE_MIME_TYPES.includes(mimeType);
 }
 
 function getImageExtension(mimeType: string): string {
@@ -460,7 +462,7 @@ async function putTelegramAvatar(env: Env, fileId: string): Promise<AdImageUploa
   };
 }
 
-function isFileLike(value: FormDataEntryValue | null): value is File {
+function isFileLike(value: File | string | null): value is File {
   return typeof value !== 'string' && value instanceof File;
 }
 
@@ -1217,7 +1219,7 @@ ${renderSearchForm()}`
   );
 }
 
-function renderSearchPage(env: Env, query: string, ads: AdRow[], currentUser: CurrentUser | null = null): Response {
+function renderSearchPage(env: Env, query: string, ads: AdCardRow[], currentUser: CurrentUser | null = null): Response {
   const hasQuery = query.trim().length > 0;
   const content = hasQuery
     ? ads.length
@@ -1330,7 +1332,7 @@ function renderPublicUserPage(env: Env, user: PublicUserRow, ads: AdCardRow[], c
             ? `<div class="ad-actions">
       <a href="/my/edit/${ad.id}">Редактировать</a>
       <form method="post" action="/my/delete/${ad.id}" style="display:inline">
-        <button class="link-button" type="submit">Удалить</button>
+        <button class="link-button" type="submit" onclick="return confirm('Удалить объявление?')">Удалить</button>
       </form>
     </div>`
             : '';
@@ -1353,7 +1355,6 @@ ${nav(currentUser)}
 <div class="section">
   ${renderAvatar(env, user.avatar_key, user.login)}
   <h2>${htmlEscape(user.login)}</h2>
-  <p>${user.display_name ? htmlEscape(user.display_name) : 'Публичный профиль'}</p>
   <p>${htmlEscape(String(ads.length))} объявлений</p>
 </div>
 <div class="section">
@@ -1420,9 +1421,6 @@ ${nav()}
     <label for="password">Пароль</label>
     <input id="password" name="password" type="password" required />
 
-    <label for="display_name">Имя</label>
-    <input id="display_name" name="display_name" type="text" value="${htmlEscape(displayName)}" />
-
     <button type="submit">Создать аккаунт</button>
   </form>
   ${telegramAction}
@@ -1430,7 +1428,7 @@ ${nav()}
   );
 }
 
-function renderMyPage(env: Env, currentUser: CurrentUser, ads: AdRow[]): Response {
+function renderMyPage(env: Env, currentUser: CurrentUser, ads: AdRow[], message: string | null = null): Response {
   const items = ads.length
     ? ads
         .map((ad) => {
@@ -1443,7 +1441,7 @@ function renderMyPage(env: Env, currentUser: CurrentUser, ads: AdRow[]): Respons
     <div class="ad-actions">
       <a href="/my/edit/${ad.id}">Редактировать</a>
       <form method="post" action="/my/delete/${ad.id}" style="display:inline">
-        <button class="link-button" type="submit">Удалить</button>
+        <button class="link-button" type="submit" onclick="return confirm('Удалить объявление?')">Удалить</button>
       </form>
     </div>
   </div>
@@ -1458,7 +1456,7 @@ function renderMyPage(env: Env, currentUser: CurrentUser, ads: AdRow[]): Respons
 ${nav(currentUser)}
 <div class="section">
   <h2>Мои объявления</h2>
-  <p>Пользователь: ${htmlEscape(currentUser.login)}</p>
+  ${message ? `<p class="empty">${htmlEscape(message)}</p>` : ''}
   <div class="ad-grid">${items}</div>
 </div>`,
     currentUser
@@ -1669,7 +1667,7 @@ function renderAdminUsersSection(
           const deleteAction = isSelf
             ? '<span class="empty">Нельзя удалить себя</span>'
             : `<form method="post" action="${htmlEscape(buildAdminActionUrl(`/admin/users/${user.id}/delete`, 'users', pagination.page))}" style="display:inline">
-  <button class="link-button" type="submit">Удалить</button>
+  <button class="link-button" type="submit" onclick="return confirm('Удалить пользователя?')">Удалить</button>
 </form>`;
           return `<div class="ad">
   <div class="title">#${user.id} · ${htmlEscape(user.login)}${email}</div>
@@ -1721,7 +1719,7 @@ function renderAdminAdsSection(
     <div class="ad-actions">
       <a href="${htmlEscape(buildAdminActionUrl(`/admin/edit/${ad.id}`, 'ads', pagination.page))}">Редактировать</a>
       <form method="post" action="${htmlEscape(buildAdminActionUrl(`/admin/delete/${ad.id}`, 'ads', pagination.page))}" style="display:inline">
-        <button class="link-button" type="submit">Удалить</button>
+        <button class="link-button" type="submit" onclick="return confirm('Удалить объявление?')">Удалить</button>
       </form>
     </div>
   </div>
@@ -2121,7 +2119,7 @@ function userBotMenuMarkup(env: Env): Record<string, unknown> {
     inline_keyboard: [
       [{ text: 'Создать', callback_data: USER_BOT_MENU_CREATE }],
       [{ text: 'Мои объявления', callback_data: USER_BOT_MENU_MY }],
-      [{ text: 'Разделы', callback_data: USER_BOT_MENU_SECTIONS }],
+      [{ text: 'Объявления', callback_data: USER_BOT_MENU_SECTIONS }],
       [{ text: 'Поиск', callback_data: USER_BOT_MENU_SEARCH }],
       [{ text: 'Настройки', callback_data: USER_BOT_MENU_SETTINGS }],
       [{ text: 'Открыть сайт', url: buildPublicSiteUrl(env, '/') }],
@@ -2149,7 +2147,7 @@ function userBotSectionAdsMarkup(category: string, ads: Array<{ id: number; titl
       ...ads.map((ad) => [
         { text: ad.title.slice(0, 40) || `#${ad.id}`, callback_data: `${USER_BOT_SECTION_AD_PREFIX}${category}:${ad.id}` },
       ]),
-      [{ text: 'Назад к разделам', callback_data: USER_BOT_MENU_SECTIONS }],
+      [{ text: 'Назад к объявлениям', callback_data: USER_BOT_MENU_SECTIONS }],
     ],
   };
 }
@@ -2157,8 +2155,8 @@ function userBotSectionAdsMarkup(category: string, ads: Array<{ id: number; titl
 function userBotSectionAdMarkup(category: string): Record<string, unknown> {
   return {
     inline_keyboard: [
-      [{ text: 'Назад к категории', callback_data: `${USER_BOT_SECTION_PREFIX}${category}` }],
-      [{ text: 'Назад к разделам', callback_data: USER_BOT_MENU_SECTIONS }],
+      [{ text: 'Назад к разделу', callback_data: `${USER_BOT_SECTION_PREFIX}${category}` }],
+      [{ text: 'Назад к объявлениям', callback_data: USER_BOT_MENU_SECTIONS }],
     ],
   };
 }
@@ -2170,7 +2168,7 @@ function userBotSearchMarkup(ads: Array<{ id: number; title: string }>): Record<
         { text: ad.title.slice(0, 40) || `#${ad.id}`, callback_data: `${USER_BOT_SEARCH_AD_PREFIX}${ad.id}` },
       ]),
       [{ text: 'Новый поиск', callback_data: USER_BOT_MENU_SEARCH }],
-      [{ text: 'Назад к разделам', callback_data: USER_BOT_MENU_SECTIONS }],
+      [{ text: 'Назад к объявлениям', callback_data: USER_BOT_MENU_SECTIONS }],
     ],
   };
 }
@@ -2179,7 +2177,7 @@ function userBotSearchAdMarkup(): Record<string, unknown> {
   return {
     inline_keyboard: [
       [{ text: 'Назад к поиску', callback_data: USER_BOT_SEARCH_RESULTS }],
-      [{ text: 'Назад к разделам', callback_data: USER_BOT_MENU_SECTIONS }],
+      [{ text: 'Назад к объявлениям', callback_data: USER_BOT_MENU_SECTIONS }],
     ],
   };
 }
@@ -2266,7 +2264,7 @@ async function sendUserBotMenu(env: Env, chatId: number, greeting: string, login
 }
 
 async function sendUserBotSections(env: Env, chatId: number): Promise<void> {
-  await sendUserBotMessage(env, chatId, 'Разделы', userBotSectionsMarkup());
+  await sendUserBotMessage(env, chatId, 'Объявления', userBotSectionsMarkup());
 }
 
 async function sendUserBotSettings(
@@ -2325,7 +2323,7 @@ async function sendUserBotSearchResults(env: Env, chatId: number, query: string)
     await sendUserBotMessage(env, chatId, 'Ничего не найдено', {
       inline_keyboard: [
         [{ text: 'Новый поиск', callback_data: USER_BOT_MENU_SEARCH }],
-        [{ text: 'Назад к разделам', callback_data: USER_BOT_MENU_SECTIONS }],
+        [{ text: 'Назад к объявлениям', callback_data: USER_BOT_MENU_SECTIONS }],
       ],
     });
     return;
@@ -2385,7 +2383,7 @@ async function sendUserBotSearchAdDetail(env: Env, chatId: number, adId: number)
     await sendUserBotMessage(env, chatId, 'Объявление не найдено', {
       inline_keyboard: [
         [{ text: 'Новый поиск', callback_data: USER_BOT_MENU_SEARCH }],
-        [{ text: 'Назад к разделам', callback_data: USER_BOT_MENU_SECTIONS }],
+        [{ text: 'Назад к объявлениям', callback_data: USER_BOT_MENU_SECTIONS }],
       ],
     });
     return;
@@ -3945,7 +3943,7 @@ async function handleMyDeletePost(request: Request, env: Env, userId: number, id
     .bind(numericId, userId)
     .run();
 
-  return redirect('/my');
+  return redirect('/my?message=Объявление удалено');
 }
 
 async function handleMyEditGet(env: Env, userId: number, id: string, currentUser: CurrentUser): Promise<Response> {
@@ -4053,7 +4051,7 @@ async function handleMyEditPost(
     })
   );
 
-  return redirect('/my');
+  return redirect('/my?message=Объявление сохранено');
 }
 
 async function updateAdStatus(env: Env, id: string, status: 'published' | 'rejected'): Promise<Response> {
@@ -5354,7 +5352,8 @@ async function handleMyGet(request: Request, env: Env): Promise<Response> {
     return redirect('/login?next=/my');
   }
 
-  return renderMyPage(env, currentUser, await listMyAds(env, currentUser.id));
+  const message = new URL(request.url).searchParams.get('message');
+  return renderMyPage(env, currentUser, await listMyAds(env, currentUser.id), message);
 }
 
 async function handleMyDeleteRoute(request: Request, env: Env, id: string): Promise<Response> {
@@ -6140,7 +6139,7 @@ async function handleNewPost(request: Request, env: Env, ctx: ExecutionContext):
     console.error('Failed to create ad with image', error);
     return renderNewPage(currentUser, 'Не удалось загрузить картинку');
   }
-  return redirect('/');
+  return redirect('/my?message=Объявление создано');
 }
 
 async function handleCategoryGet(env: Env, slug: string, currentUser: CurrentUser | null = null): Promise<Response> {
