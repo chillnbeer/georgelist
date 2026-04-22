@@ -879,7 +879,7 @@ async function readPendingTelegramAuthValue(env: Env, request: Request): Promise
 function nav(currentUser: CurrentUser | null = null): string {
   const adminLink = currentUser && currentUser.role === 'admin' ? ' <a href="/admin">админка</a>' : '';
   const authLinks = currentUser
-    ? `<a href="/my">мои объявления</a> <a href="/settings">настройки</a>${adminLink} <form method="post" action="/logout" style="display:inline"><button class="link-button" type="submit">выйти</button></form>`
+    ? `<a href="/u/${encodeURIComponent(currentUser.login)}">мой профиль</a> <a href="/settings">настройки</a>${adminLink} <form method="post" action="/logout" style="display:inline"><button class="link-button" type="submit">выйти</button></form>`
     : `<a href="/login">войти</a> <a href="/register">зарегистрироваться</a>`;
 
   return `<div class="nav"><a href="/">главная</a> <a href="/new">создать объявление</a> ${authLinks}</div>`;
@@ -1321,6 +1321,31 @@ ${renderSearchForm()}`
 }
 
 function renderPublicUserPage(env: Env, user: PublicUserRow, ads: AdCardRow[], currentUser: CurrentUser | null = null): Response {
+  const isOwner = currentUser?.login === user.login;
+  const adItems = ads.length
+    ? `<div class="ad-grid">${ads
+        .map((ad) => {
+          const category = ad.category ? `${htmlEscape(categoryLabel(ad.category))} · ` : '';
+          const actions = isOwner
+            ? `<div class="ad-actions">
+      <a href="/my/edit/${ad.id}">Редактировать</a>
+      <form method="post" action="/my/delete/${ad.id}" style="display:inline">
+        <button class="link-button" type="submit">Удалить</button>
+      </form>
+    </div>`
+            : '';
+          return `<div class="ad">
+  ${renderAdImage(env, ad.image_key, ad.title, 'ad-image')}
+  <div class="ad-content">
+    <div class="title"><a href="/ad/${ad.id}">${htmlEscape(ad.title)}</a></div>
+    <div class="meta">${category}${htmlEscape(ad.created_at)}</div>
+    ${actions}
+  </div>
+</div>`;
+        })
+        .join('')}</div>`
+    : '<div class="empty">Пока нет объявлений.</div>';
+
   return shell(
     `${user.login} - жоржлист`,
     `<h1>жоржлист</h1>
@@ -1332,7 +1357,7 @@ ${nav(currentUser)}
   <p>${htmlEscape(String(ads.length))} объявлений</p>
 </div>
 <div class="section">
-  ${renderAdList(env, ads)}
+  ${adItems}
 </div>
 ${renderSearchForm()}`,
     currentUser
@@ -1413,7 +1438,7 @@ function renderMyPage(env: Env, currentUser: CurrentUser, ads: AdRow[]): Respons
           return `<div class="ad">
   ${renderAdImage(env, ad.image_key, ad.title, 'ad-image')}
   <div class="ad-content">
-    <div class="title"><a href="/my/edit/${ad.id}">${htmlEscape(ad.title)}</a></div>
+    <div class="title"><a href="/ad/${ad.id}">${htmlEscape(ad.title)}</a></div>
     <div class="meta">${htmlEscape(ad.status)} · ${category}${htmlEscape(ad.created_at)}</div>
     <div class="ad-actions">
       <a href="/my/edit/${ad.id}">Редактировать</a>
@@ -1691,7 +1716,7 @@ function renderAdminAdsSection(
           return `<div class="ad">
   ${renderAdImage(env, ad.image_key, ad.title, 'ad-image')}
   <div class="ad-content">
-    <div class="title"><a href="${htmlEscape(buildAdminActionUrl(`/admin/edit/${ad.id}`, 'ads', pagination.page))}">#${ad.id} · ${htmlEscape(ad.title)}</a></div>
+    <div class="title"><a href="/ad/${ad.id}">#${ad.id} · ${htmlEscape(ad.title)}</a></div>
     <div class="meta">${htmlEscape(ad.status)} · ${category}${htmlEscape(owner)} · ${htmlEscape(ad.created_at)}</div>
     <div class="ad-actions">
       <a href="${htmlEscape(buildAdminActionUrl(`/admin/edit/${ad.id}`, 'ads', pagination.page))}">Редактировать</a>
