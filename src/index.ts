@@ -47,6 +47,15 @@ type AdRow = {
   deleted_at: string | null;
 };
 
+type PublicAdCardRow = {
+  id: number;
+  title: string;
+  body: string;
+  category: string | null;
+  created_at: string;
+  author_login: string | null;
+};
+
 type AdForm = {
   title: string;
   body: string;
@@ -754,7 +763,7 @@ function renderAdList(ads: AdRow[]): string {
     .map((ad) => {
       const category = ad.category ? `${htmlEscape(categoryLabel(ad.category))} · ` : '';
       return `<div class="ad">
-  <div class="title">${htmlEscape(ad.title)}</div>
+  <div class="title"><a href="/ad/${ad.id}">${htmlEscape(ad.title)}</a></div>
   <div class="meta">${category}${htmlEscape(ad.created_at)}</div>
   <div class="body">${htmlEscape(ad.body)}</div>
 </div>`;
@@ -827,6 +836,26 @@ ${nav(currentUser)}
 <div class="section">
   <h2>${htmlEscape(category.label)}</h2>
   ${renderAdList(ads)}
+</div>`
+  );
+}
+
+function renderPublicAdPage(ad: PublicAdCardRow, currentUser: CurrentUser | null = null): Response {
+  const authorLine = ad.author_login
+    ? `<p><strong>Автор:</strong> ${htmlEscape(ad.author_login)}</p>`
+    : '';
+
+  return shell(
+    `${ad.title} - жоржлист`,
+    `<h1>жоржлист</h1>
+${nav(currentUser)}
+<div class="section">
+  <h2>${htmlEscape(ad.title)}</h2>
+  <p><strong>Категория:</strong> ${htmlEscape(categoryLabel(ad.category))}</p>
+  ${authorLine}
+  <p><strong>Текст:</strong></p>
+  <div class="body">${htmlEscape(ad.body)}</div>
+  <p><strong>Дата:</strong> ${htmlEscape(ad.created_at)}</p>
 </div>`
   );
 }
@@ -1664,19 +1693,7 @@ async function sendUserBotSectionAds(env: Env, chatId: number, category: string)
 
 async function sendUserBotSectionAdDetail(env: Env, chatId: number, category: string, adId: number): Promise<void> {
   const categoryKey = normalizeCategory(category);
-  const ad = await env.DB.prepare(
-    `
-      SELECT id, title, body, category, created_at
-      FROM ads
-      WHERE id = ?
-        AND category = ?
-        AND status = 'published'
-        AND deleted_at IS NULL
-      LIMIT 1
-    `
-  )
-    .bind(adId, categoryKey)
-    .first<{ id: number; title: string; body: string; category: string | null; created_at: string }>();
+  const ad = await getPublishedAdCardById(env, adId, categoryKey);
 
   if (!ad) {
     await sendUserBotMessage(env, chatId, 'Объявление не найдено', userBotSectionsMarkup());
@@ -1686,10 +1703,13 @@ async function sendUserBotSectionAdDetail(env: Env, chatId: number, category: st
   const text = [
     `Заголовок: ${ad.title}`,
     `Категория: ${categoryLabel(ad.category)}`,
+    ad.author_login ? `Автор: ${ad.author_login}` : null,
     'Текст:',
     ad.body,
     `Дата: ${ad.created_at}`,
-  ].join('\n');
+  ]
+    .filter((line): line is string => line !== null)
+    .join('\n');
 
   await sendUserBotMessage(env, chatId, text, userBotSectionAdMarkup(categoryKey));
 }
@@ -2556,6 +2576,37 @@ async function getAdById(env: Env, id: number): Promise<AdRow | null> {
   )
     .bind(id)
     .first<AdRow>();
+
+  return result ?? null;
+}
+
+async function getPublishedAdCardById(env: Env, id: number, category: string | null = null): Promise<PublicAdCardRow | null> {
+  const sql = [
+    `
+      SELECT ads.id,
+             ads.title,
+             ads.body,
+             ads.category,
+             ads.created_at,
+             users.login AS author_login
+      FROM ads
+      LEFT JOIN users ON users.id = ads.owner_user_id
+      WHERE ads.id = ?
+        AND ads.status = 'published'
+        AND ads.deleted_at IS NULL
+    `,
+  ];
+
+  if (category) {
+    sql.push('        AND ads.category = ?');
+  }
+
+  sql.push('      LIMIT 1');
+
+  const statement = await env.DB.prepare(sql.join('\n'));
+  const result = category
+    ? await statement.bind(id, category).first<PublicAdCardRow>()
+    : await statement.bind(id).first<PublicAdCardRow>();
 
   return result ?? null;
 }
@@ -4565,6 +4616,20 @@ async function handleCategoryGet(env: Env, slug: string, currentUser: CurrentUse
   return renderCategoryPage(slug, await listPublishedAdsByCategory(env, slug), currentUser);
 }
 
+async function handleAdGet(env: Env, id: string, currentUser: CurrentUser | null = null): Promise<Response> {
+  const numericId = Number(id);
+  if (!Number.isInteger(numericId) || numericId <= 0) {
+    return text('Not Found', 404);
+  }
+
+  const ad = await getPublishedAdCardById(env, numericId);
+  if (!ad) {
+    return text('Not Found', 404);
+  }
+
+  return renderPublicAdPage(ad, currentUser);
+}
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
@@ -4663,6 +4728,10 @@ export default {
 
     if (path.startsWith('/category/') && request.method === 'GET') {
       return handleCategoryGet(env, path.slice('/category/'.length), await getCurrentUser(request, env));
+    }
+
+    if (path.startsWith('/ad/') && request.method === 'GET') {
+      return handleAdGet(env, path.slice('/ad/'.length), await getCurrentUser(request, env));
     }
 
     if (path === '/api/ads') {

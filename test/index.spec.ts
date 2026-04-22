@@ -685,10 +685,68 @@ describe('User bot browsing flow', () => {
     expect(adText).toContain('Published things');
     expect(adText).toContain('Things body');
     expect(adText).toContain('Дата:');
+    expect(adText).toContain('Автор: browser');
     const adMarkup = (adMessage?.body as { reply_markup?: { inline_keyboard?: Array<Array<{ text: string }>> } }).reply_markup?.inline_keyboard || [];
     const adButtons = adMarkup.flat().map((button) => button.text);
     expect(adButtons).toContain('Назад к категории');
     expect(adButtons).toContain('Назад к разделам');
+  });
+});
+
+describe('Public ad page', () => {
+  it('shows a public ad card with author login and links from the category page', async () => {
+    await seedUser({
+      id: 50,
+      login: 'poster',
+      email: 'poster@example.com',
+      sessionToken: 'poster-session',
+    });
+
+    const publishedAdId = await insertAd({
+      title: 'Public ad',
+      body: 'Public body',
+      category: 'jobs',
+      ownerUserId: 50,
+      status: 'published',
+    });
+    const pendingAdId = await insertAd({
+      title: 'Pending ad',
+      body: 'Pending body',
+      category: 'jobs',
+      ownerUserId: 50,
+      status: 'pending',
+    });
+
+    const categoryResponse = await runRequest(new Request('http://example.com/category/jobs'));
+    expect(categoryResponse.status).toBe(200);
+    const categoryHtml = await categoryResponse.text();
+    expect(categoryHtml).toContain(`/ad/${publishedAdId}`);
+    expect(categoryHtml).not.toContain(`/ad/${pendingAdId}`);
+
+    const adResponse = await runRequest(new Request(`http://example.com/ad/${publishedAdId}`));
+    expect(adResponse.status).toBe(200);
+    const adHtml = await adResponse.text();
+    expect(adHtml).toContain('Public ad');
+    expect(adHtml).toContain('<strong>Категория:</strong> Работа');
+    expect(adHtml).toContain('<strong>Автор:</strong> poster');
+    expect(adHtml).toContain('Public body');
+    expect(adHtml).toContain('Дата:');
+
+    const pendingResponse = await runRequest(new Request(`http://example.com/ad/${pendingAdId}`));
+    expect(pendingResponse.status).toBe(404);
+
+    await env.DB.prepare(
+      `
+        UPDATE ads
+        SET deleted_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `
+    )
+      .bind(publishedAdId)
+      .run();
+
+    const deletedResponse = await runRequest(new Request(`http://example.com/ad/${publishedAdId}`));
+    expect(deletedResponse.status).toBe(404);
   });
 });
 
