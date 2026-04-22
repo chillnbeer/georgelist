@@ -124,6 +124,14 @@ type TelegramUpdate = {
       username?: string;
     };
     text?: string;
+    photo?: Array<{
+      file_id: string;
+    }>;
+    document?: {
+      file_id: string;
+      mime_type?: string;
+      file_name?: string;
+    };
   };
 };
 
@@ -184,6 +192,7 @@ const USER_BOT_MENU_SECTIONS = 'user:sections';
 const USER_BOT_MENU_SEARCH = 'user:search';
 const USER_BOT_MENU_EDIT = 'user:edit';
 const USER_BOT_MENU_DELETE = 'user:delete';
+const USER_BOT_MENU_SETTINGS = 'user:settings';
 const USER_BOT_MENU_MY = 'user:my';
 const USER_BOT_MENU_MY_AD = 'user:myad:';
 const USER_BOT_SECTION_PREFIX = 'user:section:';
@@ -191,6 +200,7 @@ const USER_BOT_SECTION_AD_PREFIX = 'user:sectionad:';
 const USER_BOT_SEARCH_RESULTS = 'user:search:results';
 const USER_BOT_SEARCH_AD_PREFIX = 'user:searchad:';
 const USER_BOT_DELETE_PREFIX = 'delete_';
+const USER_BOT_SETTINGS_PREFIX = 'user:settings:';
 const USER_BOT_DRAFT_PREFIX = 'draft:';
 const USER_BOT_DRAFT_CANCEL = 'draft:confirm:cancel';
 const USER_BOT_DRAFT_SEND = 'draft:confirm:send';
@@ -315,6 +325,44 @@ function buildMediaUrl(env: Env, key: string): string {
   return buildPublicSiteUrl(env, `/media/${encodeURIComponent(key)}`);
 }
 
+function normalizeMimeType(mimeType: string | null | undefined): string | null {
+  const normalized = (mimeType || '').split(';', 1)[0].trim().toLowerCase();
+  return normalized || null;
+}
+
+function getImageMimeTypeFromPath(filePath: string): string | null {
+  const ext = filePath.split('.').pop()?.toLowerCase() || '';
+  switch (ext) {
+    case 'jpg':
+    case 'jpeg':
+      return 'image/jpeg';
+    case 'png':
+      return 'image/png';
+    case 'webp':
+      return 'image/webp';
+    case 'gif':
+      return 'image/gif';
+    case 'avif':
+      return 'image/avif';
+    case 'svg':
+      return 'image/svg+xml';
+    default:
+      return null;
+  }
+}
+
+async function putMediaObject(env: Env, key: string, body: ArrayBuffer, mimeType: string): Promise<void> {
+  if (!env.MEDIA_BUCKET) {
+    throw new Error('Media bucket is not configured');
+  }
+
+  await env.MEDIA_BUCKET.put(key, body, {
+    httpMetadata: {
+      contentType: mimeType,
+    },
+  });
+}
+
 async function readImageUpload(file: File | null): Promise<AdImageUpload | null> {
   if (!file || file.size <= 0) {
     return null;
@@ -354,15 +402,7 @@ async function readAvatarUpload(file: File | null): Promise<AdImageUpload | null
 }
 
 async function putAdImage(env: Env, upload: AdImageUpload, file: File): Promise<void> {
-  if (!env.MEDIA_BUCKET) {
-    throw new Error('Media bucket is not configured');
-  }
-
-  await env.MEDIA_BUCKET.put(upload.key, await file.arrayBuffer(), {
-    httpMetadata: {
-      contentType: upload.mimeType,
-    },
-  });
+  await putMediaObject(env, upload.key, await file.arrayBuffer(), upload.mimeType);
 }
 
 async function deleteAdImage(env: Env, key: string | null | undefined): Promise<void> {
@@ -375,6 +415,49 @@ async function deleteAdImage(env: Env, key: string | null | undefined): Promise<
 
 async function deleteAvatarImage(env: Env, key: string | null | undefined): Promise<void> {
   await deleteAdImage(env, key);
+}
+
+async function downloadTelegramImage(
+  env: Env,
+  fileId: string
+): Promise<{ bytes: ArrayBuffer; mimeType: string }> {
+  const fileResponse = await userBotApi(env, 'getFile', { file_id: fileId });
+  if (!fileResponse.ok) {
+    throw new Error(`Telegram getFile failed with status ${fileResponse.status}`);
+  }
+
+  const payload = (await fileResponse.json()) as { ok?: boolean; result?: { file_path?: string; file_size?: number } };
+  const filePath = payload.result?.file_path || null;
+  if (!filePath) {
+    throw new Error('Telegram file path is missing');
+  }
+
+  const token = await getTelegramUserBotToken(env);
+  const downloadResponse = await fetch(`https://api.telegram.org/file/bot${token}/${filePath}`);
+  if (!downloadResponse.ok) {
+    throw new Error(`Telegram file download failed with status ${downloadResponse.status}`);
+  }
+
+  const bytes = await downloadResponse.arrayBuffer();
+  if (bytes.byteLength > USER_AVATAR_MAX_BYTES) {
+    throw new Error('Avatar is too large');
+  }
+
+  const mimeType = normalizeMimeType(downloadResponse.headers.get('content-type')) || getImageMimeTypeFromPath(filePath) || 'image/jpeg';
+  if (!isImageMimeType(mimeType)) {
+    throw new Error('Invalid avatar type');
+  }
+
+  return { bytes, mimeType };
+}
+
+async function putTelegramAvatar(env: Env, fileId: string): Promise<AdImageUpload & { bytes: ArrayBuffer }> {
+  const { bytes, mimeType } = await downloadTelegramImage(env, fileId);
+  return {
+    key: `avatars/${crypto.randomUUID()}.${getImageExtension(mimeType)}`,
+    mimeType,
+    bytes,
+  };
 }
 
 function isFileLike(value: FormDataEntryValue | null): value is File {
@@ -1659,6 +1742,7 @@ function renderSettingsPage(
   env: Env,
   currentUser: CurrentUser,
   telegramIdentity: UserIdentityRow | null,
+  emailIdentity: UserIdentityRow | null,
   message: string | null = null,
   pendingTelegramAuth: TelegramAuthPayload | null = null
 ): Response {
@@ -1674,6 +1758,27 @@ function renderSettingsPage(
       : '<p><a href="/settings/link-telegram">Привязать Telegram</a></p>';
   const statusMessage = message || (pendingTelegramAuth && !telegramIdentity ? 'Этот Telegram уже привязан к другому аккаунту' : null);
   const emailValue = currentUser.email || '';
+  const passwordBlock = emailIdentity
+    ? `<div class="section">
+    <h3>Сменить пароль</h3>
+    <p>${htmlEscape(emailIdentity.password_hash ? 'Пароль: установлен' : 'Пароль: не задан')}</p>
+    <form method="post" action="/settings/password">
+      <label for="current_password">Текущий пароль</label>
+      <input id="current_password" name="current_password" type="password" autocomplete="current-password" />
+
+      <label for="new_password">Новый пароль</label>
+      <input id="new_password" name="new_password" type="password" minlength="8" autocomplete="new-password" />
+
+      <label for="confirm_password">Подтверждение нового пароля</label>
+      <input id="confirm_password" name="confirm_password" type="password" minlength="8" autocomplete="new-password" />
+
+      <button type="submit">Сменить пароль</button>
+    </form>
+  </div>`
+    : `<div class="section">
+    <h3>Сменить пароль</h3>
+    <p class="empty">Сначала добавь email на сайте, чтобы можно было задать пароль.</p>
+  </div>`;
   const adminPanelBlock = currentUser.role === 'admin'
     ? '<p><a href="/admin">Открыть админку</a></p>'
     : '<p class="empty">Админка доступна только аккаунтам с ролью admin.</p>';
@@ -1710,6 +1815,7 @@ ${nav(currentUser)}
   ${statusMessage ? `<p class="empty">${htmlEscape(statusMessage)}</p>` : ''}
   ${telegramAction}
   ${avatarBlock}
+  ${passwordBlock}
   ${adminPanelBlock}
 </div>`,
     currentUser
@@ -1992,6 +2098,7 @@ function userBotMenuMarkup(env: Env): Record<string, unknown> {
       [{ text: 'Мои объявления', callback_data: USER_BOT_MENU_MY }],
       [{ text: 'Разделы', callback_data: USER_BOT_MENU_SECTIONS }],
       [{ text: 'Поиск', callback_data: USER_BOT_MENU_SEARCH }],
+      [{ text: 'Настройки', callback_data: USER_BOT_MENU_SETTINGS }],
       [{ text: 'Открыть сайт', url: buildPublicSiteUrl(env, '/') }],
     ],
   };
@@ -2075,6 +2182,18 @@ function userBotSingleAdMarkup(adId: number): Record<string, unknown> {
   };
 }
 
+function userBotSettingsMarkup(): Record<string, unknown> {
+  return {
+    inline_keyboard: [
+      [{ text: 'Изменить логин', callback_data: `${USER_BOT_SETTINGS_PREFIX}login` }],
+      [{ text: 'Изменить email', callback_data: `${USER_BOT_SETTINGS_PREFIX}email` }],
+      [{ text: 'Изменить аватар', callback_data: `${USER_BOT_SETTINGS_PREFIX}avatar` }],
+      [{ text: 'Удалить аватар', callback_data: `${USER_BOT_SETTINGS_PREFIX}avatar-delete` }],
+      [{ text: 'Назад', callback_data: `${USER_BOT_SETTINGS_PREFIX}back` }],
+    ],
+  };
+}
+
 function userBotCategoryMarkup(): Record<string, unknown> {
   return {
     inline_keyboard: [
@@ -2123,6 +2242,52 @@ async function sendUserBotMenu(env: Env, chatId: number, greeting: string, login
 
 async function sendUserBotSections(env: Env, chatId: number): Promise<void> {
   await sendUserBotMessage(env, chatId, 'Разделы', userBotSectionsMarkup());
+}
+
+async function sendUserBotSettings(
+  env: Env,
+  chatId: number,
+  telegramUserId: string,
+  message: string | null = null
+): Promise<void> {
+  const telegramIdentity = await findTelegramIdentity(env, telegramUserId);
+  if (!telegramIdentity) {
+    await sendUserBotMenu(env, chatId, 'Пользователь не найден');
+    return;
+  }
+
+  const user = await findUserById(env, telegramIdentity.user_id);
+  if (!user) {
+    await sendUserBotMenu(env, chatId, 'Пользователь не найден');
+    return;
+  }
+
+  const emailIdentity = await findEmailIdentityByUserId(env, user.id);
+  const telegramLine = telegramIdentity.telegram_username
+    ? `@${telegramIdentity.telegram_username}`
+    : telegramIdentity.provider_user_id || 'привязан';
+  const lines = [
+    ...(message ? [message, ''] : []),
+    'Настройки',
+    `Login: ${user.login}`,
+    `Email: ${emailIdentity?.email || user.email || 'не задан'}`,
+    `Telegram: ${telegramLine}`,
+    `Аватар: ${user.avatar_key ? 'есть' : 'нет'}`,
+  ];
+
+  await sendUserBotMessage(env, chatId, lines.join('\n'), userBotSettingsMarkup());
+}
+
+async function sendUserBotSettingsLoginPrompt(env: Env, chatId: number): Promise<void> {
+  await sendUserBotMessage(env, chatId, 'Введи новый login');
+}
+
+async function sendUserBotSettingsEmailPrompt(env: Env, chatId: number): Promise<void> {
+  await sendUserBotMessage(env, chatId, 'Введи новый email');
+}
+
+async function sendUserBotSettingsAvatarPrompt(env: Env, chatId: number): Promise<void> {
+  await sendUserBotMessage(env, chatId, 'Пришли изображение для аватара');
 }
 
 async function sendUserBotSearchPrompt(env: Env, chatId: number): Promise<void> {
@@ -2598,6 +2763,210 @@ async function sendUserBotBodyPrompt(env: Env, chatId: number): Promise<void> {
 
 async function sendUserBotEditBodyPrompt(env: Env, chatId: number): Promise<void> {
   await sendUserBotMessage(env, chatId, 'Введи новый текст объявления');
+}
+
+async function handleUserBotSettingsLoginUpdate(
+  env: Env,
+  telegramUserId: string,
+  chatId: number,
+  login: string
+): Promise<void> {
+  const telegramIdentity = await findTelegramIdentity(env, telegramUserId);
+  if (!telegramIdentity) {
+    await sendUserBotMenu(env, chatId, 'Пользователь не найден');
+    return;
+  }
+
+  const currentUser = await findUserById(env, telegramIdentity.user_id);
+  if (!currentUser) {
+    await sendUserBotMenu(env, chatId, 'Пользователь не найден');
+    return;
+  }
+
+  if (!isValidLogin(login)) {
+    await sendUserBotSettingsLoginPrompt(env, chatId);
+    await sendUserBotMessage(env, chatId, 'Login должен быть 3-32 символа: латиница, цифры, _');
+    return;
+  }
+
+  const existingLoginUser = await findUserByLogin(env, login);
+  if (existingLoginUser && existingLoginUser.id !== currentUser.id) {
+    await sendUserBotSettingsLoginPrompt(env, chatId);
+    await sendUserBotMessage(env, chatId, 'Этот login уже занят');
+    return;
+  }
+
+  await env.DB.prepare(
+    `
+      UPDATE users
+      SET login = ?,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `
+  )
+    .bind(login, currentUser.id)
+    .run();
+
+  await clearBotDraft(env, telegramUserId);
+  await sendUserBotSettings(env, chatId, telegramUserId, 'Login изменён');
+}
+
+async function handleUserBotSettingsEmailUpdate(
+  env: Env,
+  telegramUserId: string,
+  chatId: number,
+  email: string
+): Promise<void> {
+  const telegramIdentity = await findTelegramIdentity(env, telegramUserId);
+  if (!telegramIdentity) {
+    await sendUserBotMenu(env, chatId, 'Пользователь не найден');
+    return;
+  }
+
+  const currentUser = await findUserById(env, telegramIdentity.user_id);
+  if (!currentUser) {
+    await sendUserBotMenu(env, chatId, 'Пользователь не найден');
+    return;
+  }
+
+  if (!isValidEmail(email)) {
+    await sendUserBotSettingsEmailPrompt(env, chatId);
+    await sendUserBotMessage(env, chatId, 'Введите корректный email');
+    return;
+  }
+
+  const existingIdentity = await findEmailIdentity(env, email);
+  if (existingIdentity && existingIdentity.user_id !== currentUser.id) {
+    await sendUserBotSettingsEmailPrompt(env, chatId);
+    await sendUserBotMessage(env, chatId, 'Этот email уже зарегистрирован');
+    return;
+  }
+
+  const currentEmailIdentity = await findEmailIdentityByUserId(env, currentUser.id);
+  if (currentEmailIdentity) {
+    await env.DB.prepare(
+      `
+        UPDATE user_identities
+        SET email = ?
+        WHERE id = ?
+      `
+    )
+      .bind(email, currentEmailIdentity.id)
+      .run();
+  } else {
+    await env.DB.prepare(
+      `
+        INSERT INTO user_identities (
+          user_id,
+          provider,
+          provider_user_id,
+          email,
+          password_hash,
+          telegram_username,
+          created_at
+        )
+        VALUES (?, 'email', NULL, ?, NULL, NULL, CURRENT_TIMESTAMP)
+      `
+    )
+      .bind(currentUser.id, email)
+      .run();
+  }
+
+  await clearBotDraft(env, telegramUserId);
+  await sendUserBotSettings(env, chatId, telegramUserId, 'Email изменён');
+}
+
+async function handleUserBotSettingsAvatarUpdate(
+  env: Env,
+  telegramUserId: string,
+  chatId: number,
+  fileId: string
+): Promise<void> {
+  const telegramIdentity = await findTelegramIdentity(env, telegramUserId);
+  if (!telegramIdentity) {
+    await sendUserBotMenu(env, chatId, 'Пользователь не найден');
+    return;
+  }
+
+  const currentUser = await findUserById(env, telegramIdentity.user_id);
+  if (!currentUser) {
+    await sendUserBotMenu(env, chatId, 'Пользователь не найден');
+    return;
+  }
+
+  const existingAvatarKey = currentUser.avatar_key;
+  let upload: (AdImageUpload & { bytes: ArrayBuffer }) | null = null;
+
+  try {
+    upload = await putTelegramAvatar(env, fileId);
+    await putMediaObject(env, upload.key, upload.bytes, upload.mimeType);
+    await env.DB.prepare(
+      `
+        UPDATE users
+        SET avatar_key = ?,
+            avatar_mime_type = ?,
+            avatar_updated_at = CURRENT_TIMESTAMP,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `
+    )
+      .bind(upload.key, upload.mimeType, currentUser.id)
+      .run();
+
+    if (existingAvatarKey) {
+      await deleteAvatarImage(env, existingAvatarKey);
+    }
+  } catch (error) {
+    if (upload) {
+      await deleteAvatarImage(env, upload.key);
+    }
+    console.error('Failed to update user bot avatar', error);
+    await sendUserBotSettingsAvatarPrompt(env, chatId);
+    await sendUserBotMessage(env, chatId, 'Не удалось сохранить аватар');
+    return;
+  }
+
+  await clearBotDraft(env, telegramUserId);
+  await sendUserBotSettings(env, chatId, telegramUserId, 'Аватар обновлён');
+}
+
+async function handleUserBotSettingsAvatarDelete(
+  env: Env,
+  telegramUserId: string,
+  chatId: number
+): Promise<void> {
+  const telegramIdentity = await findTelegramIdentity(env, telegramUserId);
+  if (!telegramIdentity) {
+    await sendUserBotMenu(env, chatId, 'Пользователь не найден');
+    return;
+  }
+
+  const currentUser = await findUserById(env, telegramIdentity.user_id);
+  if (!currentUser) {
+    await sendUserBotMenu(env, chatId, 'Пользователь не найден');
+    return;
+  }
+
+  if (!currentUser.avatar_key) {
+    await sendUserBotSettings(env, chatId, telegramUserId, 'Аватарки нет');
+    return;
+  }
+
+  await env.DB.prepare(
+    `
+      UPDATE users
+      SET avatar_key = NULL,
+          avatar_mime_type = NULL,
+          avatar_updated_at = NULL,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `
+  )
+    .bind(currentUser.id)
+    .run();
+
+  await deleteAvatarImage(env, currentUser.avatar_key);
+  await sendUserBotSettings(env, chatId, telegramUserId, 'Аватар удалён');
 }
 
 async function sendUserBotConfirmation(env: Env, chatId: number, draft: BotDraftRow): Promise<void> {
@@ -4156,6 +4525,11 @@ async function handleUserBotMenuAction(
     return;
   }
 
+  if (action === USER_BOT_MENU_SETTINGS) {
+    await sendUserBotSettings(env, chatId, telegramUserId);
+    return;
+  }
+
   if (action === USER_BOT_MENU_EDIT) {
     await sendUserBotMessage(env, chatId, 'Редактирование скоро будет');
     return;
@@ -4313,7 +4687,7 @@ async function handleUserBotText(
 
   const draft = await getBotDraft(env, telegramUserId);
 
-  if (!draft || (draft.action !== 'create' && draft.action !== 'edit' && draft.action !== 'register' && draft.action !== 'search')) {
+  if (!draft || (draft.action !== 'create' && draft.action !== 'edit' && draft.action !== 'register' && draft.action !== 'search' && draft.action !== 'settings')) {
     return;
   }
 
@@ -4326,6 +4700,27 @@ async function handleUserBotText(
 
     await upsertBotDraft(env, telegramUserId, 'search', 'results', null, query);
     await sendUserBotSearchResults(env, chatId, query);
+    return;
+  }
+
+  if (draft.action === 'settings') {
+    if (draft.step === 'login') {
+      await handleUserBotSettingsLoginUpdate(env, telegramUserId, chatId, text.trim());
+      return;
+    }
+
+    if (draft.step === 'email') {
+      await handleUserBotSettingsEmailUpdate(env, telegramUserId, chatId, text.trim().toLowerCase());
+      return;
+    }
+
+    if (draft.step === 'avatar') {
+      await sendUserBotSettingsAvatarPrompt(env, chatId);
+      return;
+    }
+
+    await clearBotDraft(env, telegramUserId);
+    await sendUserBotSettings(env, chatId, telegramUserId);
     return;
   }
 
@@ -4485,6 +4880,12 @@ async function handleUserBotCallback(
     return json({ ok: true });
   }
 
+  if (data === USER_BOT_MENU_SETTINGS) {
+    await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
+    await sendUserBotSettings(env, chatId, telegramUserId);
+    return json({ ok: true });
+  }
+
   if (data.startsWith(USER_BOT_SECTION_PREFIX)) {
     const suffix = data.slice(USER_BOT_SECTION_PREFIX.length);
     if (suffix) {
@@ -4555,6 +4956,44 @@ async function handleUserBotCallback(
     await sendUserBotMessage(env, chatId, 'Объявление удалено');
     await sendUserBotMyAds(env, telegramUserId, chatId);
     return json({ ok: true });
+  }
+
+  if (data.startsWith(USER_BOT_SETTINGS_PREFIX)) {
+    const action = data.slice(USER_BOT_SETTINGS_PREFIX.length);
+
+    if (action === 'back') {
+      await clearBotDraft(env, telegramUserId);
+      await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
+      await sendUserBotMenu(env, chatId, 'С возвращением в жоржлист');
+      return json({ ok: true });
+    }
+
+    if (action === 'login') {
+      await upsertBotDraft(env, telegramUserId, 'settings', 'login');
+      await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
+      await sendUserBotSettingsLoginPrompt(env, chatId);
+      return json({ ok: true });
+    }
+
+    if (action === 'email') {
+      await upsertBotDraft(env, telegramUserId, 'settings', 'email');
+      await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
+      await sendUserBotSettingsEmailPrompt(env, chatId);
+      return json({ ok: true });
+    }
+
+    if (action === 'avatar') {
+      await upsertBotDraft(env, telegramUserId, 'settings', 'avatar');
+      await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
+      await sendUserBotSettingsAvatarPrompt(env, chatId);
+      return json({ ok: true });
+    }
+
+    if (action === 'avatar-delete') {
+      await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
+      await handleUserBotSettingsAvatarDelete(env, telegramUserId, chatId);
+      return json({ ok: true });
+    }
   }
 
   if (data.startsWith(USER_BOT_MENU_MY_AD)) {
@@ -4651,13 +5090,26 @@ async function handleUserWebhook(request: Request, env: Env, ctx: ExecutionConte
   }
 
   const message = update.message;
-  if (!message?.text || !message.from) {
+  if (!message?.from) {
     return json({ ok: true });
   }
 
   const telegramUserId = String(message.from.id);
   const chatId = message.chat.id;
   const telegramUsername = message.from.username || null;
+
+  const avatarFileId = message.photo?.length ? message.photo[message.photo.length - 1]?.file_id : message.document?.mime_type?.startsWith('image/') ? message.document.file_id : null;
+  if (avatarFileId) {
+    const draft = await getBotDraft(env, telegramUserId);
+    if (draft?.action === 'settings' && draft.step === 'avatar') {
+      await handleUserBotSettingsAvatarUpdate(env, telegramUserId, chatId, avatarFileId);
+      return json({ ok: true });
+    }
+  }
+
+  if (!message.text) {
+    return json({ ok: true });
+  }
 
   if (message.text === '/start') {
     await handleUserBotStart(env, telegramUserId, chatId, telegramUsername);
@@ -5204,6 +5656,7 @@ async function handleSettingsGet(request: Request, env: Env): Promise<Response> 
   }
 
   const telegramIdentity = await findTelegramIdentityByUserId(env, currentUser.id);
+  const emailIdentity = await findEmailIdentityByUserId(env, currentUser.id);
   const message = new URL(request.url).searchParams.get('message');
   let pendingTelegramAuth: TelegramAuthPayload | null = null;
   try {
@@ -5212,7 +5665,7 @@ async function handleSettingsGet(request: Request, env: Env): Promise<Response> 
     pendingTelegramAuth = null;
   }
 
-  return renderSettingsPage(env, currentUser, telegramIdentity, message, pendingTelegramAuth);
+  return renderSettingsPage(env, currentUser, telegramIdentity, emailIdentity, message, pendingTelegramAuth);
 }
 
 async function handleSettingsLinkTelegramGet(request: Request, env: Env): Promise<Response> {
@@ -5339,23 +5792,24 @@ async function handleSettingsPost(request: Request, env: Env): Promise<Response>
   const email = String(form.get('email') || '').trim().toLowerCase();
 
   const telegramIdentity = await findTelegramIdentityByUserId(env, currentUser.id);
+  const emailIdentity = await findEmailIdentityByUserId(env, currentUser.id);
 
   if (!isValidLogin(login)) {
-    return renderSettingsPage(env, currentUser, telegramIdentity, 'Login должен быть 3-32 символа: латиница, цифры, _');
+    return renderSettingsPage(env, currentUser, telegramIdentity, emailIdentity, 'Login должен быть 3-32 символа: латиница, цифры, _');
   }
 
   if (!isValidEmail(email)) {
-    return renderSettingsPage(env, currentUser, telegramIdentity, 'Введите корректный email');
+    return renderSettingsPage(env, currentUser, telegramIdentity, emailIdentity, 'Введите корректный email');
   }
 
   const existingLoginUser = await findUserByLogin(env, login);
   if (existingLoginUser && existingLoginUser.id !== currentUser.id) {
-    return renderSettingsPage(env, currentUser, telegramIdentity, 'Этот login уже занят');
+    return renderSettingsPage(env, currentUser, telegramIdentity, emailIdentity, 'Этот login уже занят');
   }
 
   const existingEmailIdentity = await findEmailIdentity(env, email);
   if (existingEmailIdentity && existingEmailIdentity.user_id !== currentUser.id) {
-    return renderSettingsPage(env, currentUser, telegramIdentity, 'Этот email уже зарегистрирован');
+    return renderSettingsPage(env, currentUser, telegramIdentity, emailIdentity, 'Этот email уже зарегистрирован');
   }
 
   const currentEmailIdentity = await findEmailIdentityByUserId(env, currentUser.id);
@@ -5399,13 +5853,14 @@ async function handleSettingsPost(request: Request, env: Env): Promise<Response>
   }
 
   const updatedTelegramIdentity = await findTelegramIdentityByUserId(env, currentUser.id);
+  const updatedEmailIdentity = await findEmailIdentityByUserId(env, currentUser.id);
   const refreshedUser = (await getCurrentUser(request, env)) || {
     ...currentUser,
     login,
     email,
   };
 
-  return renderSettingsPage(env, refreshedUser, updatedTelegramIdentity, 'Настройки сохранены');
+  return renderSettingsPage(env, refreshedUser, updatedTelegramIdentity, updatedEmailIdentity, 'Настройки сохранены');
 }
 
 async function handleSettingsAvatarPost(request: Request, env: Env): Promise<Response> {
@@ -5414,6 +5869,8 @@ async function handleSettingsAvatarPost(request: Request, env: Env): Promise<Res
     return redirect('/login?next=/settings');
   }
 
+  const telegramIdentity = await findTelegramIdentityByUserId(env, currentUser.id);
+  const emailIdentity = await findEmailIdentityByUserId(env, currentUser.id);
   const form = await request.formData();
   const avatarValue = form.get('avatar');
   const avatar = isFileLike(avatarValue) && avatarValue.size > 0 ? avatarValue : null;
@@ -5452,7 +5909,7 @@ async function handleSettingsAvatarPost(request: Request, env: Env): Promise<Res
       await deleteAvatarImage(env, newAvatar.key);
     }
     console.error('Failed to update avatar', error);
-    return renderSettingsPage(env, currentUser, await findTelegramIdentityByUserId(env, currentUser.id), 'Не удалось сохранить аватар');
+    return renderSettingsPage(env, currentUser, telegramIdentity, emailIdentity, 'Не удалось сохранить аватар');
   }
 
   return redirectWithMessage('/settings', 'Аватар обновлён');
@@ -5483,6 +5940,56 @@ async function handleSettingsAvatarDeletePost(request: Request, env: Env): Promi
   }
 
   return redirectWithMessage('/settings', 'Аватар удалён');
+}
+
+async function handleSettingsPasswordPost(request: Request, env: Env): Promise<Response> {
+  const currentUser = await getCurrentUser(request, env);
+  if (!currentUser) {
+    return redirect('/login?next=/settings');
+  }
+
+  const telegramIdentity = await findTelegramIdentityByUserId(env, currentUser.id);
+  const emailIdentity = await findEmailIdentityByUserId(env, currentUser.id);
+  if (!emailIdentity) {
+    return renderSettingsPage(env, currentUser, telegramIdentity, null, 'Сначала добавь email на сайте');
+  }
+
+  const form = await request.formData();
+  const currentPassword = String(form.get('current_password') || '');
+  const newPassword = String(form.get('new_password') || '');
+  const confirmPassword = String(form.get('confirm_password') || '');
+
+  if (newPassword.length < 8) {
+    return renderSettingsPage(env, currentUser, telegramIdentity, emailIdentity, 'Новый пароль должен быть не короче 8 символов');
+  }
+
+  if (newPassword !== confirmPassword) {
+    return renderSettingsPage(env, currentUser, telegramIdentity, emailIdentity, 'Подтверждение нового пароля не совпадает');
+  }
+
+  if (emailIdentity.password_hash) {
+    if (!currentPassword) {
+      return renderSettingsPage(env, currentUser, telegramIdentity, emailIdentity, 'Введите текущий пароль');
+    }
+
+    const isPasswordValid = await verifyPassword(currentPassword, emailIdentity.password_hash);
+    if (!isPasswordValid) {
+      return renderSettingsPage(env, currentUser, telegramIdentity, emailIdentity, 'Неверный текущий пароль');
+    }
+  }
+
+  const passwordHash = await hashPassword(newPassword);
+  await env.DB.prepare(
+    `
+      UPDATE user_identities
+      SET password_hash = ?
+      WHERE id = ?
+    `
+  )
+    .bind(passwordHash, emailIdentity.id)
+    .run();
+
+  return redirectWithMessage('/settings', 'Пароль изменён');
 }
 
 async function handleTelegramAuthCallback(request: Request, env: Env): Promise<Response> {
@@ -5722,6 +6229,11 @@ export default {
 
     if (path === '/settings/avatar') {
       if (request.method === 'POST') return handleSettingsAvatarPost(request, env);
+      return text('Method Not Allowed', 405);
+    }
+
+    if (path === '/settings/password') {
+      if (request.method === 'POST') return handleSettingsPasswordPost(request, env);
       return text('Method Not Allowed', 405);
     }
 
