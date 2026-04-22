@@ -959,27 +959,80 @@ ${nav(currentUser)}
   );
 }
 
-function renderAdminPage(currentUser: CurrentUser, ads: AdRow[], message: string | null = null): Response {
+type AdminUserRow = {
+  id: number;
+  login: string;
+  email: string | null;
+  role: string;
+  created_at: string;
+};
+
+async function listAllUsers(env: Env): Promise<AdminUserRow[]> {
+  return env.DB.prepare(
+    `
+      SELECT users.id,
+             users.login,
+             (SELECT email FROM user_identities WHERE user_id = users.id AND provider = 'email' LIMIT 1) AS email,
+             users.role,
+             users.created_at
+      FROM users
+      ORDER BY users.id ASC
+    `
+  )
+    .all<AdminUserRow>()
+    .then((result) => result.results ?? []);
+}
+
+function renderAdminPage(
+  currentUser: CurrentUser,
+  ads: AdRow[],
+  users: AdminUserRow[],
+  message: string | null = null
+): Response {
   const items = ads.length
     ? ads
-        .map((ad) => {
+      .map((ad) => {
           const owner = ad.owner_user_id ? `owner #${ad.owner_user_id}` : 'no owner';
           const deleted = ad.deleted_at ? ` · deleted ${htmlEscape(ad.deleted_at)}` : '';
           const category = ad.category ? `${htmlEscape(categoryLabel(ad.category))} · ` : '';
+          const deleteAction = ad.deleted_at
+            ? '<span class="empty">Уже удалено</span>'
+            : `<form method="post" action="/admin/delete/${ad.id}" style="display:inline">
+      <button class="link-button" type="submit">Удалить</button>
+    </form>`;
           return `<div class="ad">
   <div class="title">#${ad.id} · ${htmlEscape(ad.title)}</div>
   <div class="meta">${htmlEscape(ad.status)} · ${category}${htmlEscape(owner)} · ${htmlEscape(ad.created_at)}${deleted}</div>
   <div class="body">${htmlEscape(ad.body)}</div>
   <div>
     <a href="/admin/edit/${ad.id}">Редактировать</a>
-    <form method="post" action="/admin/delete/${ad.id}" style="display:inline">
-      <button class="link-button" type="submit">Удалить</button>
-    </form>
+    ${deleteAction}
   </div>
 </div>`;
         })
         .join('')
     : '<div class="empty">Пока нет объявлений.</div>';
+  const usersBlock = users.length
+    ? `<div class="section">
+  <h3>Пользователи</h3>
+  ${users
+    .map((user) => {
+      const email = user.email ? ` · ${htmlEscape(user.email)}` : '';
+      const role = htmlEscape(user.role);
+      const action = user.role === 'admin'
+        ? '<span class="empty">admin</span>'
+        : `<form method="post" action="/admin/users/${user.id}/promote" style="display:inline">
+  <button class="link-button" type="submit">Сделать admin</button>
+</form>`;
+      return `<div class="ad">
+  <div class="title">#${user.id} · ${htmlEscape(user.login)}${email}</div>
+  <div class="meta">${role} · ${htmlEscape(user.created_at)}</div>
+  <div>${action}</div>
+</div>`;
+    })
+    .join('')}
+</div>`
+    : '<div class="empty">Пользователей пока нет.</div>';
 
   return shell(
     'админка - жоржлист',
@@ -989,6 +1042,7 @@ ${nav(currentUser)}
   <h2>Админка</h2>
   ${message ? `<p class="empty">${htmlEscape(message)}</p>` : ''}
   <p>Пользователь: ${htmlEscape(currentUser.login)}</p>
+  ${usersBlock}
   ${items}
 </div>`,
     currentUser
@@ -1015,10 +1069,7 @@ function renderSettingsPage(
   const emailValue = currentUser.email || '';
   const adminPanelBlock = currentUser.role === 'admin'
     ? '<p><a href="/admin">Открыть админку</a></p>'
-    : `<p class="empty">Админка доступна только аккаунтам с ролью admin.</p>
-<form method="post" action="/settings/admin/promote">
-  <button type="submit">Сделать этот аккаунт admin</button>
-</form>`;
+    : '<p class="empty">Админка доступна только аккаунтам с ролью admin.</p>';
 
   return shell(
     'настройки - жоржлист',
@@ -1646,6 +1697,7 @@ async function listAllAds(env: Env): Promise<AdRow[]> {
     `
       SELECT id, title, body, category, owner_user_id, status, created_at, updated_at, deleted_at
       FROM ads
+      WHERE deleted_at IS NULL
       ORDER BY created_at DESC, id DESC
     `
   ).all<AdRow>();
@@ -2990,7 +3042,8 @@ async function handleAdminGet(request: Request, env: Env): Promise<Response> {
   }
 
   const message = new URL(request.url).searchParams.get('message');
-  return renderAdminPage(currentUser, await listAllAds(env), message);
+  const users = await listAllUsers(env);
+  return renderAdminPage(currentUser, await listAllAds(env), users, message);
 }
 
 async function handleAdminDeleteRoute(request: Request, env: Env, id: string): Promise<Response> {
@@ -3025,6 +3078,25 @@ async function handleAdminDeleteRoute(request: Request, env: Env, id: string): P
     .run();
 
   if ((result.meta.changes ?? 0) === 0) {
+    const existingAd = await env.DB.prepare(
+      `
+        SELECT id, deleted_at
+        FROM ads
+        WHERE id = ?
+        LIMIT 1
+      `
+    )
+      .bind(numericId)
+      .first<{ id: number; deleted_at: string | null }>();
+
+    if (!existingAd) {
+      return text('Not Found', 404);
+    }
+
+    if (existingAd.deleted_at) {
+      return redirectWithMessage('/admin', 'Объявление уже удалено');
+    }
+
     return text('Not Found', 404);
   }
 
@@ -3084,6 +3156,52 @@ async function handleAdminEditRoute(request: Request, env: Env, ctx: ExecutionCo
     .run();
 
   return redirectWithMessage('/admin', 'Объявление сохранено');
+}
+
+async function handleAdminPromoteUserRoute(request: Request, env: Env, id: string): Promise<Response> {
+  const currentUser = await getCurrentUser(request, env);
+  if (!currentUser) {
+    return redirect('/login?next=/admin');
+  }
+
+  if (currentUser.role !== 'admin') {
+    return text('Forbidden', 403);
+  }
+
+  if (request.method !== 'POST') {
+    return text('Method Not Allowed', 405);
+  }
+
+  const numericId = Number(id);
+  if (!Number.isInteger(numericId) || numericId <= 0) {
+    return text('Not Found', 404);
+  }
+
+  if (numericId === currentUser.id) {
+    return redirectWithMessage('/admin', 'Нельзя назначить admin самому себе');
+  }
+
+  const targetUser = await findUserById(env, numericId);
+  if (!targetUser) {
+    return text('Not Found', 404);
+  }
+
+  if (targetUser.role === 'admin') {
+    return redirectWithMessage('/admin', 'Пользователь уже admin');
+  }
+
+  await env.DB.prepare(
+    `
+      UPDATE users
+      SET role = 'admin',
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `
+  )
+    .bind(numericId)
+    .run();
+
+  return redirectWithMessage('/admin', `Пользователь ${targetUser.login} теперь admin`);
 }
 
 async function handleSettingsGet(request: Request, env: Env): Promise<Response> {
@@ -3297,28 +3415,6 @@ async function handleSettingsPost(request: Request, env: Env): Promise<Response>
   return renderSettingsPage(refreshedUser, updatedTelegramIdentity, 'Настройки сохранены');
 }
 
-async function handleSettingsAdminPromotePost(request: Request, env: Env): Promise<Response> {
-  const currentUser = await getCurrentUser(request, env);
-  if (!currentUser) {
-    return redirect('/login?next=/settings');
-  }
-
-  await env.DB.prepare(
-    `
-      UPDATE users
-      SET role = 'admin',
-          updated_at = CURRENT_TIMESTAMP
-      WHERE id = ?
-    `
-  )
-    .bind(currentUser.id)
-    .run();
-
-  const refreshedUser = (await getCurrentUser(request, env)) || { ...currentUser, role: 'admin' };
-  const telegramIdentity = await findTelegramIdentityByUserId(env, currentUser.id);
-  return renderSettingsPage(refreshedUser, telegramIdentity, 'Роль admin включена');
-}
-
 async function handleTelegramAuthCallback(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   const mode = url.searchParams.get('mode');
@@ -3499,11 +3595,6 @@ export default {
       return text('Method Not Allowed', 405);
     }
 
-    if (path === '/settings/admin/promote') {
-      if (request.method === 'POST') return handleSettingsAdminPromotePost(request, env);
-      return text('Method Not Allowed', 405);
-    }
-
     if (path === '/admin') {
       if (request.method === 'GET') return handleAdminGet(request, env);
       return text('Method Not Allowed', 405);
@@ -3529,6 +3620,10 @@ export default {
 
     if (path.startsWith('/admin/delete/')) {
       return handleAdminDeleteRoute(request, env, path.slice('/admin/delete/'.length));
+    }
+
+    if (path.startsWith('/admin/users/') && path.endsWith('/promote')) {
+      return handleAdminPromoteUserRoute(request, env, path.slice('/admin/users/'.length, -'/promote'.length));
     }
 
     if (path.startsWith('/admin/edit/')) {

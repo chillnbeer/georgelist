@@ -555,59 +555,10 @@ describe('Settings page', () => {
     expect(html).toContain('Роль: user');
     expect(html).toContain('Админка доступна только аккаунтам с ролью admin.');
   });
-
-  it('lets a logged-in user promote their account to admin and open the admin panel', async () => {
-    await seedUser({
-      id: 21,
-      login: 'user21',
-      email: 'user21@example.com',
-      sessionToken: 'user21-session',
-    });
-
-    const promoteResponse = await runRequest(
-      new Request('http://example.com/settings/admin/promote', {
-        method: 'POST',
-        headers: {
-          Cookie: 'session=user21-session',
-        },
-      })
-    );
-
-    expect(promoteResponse.status).toBe(200);
-    const promoteHtml = await promoteResponse.text();
-    expect(promoteHtml).toContain('Роль: admin');
-    expect(promoteHtml).toContain('Роль admin включена');
-    expect(promoteHtml).toContain('/admin');
-
-    const user = await env.DB.prepare(
-      `
-        SELECT role
-        FROM users
-        WHERE id = ?
-        LIMIT 1
-      `
-    )
-      .bind(21)
-      .first<{ role: string }>();
-
-    expect(user?.role).toBe('admin');
-
-    const adminPage = await runRequest(
-      new Request('http://example.com/admin', {
-        headers: {
-          Cookie: 'session=user21-session',
-        },
-      })
-    );
-
-    expect(adminPage.status).toBe(200);
-    const adminHtml = await adminPage.text();
-    expect(adminHtml).toContain('Админка');
-  });
 });
 
 describe('Admin web flow', () => {
-  it('allows an admin to edit and delete any ad', async () => {
+  it('allows an admin to promote another user, edit and delete any ad', async () => {
     await seedUser({
       id: 10,
       login: 'admin',
@@ -620,6 +571,13 @@ describe('Admin web flow', () => {
       login: 'alice',
       email: 'alice@example.com',
       sessionToken: 'alice-session',
+    });
+
+    await seedUser({
+      id: 12,
+      login: 'bob',
+      email: 'bob@example.com',
+      sessionToken: 'bob-session',
     });
 
     const adId = await insertAd({
@@ -641,9 +599,32 @@ describe('Admin web flow', () => {
     expect(adminPage.status).toBe(200);
     const adminHtml = await adminPage.text();
     expect(adminHtml).toContain('Админка');
+    expect(adminHtml).toContain('Пользователи');
+    expect(adminHtml).toContain('Сделать admin');
     expect(adminHtml).toContain('Old title');
     expect(adminHtml).toContain(`/admin/edit/${adId}`);
     expect(adminHtml).toContain(`/admin/delete/${adId}`);
+
+    const promoteUserResponse = await runRequest(
+      new Request('http://example.com/admin/users/12/promote', {
+        method: 'POST',
+        headers: { Cookie: adminCookie },
+      })
+    );
+
+    expect(promoteUserResponse.status).toBe(303);
+    const promotedUser = await env.DB.prepare(
+      `
+        SELECT role
+        FROM users
+        WHERE id = ?
+        LIMIT 1
+      `
+    )
+      .bind(12)
+      .first<{ role: string }>();
+
+    expect(promotedUser?.role).toBe('admin');
 
     const editResponse = await runRequest(
       new Request(`http://example.com/admin/edit/${adId}`, {
@@ -697,5 +678,26 @@ describe('Admin web flow', () => {
       .first<{ deleted_at: string | null }>();
 
     expect(deletedAd?.deleted_at).not.toBeNull();
+
+    const adminAfterDelete = await runRequest(
+      new Request('http://example.com/admin', {
+        headers: { Cookie: adminCookie },
+      })
+    );
+
+    expect(adminAfterDelete.status).toBe(200);
+    const adminAfterDeleteHtml = await adminAfterDelete.text();
+    expect(adminAfterDeleteHtml).not.toContain('New title');
+    expect(adminAfterDeleteHtml).not.toContain('Old title');
+
+    const secondDeleteResponse = await runRequest(
+      new Request(`http://example.com/admin/delete/${adId}`, {
+        method: 'POST',
+        headers: { Cookie: adminCookie },
+      })
+    );
+
+    expect(secondDeleteResponse.status).toBe(303);
+    expect(secondDeleteResponse.headers.get('Location')).toContain('/admin');
   });
 });
