@@ -660,6 +660,7 @@ describe('User bot browsing flow', () => {
     expect(flatButtons).toContain('Мои объявления');
     expect(flatButtons).toContain('Разделы');
     expect(flatButtons).toContain('Поиск');
+    expect(flatButtons).toContain('Настройки');
     expect(flatButtons).not.toContain('Редактировать');
     expect(flatButtons).not.toContain('Удалить');
 
@@ -1150,6 +1151,310 @@ describe('User avatars and public profiles', () => {
     expect(replacedRow?.avatar_key ? mediaStore.has(replacedRow.avatar_key) : false).toBe(false);
 
     expect(publishedAdId).toBeGreaterThan(0);
+  });
+});
+
+describe('Site password settings', () => {
+  it('allows changing a password from /settings and logging in with the new password', async () => {
+    const registerForm = new FormData();
+    registerForm.set('login', 'passworduser');
+    registerForm.set('email', 'passworduser@example.com');
+    registerForm.set('password', 'oldpassword123');
+
+    const registerResponse = await runRequest(
+      new Request('http://example.com/register', {
+        method: 'POST',
+        body: registerForm,
+      })
+    );
+
+    expect(registerResponse.status).toBe(303);
+    const sessionCookie = cookieFromSetCookie(registerResponse.headers.get('Set-Cookie'), 'session');
+    expect(sessionCookie).toBeTruthy();
+
+    const settingsResponse = await runRequest(
+      new Request('http://example.com/settings', {
+        headers: {
+          Cookie: sessionCookie || '',
+        },
+      })
+    );
+    expect(settingsResponse.status).toBe(200);
+    const settingsHtml = await settingsResponse.text();
+    expect(settingsHtml).toContain('Сменить пароль');
+
+    const wrongPasswordForm = new FormData();
+    wrongPasswordForm.set('current_password', 'wrong-password');
+    wrongPasswordForm.set('new_password', 'newpassword123');
+    wrongPasswordForm.set('confirm_password', 'newpassword123');
+
+    const wrongPasswordResponse = await runRequest(
+      new Request('http://example.com/settings/password', {
+        method: 'POST',
+        headers: {
+          Cookie: sessionCookie || '',
+        },
+        body: wrongPasswordForm,
+      })
+    );
+    expect(wrongPasswordResponse.status).toBe(200);
+    expect(await wrongPasswordResponse.text()).toContain('Неверный текущий пароль');
+
+    const correctPasswordForm = new FormData();
+    correctPasswordForm.set('current_password', 'oldpassword123');
+    correctPasswordForm.set('new_password', 'newpassword123');
+    correctPasswordForm.set('confirm_password', 'newpassword123');
+
+    const correctPasswordResponse = await runRequest(
+      new Request('http://example.com/settings/password', {
+        method: 'POST',
+        headers: {
+          Cookie: sessionCookie || '',
+        },
+        body: correctPasswordForm,
+      })
+    );
+    expect(correctPasswordResponse.status).toBe(303);
+
+    const oldLoginForm = new FormData();
+    oldLoginForm.set('email', 'passworduser@example.com');
+    oldLoginForm.set('password', 'oldpassword123');
+    const oldLoginResponse = await runRequest(
+      new Request('http://example.com/login', {
+        method: 'POST',
+        body: oldLoginForm,
+      })
+    );
+    expect(oldLoginResponse.status).toBe(200);
+    expect(await oldLoginResponse.text()).toContain('Неверный email или пароль');
+
+    const newLoginForm = new FormData();
+    newLoginForm.set('email', 'passworduser@example.com');
+    newLoginForm.set('password', 'newpassword123');
+    const newLoginResponse = await runRequest(
+      new Request('http://example.com/login', {
+        method: 'POST',
+        body: newLoginForm,
+      })
+    );
+    expect(newLoginResponse.status).toBe(303);
+    expect(newLoginResponse.headers.get('Location')).toBe('/my');
+  });
+});
+
+describe('User bot settings', () => {
+  it('shows settings and updates login, email and avatar', async () => {
+    await seedUser({
+      id: 90,
+      login: 'botsettings',
+      email: 'botsettings@example.com',
+      sessionToken: 'botsettings-session',
+    });
+    await insertTelegramIdentity({
+      userId: 90,
+      telegramUserId: '90001',
+      telegramUsername: 'botsettings_tg',
+    });
+
+    const startResponse = await sendUserTelegramWebhook({
+      message: {
+        chat: { id: 90001 },
+        from: { id: 90001, username: 'botsettings_tg' },
+        text: '/start',
+      },
+    });
+    expect(startResponse.status).toBe(200);
+
+    const settingsResponse = await sendUserTelegramWebhook({
+      callback_query: {
+        id: 'cb-user-settings',
+        data: 'user:settings',
+        message: {
+          chat: { id: 90001 },
+          message_id: 400,
+        },
+      },
+    });
+    expect(settingsResponse.status).toBe(200);
+
+    const settingsMessage = telegramFetchCalls
+      .filter((call) => call.url.includes('/sendMessage') && typeof call.body === 'object' && call.body !== null)
+      .at(-1);
+    expect(String((settingsMessage?.body as { text?: string }).text || '')).toContain('Настройки');
+    expect(String((settingsMessage?.body as { text?: string }).text || '')).toContain('Login: botsettings');
+    expect(String((settingsMessage?.body as { text?: string }).text || '')).toContain('Email: botsettings@example.com');
+    expect(String((settingsMessage?.body as { text?: string }).text || '')).toContain('Telegram: @botsettings_tg');
+    expect(String((settingsMessage?.body as { text?: string }).text || '')).toContain('Аватар: нет');
+
+    const loginPromptResponse = await sendUserTelegramWebhook({
+      callback_query: {
+        id: 'cb-user-login',
+        data: 'user:settings:login',
+        message: {
+          chat: { id: 90001 },
+          message_id: 401,
+        },
+      },
+    });
+    expect(loginPromptResponse.status).toBe(200);
+
+    await sendUserTelegramWebhook({
+      message: {
+        chat: { id: 90001 },
+        from: { id: 90001, username: 'botsettings_tg' },
+        text: 'botsettings_new',
+      },
+    });
+
+    const renamedUser = await env.DB.prepare(
+      `
+        SELECT login
+        FROM users
+        WHERE id = ?
+        LIMIT 1
+      `
+    )
+      .bind(90)
+      .first<{ login: string }>();
+    expect(renamedUser?.login).toBe('botsettings_new');
+
+    const emailPromptResponse = await sendUserTelegramWebhook({
+      callback_query: {
+        id: 'cb-user-email',
+        data: 'user:settings:email',
+        message: {
+          chat: { id: 90001 },
+          message_id: 402,
+        },
+      },
+    });
+    expect(emailPromptResponse.status).toBe(200);
+
+    await sendUserTelegramWebhook({
+      message: {
+        chat: { id: 90001 },
+        from: { id: 90001, username: 'botsettings_tg' },
+        text: 'botsettings_new@example.com',
+      },
+    });
+
+    const emailIdentity = await env.DB.prepare(
+      `
+        SELECT email
+        FROM user_identities
+        WHERE user_id = ?
+          AND provider = 'email'
+        LIMIT 1
+      `
+    )
+      .bind(90)
+      .first<{ email: string | null }>();
+    expect(emailIdentity?.email).toBe('botsettings_new@example.com');
+
+    const customFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' || input instanceof URL ? String(input) : input.url;
+      const body = typeof init?.body === 'string' ? JSON.parse(init.body) : null;
+      telegramFetchCalls.push({ url, body });
+
+      if (url.includes('/getFile')) {
+        return new Response(JSON.stringify({ ok: true, result: { file_path: 'avatars/test.png' } }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      if (url.includes('/file/bot')) {
+        return new Response(new Uint8Array([1, 2, 3, 4]), {
+          status: 200,
+          headers: { 'Content-Type': 'image/png' },
+        });
+      }
+
+      return new Response(JSON.stringify({ ok: true, result: {} }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', customFetch);
+
+    const avatarPromptResponse = await sendUserTelegramWebhook({
+      callback_query: {
+        id: 'cb-user-avatar',
+        data: 'user:settings:avatar',
+        message: {
+          chat: { id: 90001 },
+          message_id: 403,
+        },
+      },
+    });
+    expect(avatarPromptResponse.status).toBe(200);
+
+    const avatarUploadResponse = await sendUserTelegramWebhook({
+      message: {
+        chat: { id: 90001 },
+        from: { id: 90001, username: 'botsettings_tg' },
+        photo: [
+          { file_id: 'small' },
+          { file_id: 'large' },
+        ],
+      },
+    });
+    expect(avatarUploadResponse.status).toBe(200);
+
+    const avatarRow = await env.DB.prepare(
+      `
+        SELECT avatar_key, avatar_mime_type, avatar_updated_at
+        FROM users
+        WHERE id = ?
+        LIMIT 1
+      `
+    )
+      .bind(90)
+      .first<{ avatar_key: string | null; avatar_mime_type: string | null; avatar_updated_at: string | null }>();
+    expect(avatarRow?.avatar_key).toBeTruthy();
+    expect(avatarRow?.avatar_mime_type).toBe('image/png');
+    expect(avatarRow?.avatar_updated_at).toBeTruthy();
+    expect(avatarRow?.avatar_key ? mediaStore.has(avatarRow.avatar_key) : false).toBe(true);
+
+    const settingsWithAvatarResponse = await runRequest(new Request('http://example.com/settings', {
+      headers: {
+        Cookie: 'session=botsettings-session',
+      },
+    }));
+    expect(settingsWithAvatarResponse.status).toBe(200);
+    expect(await settingsWithAvatarResponse.text()).toContain(`/media/${encodeURIComponent(avatarRow?.avatar_key || '')}`);
+
+    const deleteAvatarResponse = await sendUserTelegramWebhook({
+      callback_query: {
+        id: 'cb-user-avatar-delete',
+        data: 'user:settings:avatar-delete',
+        message: {
+          chat: { id: 90001 },
+          message_id: 404,
+        },
+      },
+    });
+    expect(deleteAvatarResponse.status).toBe(200);
+
+    const deletedAvatarRow = await env.DB.prepare(
+      `
+        SELECT avatar_key, avatar_mime_type, avatar_updated_at
+        FROM users
+        WHERE id = ?
+        LIMIT 1
+      `
+    )
+      .bind(90)
+      .first<{ avatar_key: string | null; avatar_mime_type: string | null; avatar_updated_at: string | null }>();
+    expect(deletedAvatarRow?.avatar_key).toBeNull();
+    expect(deletedAvatarRow?.avatar_mime_type).toBeNull();
+    expect(deletedAvatarRow?.avatar_updated_at).toBeNull();
+    expect(avatarRow?.avatar_key ? mediaStore.has(avatarRow.avatar_key) : false).toBe(false);
+
+    const newProfileResponse = await runRequest(new Request('http://example.com/u/botsettings_new'));
+    expect(newProfileResponse.status).toBe(200);
+    const oldProfileResponse = await runRequest(new Request('http://example.com/u/botsettings'));
+    expect(oldProfileResponse.status).toBe(404);
   });
 });
 
