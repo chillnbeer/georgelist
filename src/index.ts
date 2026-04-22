@@ -1013,6 +1013,9 @@ function renderSettingsPage(
       : '<p><a href="/settings/link-telegram">Привязать Telegram</a></p>';
   const statusMessage = message || (pendingTelegramAuth && !telegramIdentity ? 'Этот Telegram уже привязан к другому аккаунту' : null);
   const emailValue = currentUser.email || '';
+  const adminPanelBlock = currentUser.role === 'admin'
+    ? '<p><a href="/admin">Открыть админку</a></p>'
+    : '<p class="empty">Админка доступна только аккаунтам с ролью admin.</p>';
 
   return shell(
     'настройки - жоржлист',
@@ -1020,6 +1023,7 @@ function renderSettingsPage(
 ${nav(currentUser)}
 <div class="section">
   <h2>Настройки</h2>
+  <p>Роль: ${htmlEscape(currentUser.role)}</p>
   <form method="post" action="/settings">
     <label for="login">Login</label>
     <input id="login" name="login" type="text" required value="${htmlEscape(currentUser.login)}" />
@@ -1032,6 +1036,7 @@ ${nav(currentUser)}
   <p>${telegramStatus}</p>
   ${statusMessage ? `<p class="empty">${htmlEscape(statusMessage)}</p>` : ''}
   ${telegramAction}
+  ${adminPanelBlock}
 </div>`,
     currentUser
   );

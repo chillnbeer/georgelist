@@ -533,6 +533,30 @@ describe('Telegram linking flow', () => {
   });
 });
 
+describe('Settings page', () => {
+  it('shows the current role and admin note for non-admin users', async () => {
+    await seedUser({
+      id: 20,
+      login: 'user20',
+      email: 'user20@example.com',
+      sessionToken: 'user20-session',
+    });
+
+    const response = await runRequest(
+      new Request('http://example.com/settings', {
+        headers: {
+          Cookie: 'session=user20-session',
+        },
+      })
+    );
+
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain('Роль: user');
+    expect(html).toContain('Админка доступна только аккаунтам с ролью admin.');
+  });
+});
+
 describe('Admin web flow', () => {
   it('allows an admin to edit and delete any ad', async () => {
     await seedUser({
