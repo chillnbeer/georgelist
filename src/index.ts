@@ -197,8 +197,11 @@ const USER_BOT_MENU_MY = 'user:my';
 const USER_BOT_MENU_MY_AD = 'user:myad:';
 const USER_BOT_SECTION_PREFIX = 'user:section:';
 const USER_BOT_SECTION_AD_PREFIX = 'user:sectionad:';
+const USER_BOT_SECTION_MORE_PREFIX = 'user:more:';
 const USER_BOT_SEARCH_RESULTS = 'user:search:results';
 const USER_BOT_SEARCH_AD_PREFIX = 'user:searchad:';
+const USER_BOT_SEARCH_MORE_PREFIX = 'user:searchmore:';
+const BOT_ADS_PAGE_SIZE = 5;
 const USER_BOT_DELETE_PREFIX = 'delete_';
 const USER_BOT_SETTINGS_PREFIX = 'user:settings:';
 const USER_BOT_DRAFT_PREFIX = 'draft:';
@@ -1118,7 +1121,70 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       border-top: 1px solid #ddd;
       margin: 10px 0;
     }
-    @media (max-width: 640px) {
+    .ad-page {
+      display: grid;
+      grid-template-columns: 380px 1fr;
+      gap: 24px;
+      align-items: start;
+    }
+    .ad-page-media {
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      overflow: hidden;
+      background: #f5f5f5;
+    }
+    .ad-page-media img {
+      width: 100%;
+      display: block;
+      object-fit: contain;
+    }
+    .ad-page-media-placeholder {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 180px;
+      color: #aaa;
+      font-size: 13px;
+    }
+    .ad-page-title {
+      margin: 0 0 12px;
+      font-size: 22px;
+      line-height: 1.3;
+      font-weight: 700;
+    }
+    .ad-page-author {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+    .ad-page-badges {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-bottom: 16px;
+    }
+    .badge {
+      background: #eee;
+      border-radius: 3px;
+      padding: 2px 8px;
+      font-size: 12px;
+      color: #555;
+    }
+    .ad-page-body {
+      white-space: pre-wrap;
+      line-height: 1.65;
+      margin-bottom: 16px;
+      font-size: 15px;
+    }
+    .ad-page-footer {
+      color: #999;
+      font-size: 12px;
+    }
+    @media (max-width: 700px) {
+      .ad-page {
+        grid-template-columns: 1fr;
+      }
       .ad-page-image,
       .image-preview {
         max-width: 100%;
@@ -1297,11 +1363,15 @@ ${renderSearchForm()}`
 }
 
 function renderPublicAdPage(env: Env, ad: PublicAdCardRow, currentUser: CurrentUser | null = null): Response {
-  const authorLine = ad.author_login
-    ? `<p><strong>Автор:</strong> <a href="/u/${encodeURIComponent(ad.author_login)}">${htmlEscape(ad.author_login)}</a></p>`
-    : '';
-  const authorAvatar = ad.author_avatar_key
-    ? `<div style="margin: 0 0 12px;">${renderAvatar(env, ad.author_avatar_key, ad.author_login || 'Автор')}</div>`
+  const media = ad.image_key
+    ? `<div class="ad-page-media"><img src="${htmlEscape(buildMediaUrl(env, ad.image_key))}" alt="${htmlEscape(ad.title)}" /></div>`
+    : `<div class="ad-page-media"><div class="ad-page-media-placeholder">без фото</div></div>`;
+
+  const author = ad.author_login
+    ? `<div class="ad-page-author">
+  ${renderAvatar(env, ad.author_avatar_key, ad.author_login, 'avatar-mini')}
+  <a href="/u/${encodeURIComponent(ad.author_login)}">${htmlEscape(ad.author_login)}</a>
+</div>`
     : '';
 
   return shell(
@@ -1309,16 +1379,19 @@ function renderPublicAdPage(env: Env, ad: PublicAdCardRow, currentUser: CurrentU
     `<h1>жоржлист</h1>
 ${nav(currentUser)}
 <div class="section">
-  ${renderAdImage(env, ad.image_key, ad.title, 'ad-page-image')}
-  <h2>${htmlEscape(ad.title)}</h2>
-  ${authorAvatar}
-  <p><strong>Категория:</strong> ${htmlEscape(categoryLabel(ad.category))}</p>
-  ${authorLine}
-  <p><strong>Текст:</strong></p>
-  <div class="body">${htmlEscape(ad.body)}</div>
-  <p><strong>Дата:</strong> ${htmlEscape(ad.created_at)}</p>
+  <div class="ad-page">
+    ${media}
+    <div>
+      <h2 class="ad-page-title">${htmlEscape(ad.title)}</h2>
+      ${author}
+      <div class="ad-page-badges"><span class="badge">${htmlEscape(categoryLabel(ad.category))}</span></div>
+      <div class="ad-page-body">${htmlEscape(ad.body)}</div>
+      <div class="ad-page-footer">${htmlEscape(ad.created_at)}</div>
+    </div>
+  </div>
 </div>
-${renderSearchForm()}`
+${renderSearchForm()}`,
+    currentUser
   );
 }
 
@@ -2317,10 +2390,48 @@ async function sendUserBotSearchPrompt(env: Env, chatId: number): Promise<void> 
   await sendUserBotMessage(env, chatId, 'Введи текст для поиска');
 }
 
-async function sendUserBotSearchResults(env: Env, chatId: number, query: string): Promise<void> {
-  const ads = await searchPublishedAds(env, query);
-  if (!ads.length) {
-    await sendUserBotMessage(env, chatId, 'Ничего не найдено', {
+async function sendUserBotAdCards(
+  env: Env,
+  chatId: number,
+  ads: AdCardRow[],
+  hasMore: boolean,
+  moreCallbackData: string,
+  backRow: Array<{ text: string; callback_data: string }>
+): Promise<void> {
+  for (const ad of ads) {
+    const caption = [ad.title, categoryLabel(ad.category), ad.author_login ? `Автор: ${ad.author_login}` : null]
+      .filter(Boolean)
+      .join('\n');
+    const markup = { inline_keyboard: [[{ text: 'Подробнее →', callback_data: `${USER_BOT_SECTION_AD_PREFIX}${ad.category}:${ad.id}` }]] };
+
+    if (ad.image_key) {
+      const res = await userBotApi(env, 'sendPhoto', {
+        chat_id: chatId,
+        photo: buildMediaUrl(env, ad.image_key),
+        caption,
+        reply_markup: markup,
+      });
+      if (!res.ok) {
+        await sendUserBotMessage(env, chatId, `[без фото]\n${caption}`, markup);
+      }
+    } else {
+      await sendUserBotMessage(env, chatId, `[без фото]\n${caption}`, markup);
+    }
+  }
+
+  const navRows: Array<Array<{ text: string; callback_data: string }>> = [];
+  if (hasMore) navRows.push([{ text: 'Показать ещё', callback_data: moreCallbackData }]);
+  navRows.push(backRow);
+  await sendUserBotMessage(env, chatId, '—', { inline_keyboard: navRows });
+}
+
+async function sendUserBotSearchResults(env: Env, chatId: number, query: string, offset = 0): Promise<void> {
+  const ads = await searchPublishedAdsPage(env, query, BOT_ADS_PAGE_SIZE + 1, offset);
+  const hasMore = ads.length > BOT_ADS_PAGE_SIZE;
+  const page = ads.slice(0, BOT_ADS_PAGE_SIZE);
+
+  if (!page.length) {
+    await sendUserBotMessage(env, chatId, offset === 0 ? 'Ничего не найдено' : 'Больше объявлений нет', {
       inline_keyboard: [
         [{ text: 'Новый поиск', callback_data: USER_BOT_MENU_SEARCH }],
         [{ text: 'Назад к объявлениям', callback_data: USER_BOT_MENU_SECTIONS }],
@@ -2329,11 +2440,12 @@ async function sendUserBotSearchResults(env: Env, chatId: number, query: string)
     return;
   }
 
-  await sendUserBotMessage(
-    env,
-    chatId,
-    `Поиск: ${query.trim()}`,
-    userBotSearchMarkup(ads.map((ad) => ({ id: ad.id, title: ad.title })))
+  if (offset === 0) await sendUserBotMessage(env, chatId, `Поиск: ${query.trim()}`);
+
+  await sendUserBotAdCards(
+    env, chatId, page, hasMore,
+    `${USER_BOT_SEARCH_MORE_PREFIX}${offset + BOT_ADS_PAGE_SIZE}`,
+    [{ text: 'Новый поиск', callback_data: USER_BOT_MENU_SEARCH }, { text: 'Назад к объявлениям', callback_data: USER_BOT_MENU_SECTIONS }]
   );
 }
 
@@ -2392,24 +2504,27 @@ async function sendUserBotSearchAdDetail(env: Env, chatId: number, adId: number)
   await sendUserBotPublicAdCard(env, chatId, ad, userBotSearchAdMarkup());
 }
 
-async function sendUserBotSectionAds(env: Env, chatId: number, category: string): Promise<void> {
+async function sendUserBotSectionAds(env: Env, chatId: number, category: string, offset = 0): Promise<void> {
   const categoryKey = normalizeCategory(category);
-  const ads = await listPublishedAdsByCategory(env, categoryKey);
-  if (!ads.length) {
+  const ads = await listPublishedAdsByCategoryPage(env, categoryKey, BOT_ADS_PAGE_SIZE + 1, offset);
+  const hasMore = ads.length > BOT_ADS_PAGE_SIZE;
+  const page = ads.slice(0, BOT_ADS_PAGE_SIZE);
+
+  if (!page.length) {
     await sendUserBotMessage(
-      env,
-      chatId,
-      `${categoryLabel(categoryKey)}\n\nОбъявлений пока нет`,
+      env, chatId,
+      offset === 0 ? `${categoryLabel(categoryKey)}\n\nОбъявлений пока нет` : 'Больше объявлений нет',
       userBotSectionsMarkup()
     );
     return;
   }
 
-  await sendUserBotMessage(
-    env,
-    chatId,
-    `${categoryLabel(categoryKey)}\n\nВыбери объявление`,
-    userBotSectionAdsMarkup(categoryKey, ads.map((ad) => ({ id: ad.id, title: ad.title })))
+  if (offset === 0) await sendUserBotMessage(env, chatId, categoryLabel(categoryKey));
+
+  await sendUserBotAdCards(
+    env, chatId, page, hasMore,
+    `${USER_BOT_SECTION_MORE_PREFIX}${categoryKey}:${offset + BOT_ADS_PAGE_SIZE}`,
+    [{ text: 'К разделам', callback_data: USER_BOT_MENU_SECTIONS }]
   );
 }
 
@@ -3725,6 +3840,31 @@ async function listPublishedAdsByCategory(env: Env, category: string): Promise<A
   return result.results;
 }
 
+async function listPublishedAdsByCategoryPage(env: Env, category: string, limit: number, offset: number): Promise<AdCardRow[]> {
+  const result = await env.DB.prepare(
+    `
+      SELECT ads.id,
+             ads.title,
+             ads.category,
+             ads.image_key,
+             ads.created_at,
+             users.login AS author_login,
+             users.avatar_key AS author_avatar_key
+      FROM ads
+      LEFT JOIN users ON users.id = ads.owner_user_id
+      WHERE ads.status = 'published'
+        AND ads.deleted_at IS NULL
+        AND ads.category = ?
+      ORDER BY ads.created_at DESC, ads.id DESC
+      LIMIT ? OFFSET ?
+    `
+  )
+    .bind(category, limit, offset)
+    .all<AdCardRow>();
+
+  return result.results;
+}
+
 async function searchPublishedAds(env: Env, query: string): Promise<AdCardRow[]> {
   const trimmed = query.trim();
   if (!trimmed) {
@@ -3753,6 +3893,38 @@ async function searchPublishedAds(env: Env, query: string): Promise<AdCardRow[]>
     `
   )
     .bind(pattern, pattern)
+    .all<AdCardRow>();
+
+  return result.results;
+}
+
+async function searchPublishedAdsPage(env: Env, query: string, limit: number, offset: number): Promise<AdCardRow[]> {
+  const trimmed = query.trim();
+  if (!trimmed) return [];
+
+  const pattern = `%${escapeLikePattern(trimmed.toLowerCase())}%`;
+  const result = await env.DB.prepare(
+    `
+      SELECT ads.id,
+             ads.title,
+             ads.category,
+             ads.image_key,
+             ads.created_at,
+             users.login AS author_login,
+             users.avatar_key AS author_avatar_key
+      FROM ads
+      LEFT JOIN users ON users.id = ads.owner_user_id
+      WHERE ads.status = 'published'
+        AND ads.deleted_at IS NULL
+        AND (
+          LOWER(ads.title) LIKE ? ESCAPE '\\'
+          OR LOWER(ads.body) LIKE ? ESCAPE '\\'
+        )
+      ORDER BY ads.created_at DESC, ads.id DESC
+      LIMIT ? OFFSET ?
+    `
+  )
+    .bind(pattern, pattern, limit, offset)
     .all<AdCardRow>();
 
   return result.results;
@@ -4934,6 +5106,33 @@ async function handleUserBotCallback(
 
     await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
     await sendUserBotSectionAdDetail(env, chatId, category, adId);
+    return json({ ok: true });
+  }
+
+  if (data.startsWith(USER_BOT_SECTION_MORE_PREFIX)) {
+    const payload = data.slice(USER_BOT_SECTION_MORE_PREFIX.length);
+    const lastColon = payload.lastIndexOf(':');
+    const category = payload.slice(0, lastColon);
+    const offset = Number(payload.slice(lastColon + 1));
+    if (!category || !Number.isInteger(offset) || offset < 0) {
+      await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
+      return json({ ok: true });
+    }
+    await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
+    await sendUserBotSectionAds(env, chatId, category, offset);
+    return json({ ok: true });
+  }
+
+  if (data.startsWith(USER_BOT_SEARCH_MORE_PREFIX)) {
+    const offset = Number(data.slice(USER_BOT_SEARCH_MORE_PREFIX.length));
+    const draft = await getBotDraft(env, telegramUserId);
+    const query = draft?.action === 'search' && draft.title ? draft.title : '';
+    await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
+    if (!query) {
+      await sendUserBotSearchPrompt(env, chatId);
+      return json({ ok: true });
+    }
+    await sendUserBotSearchResults(env, chatId, query, Number.isInteger(offset) && offset >= 0 ? offset : 0);
     return json({ ok: true });
   }
 
