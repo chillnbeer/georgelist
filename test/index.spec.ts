@@ -831,6 +831,10 @@ describe('Ad images', () => {
 
     expect(createResponse.status).toBe(303);
 
+    const adminCreatePhotoCall = telegramFetchCalls.filter((call) => call.url.includes('/sendPhoto')).at(-1);
+    expect(adminCreatePhotoCall).toBeTruthy();
+    expect(String((adminCreatePhotoCall?.body as { caption?: string }).caption || '')).toContain('Type: New');
+
     const createdAd = await env.DB.prepare(
       `
         SELECT id, image_key, image_mime_type, image_updated_at
@@ -892,6 +896,39 @@ describe('Ad images', () => {
     expect(mediaStore.has(firstKey)).toBe(false);
     expect(editedAd?.image_key ? mediaStore.has(editedAd.image_key) : false).toBe(true);
 
+    const myPageResponse = await runRequest(
+      new Request('http://example.com/my', {
+        headers: {
+          Cookie: 'session=img-session',
+        },
+      })
+    );
+    expect(myPageResponse.status).toBe(200);
+    const myPageHtml = await myPageResponse.text();
+    expect(myPageHtml).toContain(`/media/${encodeURIComponent(editedAd?.image_key || '')}`);
+
+    await env.DB.prepare(
+      `
+        UPDATE users
+        SET role = 'admin',
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `
+    )
+      .bind(70)
+      .run();
+
+    const adminPageResponse = await runRequest(
+      new Request('http://example.com/admin?section=ads&page=1', {
+        headers: {
+          Cookie: 'session=img-session',
+        },
+      })
+    );
+    expect(adminPageResponse.status).toBe(200);
+    const adminPageHtml = await adminPageResponse.text();
+    expect(adminPageHtml).toContain(`/media/${encodeURIComponent(editedAd?.image_key || '')}`);
+
     const publishResponse = await sendTelegramWebhook({
       callback_query: {
         id: 'cb-publish-image',
@@ -903,6 +940,23 @@ describe('Ad images', () => {
       },
     });
     expect(publishResponse.status).toBe(200);
+
+    const adminDetailResponse = await sendTelegramWebhook({
+      callback_query: {
+        id: 'cb-admin-image',
+        data: `admin:ad:1:${createdAd?.id}`,
+        message: {
+          chat: { id: TELEGRAM_ADMIN_CHAT_ID },
+          message_id: 301,
+        },
+      },
+    });
+    expect(adminDetailResponse.status).toBe(200);
+
+    const adminPhotoCall = telegramFetchCalls
+      .filter((call) => call.url.includes('/sendPhoto'))
+      .find((call) => String((call.body as { caption?: string }).caption || '').includes('Owner: 70'));
+    expect(adminPhotoCall).toBeTruthy();
 
     const publishedAdPageResponse = await runRequest(new Request(`http://example.com/ad/${createdAd?.id}`));
     expect(publishedAdPageResponse.status).toBe(200);

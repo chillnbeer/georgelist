@@ -84,6 +84,7 @@ type TelegramCallbackQuery = {
     };
     message_id: number;
     text?: string;
+    caption?: string;
   };
 };
 
@@ -329,6 +330,18 @@ async function deleteAdImage(env: Env, key: string | null | undefined): Promise<
 
 function isFileLike(value: FormDataEntryValue | null): value is File {
   return typeof value !== 'string' && value instanceof File;
+}
+
+function truncateText(value: string, maxLength: number): string {
+  if (value.length <= maxLength) {
+    return value;
+  }
+
+  if (maxLength <= 1) {
+    return '…';
+  }
+
+  return `${value.slice(0, maxLength - 1)}…`;
 }
 
 function bytesToBase64(bytes: Uint8Array): string {
@@ -832,6 +845,13 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
     .ad-content {
       min-width: 0;
     }
+    .ad-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+      margin-top: 8px;
+    }
     .title {
       margin: 0 0 2px;
       font-size: 16px;
@@ -876,6 +896,8 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       justify-content: center;
       color: #777;
       font-size: 13px;
+      text-align: center;
+      padding: 10px;
     }
     .empty {
       color: #666;
@@ -938,7 +960,7 @@ function renderSearchForm(query = ''): string {
 
 function renderAdImage(env: Env, key: string | null, alt: string, className: string): string {
   if (!key) {
-    return `<div class="${className} ${className}-placeholder"><span>Без фото</span></div>`;
+    return `<div class="${className} ${className}-placeholder"><span>Нет фото</span></div>`;
   }
 
   return `<div class="${className}"><img src="${htmlEscape(buildMediaUrl(env, key))}" alt="${htmlEscape(alt)}" loading="lazy" /></div>`;
@@ -1128,20 +1150,22 @@ ${nav()}
   );
 }
 
-function renderMyPage(currentUser: CurrentUser, ads: AdRow[]): Response {
+function renderMyPage(env: Env, currentUser: CurrentUser, ads: AdRow[]): Response {
   const items = ads.length
     ? ads
         .map((ad) => {
           const category = ad.category ? `${htmlEscape(categoryLabel(ad.category))} · ` : '';
           return `<div class="ad">
-  <div class="title">${htmlEscape(ad.title)}</div>
-  <div class="meta">${htmlEscape(ad.status)} · ${category}${htmlEscape(ad.created_at)}</div>
-  <div class="body">${htmlEscape(ad.body)}</div>
-  <div>
-    <a href="/my/edit/${ad.id}">Редактировать</a>
-    <form method="post" action="/my/delete/${ad.id}" style="display:inline">
-      <button class="link-button" type="submit">Удалить</button>
-    </form>
+  ${renderAdImage(env, ad.image_key, ad.title, 'ad-image')}
+  <div class="ad-content">
+    <div class="title"><a href="/my/edit/${ad.id}">${htmlEscape(ad.title)}</a></div>
+    <div class="meta">${htmlEscape(ad.status)} · ${category}${htmlEscape(ad.created_at)}</div>
+    <div class="ad-actions">
+      <a href="/my/edit/${ad.id}">Редактировать</a>
+      <form method="post" action="/my/delete/${ad.id}" style="display:inline">
+        <button class="link-button" type="submit">Удалить</button>
+      </form>
+    </div>
   </div>
 </div>`;
         })
@@ -1398,6 +1422,7 @@ ${nav(currentUser)}
 }
 
 function renderAdminAdsSection(
+  env: Env,
   currentUser: CurrentUser,
   ads: AdRow[],
   pagination: AdminPagination,
@@ -1409,14 +1434,16 @@ function renderAdminAdsSection(
           const owner = ad.owner_user_id ? `owner #${ad.owner_user_id}` : 'no owner';
           const category = ad.category ? `${htmlEscape(categoryLabel(ad.category))} · ` : '';
           return `<div class="ad">
-  <div class="title">#${ad.id} · ${htmlEscape(ad.title)}</div>
-  <div class="meta">${htmlEscape(ad.status)} · ${category}${htmlEscape(owner)} · ${htmlEscape(ad.created_at)}</div>
-  <div class="body">${htmlEscape(ad.body)}</div>
-  <div>
-    <a href="${htmlEscape(buildAdminActionUrl(`/admin/edit/${ad.id}`, 'ads', pagination.page))}">Редактировать</a>
-    <form method="post" action="${htmlEscape(buildAdminActionUrl(`/admin/delete/${ad.id}`, 'ads', pagination.page))}" style="display:inline">
-      <button class="link-button" type="submit">Удалить</button>
-    </form>
+  ${renderAdImage(env, ad.image_key, ad.title, 'ad-image')}
+  <div class="ad-content">
+    <div class="title"><a href="${htmlEscape(buildAdminActionUrl(`/admin/edit/${ad.id}`, 'ads', pagination.page))}">#${ad.id} · ${htmlEscape(ad.title)}</a></div>
+    <div class="meta">${htmlEscape(ad.status)} · ${category}${htmlEscape(owner)} · ${htmlEscape(ad.created_at)}</div>
+    <div class="ad-actions">
+      <a href="${htmlEscape(buildAdminActionUrl(`/admin/edit/${ad.id}`, 'ads', pagination.page))}">Редактировать</a>
+      <form method="post" action="${htmlEscape(buildAdminActionUrl(`/admin/delete/${ad.id}`, 'ads', pagination.page))}" style="display:inline">
+        <button class="link-button" type="submit">Удалить</button>
+      </form>
+    </div>
   </div>
 </div>`;
         })
@@ -1935,7 +1962,7 @@ function buildUserBotPublicAdText(
     `Категория: ${categoryLabel(ad.category)}`,
     ad.author_login ? `Автор: ${ad.author_login}` : null,
     'Текст:',
-    ad.body.length > 700 ? `${ad.body.slice(0, 699)}…` : ad.body,
+    truncateText(ad.body, 700),
     `Дата: ${ad.created_at}`,
   ]
     .filter((line): line is string => line !== null)
@@ -2174,8 +2201,11 @@ async function sendAdminBotUsers(env: Env, chatId: number, page = 1): Promise<vo
   );
 }
 
-async function sendAdminBotAdDetail(env: Env, chatId: number, ad: AdRow, page: number): Promise<void> {
-  const text = [
+function buildAdminBotAdText(
+  ad: Pick<AdRow, 'id' | 'title' | 'body' | 'category' | 'status' | 'owner_user_id' | 'deleted_at' | 'image_key'>,
+  bodyLimit = 2800
+): string {
+  return [
     `#${ad.id}`,
     `Заголовок: ${ad.title}`,
     `Категория: ${categoryLabel(ad.category)}`,
@@ -2183,10 +2213,28 @@ async function sendAdminBotAdDetail(env: Env, chatId: number, ad: AdRow, page: n
     `Owner: ${ad.owner_user_id ?? 'none'}`,
     `Удалено: ${ad.deleted_at ? 'yes' : 'no'}`,
     'Текст:',
-    ad.body,
+    truncateText(ad.body, bodyLimit),
   ].join('\n');
+}
 
-  await sendAdminBotMessage(env, chatId, text, adminBotAdMarkup(ad.id, page));
+async function sendAdminBotAdDetail(env: Env, chatId: number, ad: AdRow, page: number): Promise<void> {
+  const replyMarkup = adminBotAdMarkup(ad.id, page);
+
+  if (ad.image_key) {
+    const response = await telegramApi(env, 'sendPhoto', {
+      chat_id: chatId,
+      photo: buildMediaUrl(env, ad.image_key),
+      caption: buildAdminBotAdText(ad, 700),
+      reply_markup: replyMarkup,
+    });
+
+    if (!response.ok) {
+      throw new Error(`Telegram sendPhoto failed with status ${response.status}`);
+    }
+    return;
+  }
+
+  await sendAdminBotMessage(env, chatId, buildAdminBotAdText(ad), replyMarkup);
 }
 
 async function sendAdminBotUserDetail(env: Env, chatId: number, user: AdminUserRow, page: number): Promise<void> {
@@ -2408,11 +2456,7 @@ async function sendUserBotMyAds(env: Env, telegramUserId: string, chatId: number
   await sendUserBotMessage(env, chatId, 'Твои объявления:', userBotMyAdsMarkup(result.results));
 }
 
-async function getOwnedAdForTelegramUser(
-  env: Env,
-  telegramUserId: string,
-  adId: number
-): Promise<{ id: number; title: string; category: string | null; status: string; created_at: string; body: string } | null> {
+async function getOwnedAdForTelegramUser(env: Env, telegramUserId: string, adId: number): Promise<AdRow | null> {
   const identity = await findTelegramIdentity(env, telegramUserId);
   if (!identity) {
     return null;
@@ -2429,7 +2473,7 @@ async function getOwnedAdForTelegramUser(
     `
   )
     .bind(adId, identity.user_id)
-    .first<{ id: number; title: string; category: string | null; status: string; created_at: string; body: string }>();
+    .first<AdRow>();
 
   return result ?? null;
 }
@@ -2473,16 +2517,36 @@ async function startUserBotEditFlow(
   return true;
 }
 
-async function sendUserBotSingleAd(env: Env, chatId: number, ad: { id: number; title: string; category: string | null; status: string; created_at: string; body: string }): Promise<void> {
-  const text = [
+function buildUserBotOwnedAdText(
+  ad: Pick<AdRow, 'id' | 'title' | 'body' | 'category' | 'status' | 'created_at'>
+): string {
+  return [
     `#${ad.id}`,
     `Заголовок: ${ad.title}`,
     `Категория: ${categoryLabel(ad.category)}`,
     `Статус: ${ad.status}`,
     `Дата: ${ad.created_at}`,
     'Текст:',
-    ad.body,
+    truncateText(ad.body, 700),
   ].join('\n');
+}
+
+async function sendUserBotSingleAd(env: Env, chatId: number, ad: AdRow): Promise<void> {
+  const text = buildUserBotOwnedAdText(ad);
+
+  if (ad.image_key) {
+    const response = await userBotApi(env, 'sendPhoto', {
+      chat_id: chatId,
+      photo: buildMediaUrl(env, ad.image_key),
+      caption: text,
+      reply_markup: userBotSingleAdMarkup(ad.id),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Telegram sendPhoto failed with status ${response.status}`);
+    }
+    return;
+  }
 
   await sendUserBotMessage(env, chatId, text, userBotSingleAdMarkup(ad.id));
 }
@@ -2490,7 +2554,8 @@ async function sendUserBotSingleAd(env: Env, chatId: number, ad: { id: number; t
 function buildTelegramAdText(
   ad: Pick<AdRow, 'id' | 'title' | 'body' | 'category'>,
   statusLabel: string,
-  itemKind: 'New' | 'Edited'
+  itemKind: 'New' | 'Edited',
+  bodyLimit = 2800
 ): string {
   return [
     `Type: ${itemKind}`,
@@ -2499,30 +2564,39 @@ function buildTelegramAdText(
     `Title: ${ad.title}`,
     `Category: ${categoryLabel(ad.category)}`,
     'Text:',
-    ad.body.length > 2800 ? `${ad.body.slice(0, 2799)}…` : ad.body,
+    truncateText(ad.body, bodyLimit),
   ].join('\n');
 }
 
 async function sendTelegramMessage(
   env: Env,
-  ad: Pick<AdRow, 'id' | 'title' | 'body' | 'category'>,
+  ad: Pick<AdRow, 'id' | 'title' | 'body' | 'category' | 'image_key'>,
   itemKind: 'New' | 'Edited' = 'New'
 ): Promise<void> {
-  const response = await telegramApi(env, 'sendMessage', {
-    chat_id: env.TELEGRAM_ADMIN_ID,
-    text: buildTelegramAdText(ad, 'Pending', itemKind),
-    reply_markup: {
-      inline_keyboard: [
-        [
-          { text: 'Publish', callback_data: `publish:${ad.id}` },
-          { text: 'Reject', callback_data: `reject:${ad.id}` },
-        ],
+  const replyMarkup = {
+    inline_keyboard: [
+      [
+        { text: 'Publish', callback_data: `publish:${ad.id}` },
+        { text: 'Reject', callback_data: `reject:${ad.id}` },
       ],
-    },
-  });
+    ],
+  };
+
+  const response = ad.image_key
+    ? await telegramApi(env, 'sendPhoto', {
+        chat_id: env.TELEGRAM_ADMIN_ID,
+        photo: buildMediaUrl(env, ad.image_key),
+        caption: buildTelegramAdText(ad, 'Pending', itemKind, 700),
+        reply_markup: replyMarkup,
+      })
+    : await telegramApi(env, 'sendMessage', {
+        chat_id: env.TELEGRAM_ADMIN_ID,
+        text: buildTelegramAdText(ad, 'Pending', itemKind),
+        reply_markup: replyMarkup,
+      });
 
   if (!response.ok) {
-    throw new Error(`Telegram sendMessage failed with status ${response.status}`);
+    throw new Error(`Telegram send${ad.image_key ? 'Photo' : 'Message'} failed with status ${response.status}`);
   }
 }
 
@@ -2537,18 +2611,24 @@ async function editTelegramMessage(
   env: Env,
   chatId: number,
   messageId: number,
-  ad: Pick<AdRow, 'id' | 'title' | 'body' | 'category'>,
+  ad: Pick<AdRow, 'id' | 'title' | 'body' | 'category' | 'image_key'>,
   statusLabel: string,
   itemKind: 'New' | 'Edited' = 'New'
 ): Promise<void> {
-  const response = await telegramApi(env, 'editMessageText', {
-    chat_id: chatId,
-    message_id: messageId,
-    text: buildTelegramAdText(ad, statusLabel, itemKind),
-  });
+  const response = ad.image_key
+    ? await telegramApi(env, 'editMessageCaption', {
+        chat_id: chatId,
+        message_id: messageId,
+        caption: buildTelegramAdText(ad, statusLabel, itemKind, 700),
+      })
+    : await telegramApi(env, 'editMessageText', {
+        chat_id: chatId,
+        message_id: messageId,
+        text: buildTelegramAdText(ad, statusLabel, itemKind),
+      });
 
   if (!response.ok) {
-    throw new Error(`Telegram editMessageText failed with status ${response.status}`);
+    throw new Error(`Telegram editMessage${ad.image_key ? 'Caption' : 'Text'} failed with status ${response.status}`);
   }
 }
 
@@ -2639,6 +2719,8 @@ async function handleAdminBotText(
     return;
   }
 
+  const originalAd = await getAdById(env, draft.ad_id);
+
   if (draft.step === 'title') {
     const title = text.trim();
     if (!title) {
@@ -2697,6 +2779,7 @@ async function handleAdminBotText(
         title: draft.title || '',
         body: draft.body || '',
         category,
+        image_key: originalAd?.image_key ?? null,
       }, 'Edited').catch((error: unknown) => {
         console.error('Telegram notification failed after admin edit', error);
       })
@@ -2749,7 +2832,7 @@ async function handleAdminBotCallback(
     }
 
     const itemKind: 'New' | 'Edited' =
-      callbackQuery.message.text?.startsWith('Type: Edited') ? 'Edited' : 'New';
+      (callbackQuery.message.caption || callbackQuery.message.text || '').startsWith('Type: Edited') ? 'Edited' : 'New';
 
     try {
       await editTelegramMessage(
@@ -3123,6 +3206,7 @@ async function createAd(
       title,
       body,
       category,
+      image_key: imageUpload?.key ?? null,
     }, 'New').catch((error: unknown) => {
       console.error('Telegram notification failed', error);
     })
@@ -3287,6 +3371,7 @@ async function handleMyEditPost(
       title,
       body,
       category: normalizedCategory,
+      image_key: newImage?.key ?? ad.image_key,
     }, 'Edited').catch((error: unknown) => {
       console.error('Telegram notification failed after edit', error);
     })
@@ -3915,6 +4000,7 @@ async function handleUserBotDraftAction(
             title: draft.title,
             body: draft.body,
             category,
+            image_key: ad.image_key,
           }, 'Edited').catch((error: unknown) => {
             console.error('Telegram notification failed', error);
           })
@@ -4509,7 +4595,7 @@ async function handleMyGet(request: Request, env: Env): Promise<Response> {
     return redirect('/login?next=/my');
   }
 
-  return renderMyPage(currentUser, await listMyAds(env, currentUser.id));
+  return renderMyPage(env, currentUser, await listMyAds(env, currentUser.id));
 }
 
 async function handleMyDeleteRoute(request: Request, env: Env, id: string): Promise<Response> {
@@ -4572,7 +4658,7 @@ async function handleAdminGet(request: Request, env: Env): Promise<Response> {
   const totalAds = await countAllAds(env);
   const totalPages = Math.max(1, Math.ceil(totalAds / ADMIN_PAGE_SIZE));
   const page = Math.min(requestedPage, totalPages);
-  return renderAdminAdsSection(currentUser, await listAdminAdsPage(env, page), { page, totalPages }, message);
+  return renderAdminAdsSection(env, currentUser, await listAdminAdsPage(env, page), { page, totalPages }, message);
 }
 
 async function handleAdminDeleteRoute(request: Request, env: Env, id: string): Promise<Response> {
