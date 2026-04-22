@@ -3,6 +3,9 @@ CREATE TABLE IF NOT EXISTS users (
   login TEXT NOT NULL UNIQUE,
   display_name TEXT,
   role TEXT NOT NULL DEFAULT 'user',
+  avatar_key TEXT,
+  avatar_mime_type TEXT,
+  avatar_updated_at TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );

@@ -32,6 +32,9 @@ type CurrentUser = {
   display_name: string | null;
   email: string | null;
   role: string;
+  avatar_key: string | null;
+  avatar_mime_type: string | null;
+  avatar_updated_at: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -61,6 +64,27 @@ type PublicAdCardRow = {
   image_updated_at: string | null;
   created_at: string;
   author_login: string | null;
+  author_avatar_key: string | null;
+};
+
+type AdCardRow = {
+  id: number;
+  title: string;
+  category: string | null;
+  image_key: string | null;
+  created_at: string;
+  author_login: string | null;
+  author_avatar_key: string | null;
+};
+
+type PublicUserRow = {
+  id: number;
+  login: string;
+  display_name: string | null;
+  avatar_key: string | null;
+  avatar_mime_type: string | null;
+  avatar_updated_at: string | null;
+  created_at: string;
 };
 
 type AdForm = {
@@ -187,9 +211,11 @@ const AD_SELECT_COLUMNS = `
   updated_at,
   deleted_at
 `;
+const USER_AVATAR_MAX_BYTES = 5 * 1024 * 1024;
 let cachedTelegramUserBotUsername: string | null = null;
 let cachedTelegramUserBotUsernamePromise: Promise<string | null> | null = null;
 let cachedEnsureAdImageColumnsPromise: Promise<void> | null = null;
+let cachedEnsureUserAvatarColumnsPromise: Promise<void> | null = null;
 const NOOP_EXECUTION_CONTEXT = {
   waitUntil(): void {},
   passThroughOnException(): void {},
@@ -308,6 +334,25 @@ async function readImageUpload(file: File | null): Promise<AdImageUpload | null>
   };
 }
 
+async function readAvatarUpload(file: File | null): Promise<AdImageUpload | null> {
+  if (!file || file.size <= 0) {
+    return null;
+  }
+
+  if (file.size > USER_AVATAR_MAX_BYTES) {
+    throw new Error('Avatar is too large');
+  }
+
+  if (!isImageMimeType(file.type)) {
+    throw new Error('Invalid avatar type');
+  }
+
+  return {
+    key: `avatars/${crypto.randomUUID()}.${getImageExtension(file.type)}`,
+    mimeType: file.type,
+  };
+}
+
 async function putAdImage(env: Env, upload: AdImageUpload, file: File): Promise<void> {
   if (!env.MEDIA_BUCKET) {
     throw new Error('Media bucket is not configured');
@@ -326,6 +371,10 @@ async function deleteAdImage(env: Env, key: string | null | undefined): Promise<
   }
 
   await env.MEDIA_BUCKET.delete(key);
+}
+
+async function deleteAvatarImage(env: Env, key: string | null | undefined): Promise<void> {
+  await deleteAdImage(env, key);
 }
 
 function isFileLike(value: FormDataEntryValue | null): value is File {
@@ -753,7 +802,7 @@ function nav(currentUser: CurrentUser | null = null): string {
   return `<div class="nav"><a href="/">главная</a> <a href="/new">создать объявление</a> ${authLinks}</div>`;
 }
 
-function shell(title: string, body: string, currentUser: CurrentUser | null = null): Response {
+function shell(title: string, body: string, currentUser: CurrentUser | null = null, status = 200): Response {
   return html(`<!doctype html>
 <html lang="ru">
 <head>
@@ -835,15 +884,22 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
     }
     .section { margin: 0 0 14px; }
     .ad {
-      display: grid;
-      grid-template-columns: 120px 1fr;
-      gap: 12px;
-      margin: 0 0 12px;
-      padding: 0 0 12px;
-      border-bottom: 1px solid #eee;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      padding: 10px;
+      border: 1px solid #eee;
+      border-radius: 14px;
+      background: #fff;
+      box-shadow: 0 1px 0 rgba(0, 0, 0, 0.02);
     }
     .ad-content {
       min-width: 0;
+    }
+    .ad-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 16px;
     }
     .ad-actions {
       display: flex;
@@ -880,6 +936,64 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       max-width: 420px;
       margin: 0 0 12px;
     }
+    .avatar {
+      width: 112px;
+      aspect-ratio: 1 / 1;
+      border-radius: 50%;
+      overflow: hidden;
+      border: 1px solid #ddd;
+      background: #f2f2f2;
+      box-sizing: border-box;
+    }
+    .avatar img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+    .avatar-placeholder {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #777;
+      font-size: 13px;
+      text-align: center;
+      padding: 10px;
+    }
+    .avatar-mini {
+      width: 24px;
+      aspect-ratio: 1 / 1;
+      border-radius: 50%;
+      overflow: hidden;
+      border: 1px solid #ddd;
+      background: #f2f2f2;
+      display: inline-block;
+      flex: 0 0 auto;
+    }
+    .avatar-mini img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+    .avatar-mini-placeholder {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #777;
+      font-size: 9px;
+      text-align: center;
+      padding: 0;
+      line-height: 1;
+    }
+    .ad-author {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 6px;
+      color: #444;
+      font-size: 12px;
+    }
     .ad-image img,
     .ad-page-image img,
     .image-preview img {
@@ -890,7 +1004,8 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
     }
     .ad-image-placeholder,
     .ad-page-image-placeholder,
-    .image-preview-placeholder {
+    .image-preview-placeholder,
+    .avatar-placeholder {
       display: flex;
       align-items: center;
       justify-content: center;
@@ -898,6 +1013,12 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       font-size: 13px;
       text-align: center;
       padding: 10px;
+    }
+    .not-found-links {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 14px;
     }
     .empty {
       color: #666;
@@ -913,9 +1034,6 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       margin: 10px 0;
     }
     @media (max-width: 640px) {
-      .ad {
-        grid-template-columns: 1fr;
-      }
       .ad-page-image,
       .image-preview {
         max-width: 100%;
@@ -926,26 +1044,30 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
 <body>
   ${body}
 </body>
-</html>`);
+</html>`, status);
 }
 
-function renderAdList(env: Env, ads: AdRow[]): string {
+function renderAdList(env: Env, ads: AdCardRow[]): string {
   if (!ads.length) {
     return '<div class="empty">Пока нет объявлений.</div>';
   }
 
-  return ads
+  return `<div class="ad-grid">${ads
     .map((ad) => {
       const category = ad.category ? `${htmlEscape(categoryLabel(ad.category))} · ` : '';
+      const author = ad.author_login
+        ? `<div class="ad-author">${renderAvatar(env, ad.author_avatar_key, ad.author_login, 'avatar-mini')}<a href="/u/${encodeURIComponent(ad.author_login)}">${htmlEscape(ad.author_login)}</a></div>`
+        : '';
       return `<div class="ad">
   ${renderAdImage(env, ad.image_key, ad.title, 'ad-image')}
   <div class="ad-content">
     <div class="title"><a href="/ad/${ad.id}">${htmlEscape(ad.title)}</a></div>
     <div class="meta">${category}${htmlEscape(ad.created_at)}</div>
+    ${author}
   </div>
 </div>`;
     })
-    .join('');
+    .join('')}</div>`;
 }
 
 function renderSearchForm(query = ''): string {
@@ -964,6 +1086,33 @@ function renderAdImage(env: Env, key: string | null, alt: string, className: str
   }
 
   return `<div class="${className}"><img src="${htmlEscape(buildMediaUrl(env, key))}" alt="${htmlEscape(alt)}" loading="lazy" /></div>`;
+}
+
+function renderAvatar(env: Env, key: string | null, alt: string, className = 'avatar'): string {
+  if (!key) {
+    return `<div class="${className} ${className}-placeholder"><span>${htmlEscape(alt.slice(0, 2).toUpperCase() || 'UA')}</span></div>`;
+  }
+
+  return `<div class="${className}"><img src="${htmlEscape(buildMediaUrl(env, key))}" alt="${htmlEscape(alt)}" loading="lazy" /></div>`;
+}
+
+function renderNotFoundPage(currentUser: CurrentUser | null = null): Response {
+  return shell(
+    'страница не найдена - жоржлист',
+    `<h1>жоржлист</h1>
+${nav(currentUser)}
+<div class="section">
+  <h2>страница не найдена</h2>
+  <p>такого объявления, пользователя или страницы здесь нет</p>
+  <div class="not-found-links">
+    <a href="/">на главную</a>
+    <a href="/category/misc">В разделы</a>
+    <a href="/new">подать объявление</a>
+  </div>
+  </div>`,
+    currentUser,
+    404
+  );
 }
 
 function renderHome(currentUser: CurrentUser | null = null): Response {
@@ -1044,10 +1193,10 @@ ${nav(currentUser)}
   );
 }
 
-function renderCategoryPage(env: Env, slug: string, ads: AdRow[], currentUser: CurrentUser | null = null): Response {
+function renderCategoryPage(env: Env, slug: string, ads: AdCardRow[], currentUser: CurrentUser | null = null): Response {
   const category = CATEGORIES.find((item) => item.slug === slug);
   if (!category) {
-    return text('Not Found', 404);
+    return renderNotFoundPage(currentUser);
   }
 
   return shell(
@@ -1064,7 +1213,10 @@ ${renderSearchForm()}`
 
 function renderPublicAdPage(env: Env, ad: PublicAdCardRow, currentUser: CurrentUser | null = null): Response {
   const authorLine = ad.author_login
-    ? `<p><strong>Автор:</strong> ${htmlEscape(ad.author_login)}</p>`
+    ? `<p><strong>Автор:</strong> <a href="/u/${encodeURIComponent(ad.author_login)}">${htmlEscape(ad.author_login)}</a></p>`
+    : '';
+  const authorAvatar = ad.author_avatar_key
+    ? `<div style="margin: 0 0 12px;">${renderAvatar(env, ad.author_avatar_key, ad.author_login || 'Автор')}</div>`
     : '';
 
   return shell(
@@ -1074,6 +1226,7 @@ ${nav(currentUser)}
 <div class="section">
   ${renderAdImage(env, ad.image_key, ad.title, 'ad-page-image')}
   <h2>${htmlEscape(ad.title)}</h2>
+  ${authorAvatar}
   <p><strong>Категория:</strong> ${htmlEscape(categoryLabel(ad.category))}</p>
   ${authorLine}
   <p><strong>Текст:</strong></p>
@@ -1081,6 +1234,25 @@ ${nav(currentUser)}
   <p><strong>Дата:</strong> ${htmlEscape(ad.created_at)}</p>
 </div>
 ${renderSearchForm()}`
+  );
+}
+
+function renderPublicUserPage(env: Env, user: PublicUserRow, ads: AdCardRow[], currentUser: CurrentUser | null = null): Response {
+  return shell(
+    `${user.login} - жоржлист`,
+    `<h1>жоржлист</h1>
+${nav(currentUser)}
+<div class="section">
+  ${renderAvatar(env, user.avatar_key, user.login)}
+  <h2>${htmlEscape(user.login)}</h2>
+  <p>${user.display_name ? htmlEscape(user.display_name) : 'Публичный профиль'}</p>
+  <p>${htmlEscape(String(ads.length))} объявлений</p>
+</div>
+<div class="section">
+  ${renderAdList(env, ads)}
+</div>
+${renderSearchForm()}`,
+    currentUser
   );
 }
 
@@ -1179,7 +1351,7 @@ ${nav(currentUser)}
 <div class="section">
   <h2>Мои объявления</h2>
   <p>Пользователь: ${htmlEscape(currentUser.login)}</p>
-  ${items}
+  <div class="ad-grid">${items}</div>
 </div>`,
     currentUser
   );
@@ -1460,7 +1632,7 @@ ${nav(currentUser)}
   ${message ? `<p class="empty">${htmlEscape(message)}</p>` : ''}
   <p>Пользователь: ${htmlEscape(currentUser.login)}</p>
   <h3>Объявления</h3>
-  ${items}
+  <div class="ad-grid">${items}</div>
   ${renderAdminPagination('ads', pagination)}
 </div>`,
     currentUser
@@ -1484,6 +1656,7 @@ async function listAllUsers(env: Env): Promise<AdminUserRow[]> {
 }
 
 function renderSettingsPage(
+  env: Env,
   currentUser: CurrentUser,
   telegramIdentity: UserIdentityRow | null,
   message: string | null = null,
@@ -1504,6 +1677,18 @@ function renderSettingsPage(
   const adminPanelBlock = currentUser.role === 'admin'
     ? '<p><a href="/admin">Открыть админку</a></p>'
     : '<p class="empty">Админка доступна только аккаунтам с ролью admin.</p>';
+  const avatarBlock = `
+  <div class="section">
+    <h3>Аватар</h3>
+    ${renderAvatar(env, currentUser.avatar_key, currentUser.login)}
+    <form method="post" action="/settings/avatar" enctype="multipart/form-data">
+      <label for="avatar">Загрузить или заменить</label>
+      <input id="avatar" name="avatar" type="file" accept="image/*" />
+      <button type="submit">Сохранить аватар</button>
+    </form>
+    ${currentUser.avatar_key ? `<form method="post" action="/settings/avatar/delete"><button type="submit">Удалить аватар</button></form>` : '<p class="empty">Аватар не загружен.</p>'}
+  <p><a href="/u/${encodeURIComponent(currentUser.login)}">Открыть публичный профиль</a></p>
+  </div>`;
 
   return shell(
     'настройки - жоржлист',
@@ -1524,6 +1709,7 @@ ${nav(currentUser)}
   <p>${telegramStatus}</p>
   ${statusMessage ? `<p class="empty">${htmlEscape(statusMessage)}</p>` : ''}
   ${telegramAction}
+  ${avatarBlock}
   ${adminPanelBlock}
 </div>`,
     currentUser
@@ -1602,6 +1788,9 @@ async function findUserByLogin(env: Env, login: string): Promise<CurrentUser | n
              users.display_name,
              (SELECT email FROM user_identities WHERE user_id = users.id AND provider = 'email' LIMIT 1) AS email,
              users.role,
+             users.avatar_key,
+             users.avatar_mime_type,
+             users.avatar_updated_at,
              users.created_at,
              users.updated_at
       FROM users
@@ -1623,6 +1812,9 @@ async function findUserById(env: Env, userId: number): Promise<CurrentUser | nul
              users.display_name,
              (SELECT email FROM user_identities WHERE user_id = users.id AND provider = 'email' LIMIT 1) AS email,
              users.role,
+             users.avatar_key,
+             users.avatar_mime_type,
+             users.avatar_updated_at,
              users.created_at,
              users.updated_at
       FROM users
@@ -1650,6 +1842,9 @@ async function getCurrentUser(request: Request, env: Env): Promise<CurrentUser |
              users.display_name,
              (SELECT email FROM user_identities WHERE user_id = users.id AND provider = 'email' LIMIT 1) AS email,
              users.role,
+             users.avatar_key,
+             users.avatar_mime_type,
+             users.avatar_updated_at,
              users.created_at,
              users.updated_at
       FROM sessions
@@ -3018,7 +3213,8 @@ async function getPublishedAdCardById(env: Env, id: number, category: string | n
              ads.image_mime_type,
              ads.image_updated_at,
              ads.created_at,
-             users.login AS author_login
+             users.login AS author_login,
+             users.avatar_key AS author_avatar_key
       FROM ads
       LEFT JOIN users ON users.id = ads.owner_user_id
       WHERE ads.id = ?
@@ -3039,6 +3235,51 @@ async function getPublishedAdCardById(env: Env, id: number, category: string | n
     : await statement.bind(id).first<PublicAdCardRow>();
 
   return result ?? null;
+}
+
+async function getPublicUserByLogin(env: Env, login: string): Promise<PublicUserRow | null> {
+  const result = await env.DB.prepare(
+    `
+      SELECT id,
+             login,
+             display_name,
+             avatar_key,
+             avatar_mime_type,
+             avatar_updated_at,
+             created_at
+      FROM users
+      WHERE login = ?
+      LIMIT 1
+    `
+  )
+    .bind(login)
+    .first<PublicUserRow>();
+
+  return result ?? null;
+}
+
+async function listPublishedAdsByUser(env: Env, userId: number): Promise<AdCardRow[]> {
+  const result = await env.DB.prepare(
+    `
+      SELECT ads.id,
+             ads.title,
+             ads.category,
+             ads.image_key,
+             ads.created_at,
+             users.login AS author_login,
+             users.avatar_key AS author_avatar_key
+      FROM ads
+      INNER JOIN users ON users.id = ads.owner_user_id
+      WHERE owner_user_id = ?
+        AND status = 'published'
+        AND deleted_at IS NULL
+      ORDER BY ads.created_at DESC, ads.id DESC
+    `
+  )
+    .bind(userId)
+    .all<AdCardRow>();
+
+  return result.results ?? [];
 }
 
 async function listPublishedAds(env: Env): Promise<AdRow[]> {
@@ -3068,24 +3309,31 @@ async function listAllAds(env: Env): Promise<AdRow[]> {
   return result.results;
 }
 
-async function listPublishedAdsByCategory(env: Env, category: string): Promise<AdRow[]> {
+async function listPublishedAdsByCategory(env: Env, category: string): Promise<AdCardRow[]> {
   const result = await env.DB.prepare(
     `
-      SELECT ${AD_SELECT_COLUMNS}
+      SELECT ads.id,
+             ads.title,
+             ads.category,
+             ads.image_key,
+             ads.created_at,
+             users.login AS author_login,
+             users.avatar_key AS author_avatar_key
       FROM ads
-      WHERE status = 'published'
-        AND deleted_at IS NULL
-        AND category = ?
-      ORDER BY created_at DESC, id DESC
+      LEFT JOIN users ON users.id = ads.owner_user_id
+      WHERE ads.status = 'published'
+        AND ads.deleted_at IS NULL
+        AND ads.category = ?
+      ORDER BY ads.created_at DESC, ads.id DESC
     `
   )
     .bind(category)
-    .all<AdRow>();
+    .all<AdCardRow>();
 
   return result.results;
 }
 
-async function searchPublishedAds(env: Env, query: string): Promise<AdRow[]> {
+async function searchPublishedAds(env: Env, query: string): Promise<AdCardRow[]> {
   const trimmed = query.trim();
   if (!trimmed) {
     return [];
@@ -3094,19 +3342,26 @@ async function searchPublishedAds(env: Env, query: string): Promise<AdRow[]> {
   const pattern = `%${escapeLikePattern(trimmed.toLowerCase())}%`;
   const result = await env.DB.prepare(
     `
-      SELECT ${AD_SELECT_COLUMNS}
+      SELECT ads.id,
+             ads.title,
+             ads.category,
+             ads.image_key,
+             ads.created_at,
+             users.login AS author_login,
+             users.avatar_key AS author_avatar_key
       FROM ads
-      WHERE status = 'published'
-        AND deleted_at IS NULL
+      LEFT JOIN users ON users.id = ads.owner_user_id
+      WHERE ads.status = 'published'
+        AND ads.deleted_at IS NULL
         AND (
-          LOWER(title) LIKE ? ESCAPE '\\'
-          OR LOWER(body) LIKE ? ESCAPE '\\'
+          LOWER(ads.title) LIKE ? ESCAPE '\\'
+          OR LOWER(ads.body) LIKE ? ESCAPE '\\'
         )
-      ORDER BY created_at DESC, id DESC
+      ORDER BY ads.created_at DESC, ads.id DESC
     `
   )
     .bind(pattern, pattern)
-    .all<AdRow>();
+    .all<AdCardRow>();
 
   return result.results;
 }
@@ -3150,6 +3405,33 @@ async function ensureAdImageColumns(env: Env): Promise<void> {
   });
 
   return cachedEnsureAdImageColumnsPromise;
+}
+
+async function ensureUserAvatarColumns(env: Env): Promise<void> {
+  if (cachedEnsureUserAvatarColumnsPromise) {
+    return cachedEnsureUserAvatarColumnsPromise;
+  }
+
+  cachedEnsureUserAvatarColumnsPromise = (async () => {
+    const tableInfo = await env.DB.prepare(`PRAGMA table_info(users)`).all<{ name: string }>();
+    const columnNames = new Set((tableInfo.results || []).map((row) => row.name));
+
+    if (!columnNames.has('avatar_key')) {
+      await env.DB.prepare(`ALTER TABLE users ADD COLUMN avatar_key TEXT`).run();
+    }
+
+    if (!columnNames.has('avatar_mime_type')) {
+      await env.DB.prepare(`ALTER TABLE users ADD COLUMN avatar_mime_type TEXT`).run();
+    }
+
+    if (!columnNames.has('avatar_updated_at')) {
+      await env.DB.prepare(`ALTER TABLE users ADD COLUMN avatar_updated_at TEXT`).run();
+    }
+  })().finally(() => {
+    cachedEnsureUserAvatarColumnsPromise = null;
+  });
+
+  return cachedEnsureUserAvatarColumnsPromise;
 }
 
 async function createAd(
@@ -4491,7 +4773,7 @@ async function handleRegisterPost(request: Request, env: Env): Promise<Response>
   if (existingIdentity && !existingIdentity.password_hash) {
     const currentUser = await env.DB.prepare(
       `
-        SELECT users.id, users.login, users.display_name, users.role, users.created_at, users.updated_at
+        SELECT users.id, users.login, users.display_name, users.role, users.avatar_key, users.avatar_mime_type, users.avatar_updated_at, users.created_at, users.updated_at
         FROM users
         INNER JOIN user_identities ON user_identities.user_id = users.id
         WHERE user_identities.id = ?
@@ -4930,7 +5212,7 @@ async function handleSettingsGet(request: Request, env: Env): Promise<Response> 
     pendingTelegramAuth = null;
   }
 
-  return renderSettingsPage(currentUser, telegramIdentity, message, pendingTelegramAuth);
+  return renderSettingsPage(env, currentUser, telegramIdentity, message, pendingTelegramAuth);
 }
 
 async function handleSettingsLinkTelegramGet(request: Request, env: Env): Promise<Response> {
@@ -5059,21 +5341,21 @@ async function handleSettingsPost(request: Request, env: Env): Promise<Response>
   const telegramIdentity = await findTelegramIdentityByUserId(env, currentUser.id);
 
   if (!isValidLogin(login)) {
-    return renderSettingsPage(currentUser, telegramIdentity, 'Login должен быть 3-32 символа: латиница, цифры, _');
+    return renderSettingsPage(env, currentUser, telegramIdentity, 'Login должен быть 3-32 символа: латиница, цифры, _');
   }
 
   if (!isValidEmail(email)) {
-    return renderSettingsPage(currentUser, telegramIdentity, 'Введите корректный email');
+    return renderSettingsPage(env, currentUser, telegramIdentity, 'Введите корректный email');
   }
 
   const existingLoginUser = await findUserByLogin(env, login);
   if (existingLoginUser && existingLoginUser.id !== currentUser.id) {
-    return renderSettingsPage(currentUser, telegramIdentity, 'Этот login уже занят');
+    return renderSettingsPage(env, currentUser, telegramIdentity, 'Этот login уже занят');
   }
 
   const existingEmailIdentity = await findEmailIdentity(env, email);
   if (existingEmailIdentity && existingEmailIdentity.user_id !== currentUser.id) {
-    return renderSettingsPage(currentUser, telegramIdentity, 'Этот email уже зарегистрирован');
+    return renderSettingsPage(env, currentUser, telegramIdentity, 'Этот email уже зарегистрирован');
   }
 
   const currentEmailIdentity = await findEmailIdentityByUserId(env, currentUser.id);
@@ -5123,7 +5405,84 @@ async function handleSettingsPost(request: Request, env: Env): Promise<Response>
     email,
   };
 
-  return renderSettingsPage(refreshedUser, updatedTelegramIdentity, 'Настройки сохранены');
+  return renderSettingsPage(env, refreshedUser, updatedTelegramIdentity, 'Настройки сохранены');
+}
+
+async function handleSettingsAvatarPost(request: Request, env: Env): Promise<Response> {
+  const currentUser = await getCurrentUser(request, env);
+  if (!currentUser) {
+    return redirect('/login?next=/settings');
+  }
+
+  const form = await request.formData();
+  const avatarValue = form.get('avatar');
+  const avatar = isFileLike(avatarValue) && avatarValue.size > 0 ? avatarValue : null;
+  if (!avatar) {
+    return redirectWithMessage('/settings', 'Выбери файл с аватаркой');
+  }
+
+  const existingAvatarKey = currentUser.avatar_key;
+  let newAvatar: AdImageUpload | null = null;
+
+  try {
+    newAvatar = await readAvatarUpload(avatar);
+    if (!newAvatar) {
+      return redirectWithMessage('/settings', 'Выбери файл с аватаркой');
+    }
+
+    await putAdImage(env, newAvatar, avatar);
+    await env.DB.prepare(
+      `
+        UPDATE users
+        SET avatar_key = ?,
+            avatar_mime_type = ?,
+            avatar_updated_at = CURRENT_TIMESTAMP,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `
+    )
+      .bind(newAvatar.key, newAvatar.mimeType, currentUser.id)
+      .run();
+
+    if (existingAvatarKey) {
+      await deleteAvatarImage(env, existingAvatarKey);
+    }
+  } catch (error) {
+    if (newAvatar) {
+      await deleteAvatarImage(env, newAvatar.key);
+    }
+    console.error('Failed to update avatar', error);
+    return renderSettingsPage(env, currentUser, await findTelegramIdentityByUserId(env, currentUser.id), 'Не удалось сохранить аватар');
+  }
+
+  return redirectWithMessage('/settings', 'Аватар обновлён');
+}
+
+async function handleSettingsAvatarDeletePost(request: Request, env: Env): Promise<Response> {
+  const currentUser = await getCurrentUser(request, env);
+  if (!currentUser) {
+    return redirect('/login?next=/settings');
+  }
+
+  const existingAvatarKey = currentUser.avatar_key;
+  await env.DB.prepare(
+    `
+      UPDATE users
+      SET avatar_key = NULL,
+          avatar_mime_type = NULL,
+          avatar_updated_at = NULL,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `
+  )
+    .bind(currentUser.id)
+    .run();
+
+  if (existingAvatarKey) {
+    await deleteAvatarImage(env, existingAvatarKey);
+  }
+
+  return redirectWithMessage('/settings', 'Аватар удалён');
 }
 
 async function handleTelegramAuthCallback(request: Request, env: Env): Promise<Response> {
@@ -5255,7 +5614,7 @@ async function handleNewPost(request: Request, env: Env, ctx: ExecutionContext):
 async function handleCategoryGet(env: Env, slug: string, currentUser: CurrentUser | null = null): Promise<Response> {
   const category = CATEGORIES.find((item) => item.slug === slug);
   if (!category) {
-    return text('Not Found', 404);
+    return renderNotFoundPage(currentUser);
   }
 
   return renderCategoryPage(env, slug, await listPublishedAdsByCategory(env, slug), currentUser);
@@ -5269,10 +5628,26 @@ async function handleAdGet(env: Env, id: string, currentUser: CurrentUser | null
 
   const ad = await getPublishedAdCardById(env, numericId);
   if (!ad) {
-    return text('Not Found', 404);
+    return renderNotFoundPage(currentUser);
   }
 
   return renderPublicAdPage(env, ad, currentUser);
+}
+
+async function handlePublicUserGet(env: Env, login: string, currentUser: CurrentUser | null = null): Promise<Response> {
+  let decodedLogin = login;
+  try {
+    decodedLogin = decodeURIComponent(login);
+  } catch {
+    return text('Not Found', 404);
+  }
+
+  const user = await getPublicUserByLogin(env, decodedLogin);
+  if (!user) {
+    return renderNotFoundPage(currentUser);
+  }
+
+  return renderPublicUserPage(env, user, await listPublishedAdsByUser(env, user.id), currentUser);
 }
 
 async function handleMediaGet(env: Env, key: string): Promise<Response> {
@@ -5299,6 +5674,7 @@ async function handleMediaGet(env: Env, key: string): Promise<Response> {
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     await ensureAdImageColumns(env);
+    await ensureUserAvatarColumns(env);
     const url = new URL(request.url);
     const path = url.pathname;
 
@@ -5341,6 +5717,16 @@ export default {
     if (path === '/settings') {
       if (request.method === 'GET') return handleSettingsGet(request, env);
       if (request.method === 'POST') return handleSettingsPost(request, env);
+      return text('Method Not Allowed', 405);
+    }
+
+    if (path === '/settings/avatar') {
+      if (request.method === 'POST') return handleSettingsAvatarPost(request, env);
+      return text('Method Not Allowed', 405);
+    }
+
+    if (path === '/settings/avatar/delete') {
+      if (request.method === 'POST') return handleSettingsAvatarDeletePost(request, env);
       return text('Method Not Allowed', 405);
     }
 
@@ -5401,6 +5787,10 @@ export default {
       return handleAdGet(env, path.slice('/ad/'.length), await getCurrentUser(request, env));
     }
 
+    if (path.startsWith('/u/') && request.method === 'GET') {
+      return handlePublicUserGet(env, path.slice('/u/'.length), await getCurrentUser(request, env));
+    }
+
     if (path.startsWith('/media/') && request.method === 'GET') {
       return handleMediaGet(env, path.slice('/media/'.length));
     }
@@ -5444,6 +5834,6 @@ export default {
       }
     }
 
-    return text('Not Found', 404);
+    return renderNotFoundPage(await getCurrentUser(request, env));
   },
 } satisfies ExportedHandler<Env>;

@@ -50,6 +50,9 @@ const SCHEMA_STATEMENTS = [
       login TEXT NOT NULL UNIQUE,
       display_name TEXT,
       role TEXT NOT NULL DEFAULT 'user',
+      avatar_key TEXT,
+      avatar_mime_type TEXT,
+      avatar_updated_at TEXT,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )
@@ -761,6 +764,7 @@ describe('Public ad page', () => {
     const categoryResponse = await runRequest(new Request('http://example.com/category/jobs'));
     expect(categoryResponse.status).toBe(200);
     const categoryHtml = await categoryResponse.text();
+    expect(categoryHtml).toContain('ad-grid');
     expect(categoryHtml).toContain(`/ad/${publishedAdId}`);
     expect(categoryHtml).not.toContain(`/ad/${pendingAdId}`);
     expect(categoryHtml).toContain('/search');
@@ -770,7 +774,8 @@ describe('Public ad page', () => {
     const adHtml = await adResponse.text();
     expect(adHtml).toContain('Public ad');
     expect(adHtml).toContain('<strong>Категория:</strong> Работа');
-    expect(adHtml).toContain('<strong>Автор:</strong> poster');
+    expect(adHtml).toContain('<strong>Автор:</strong>');
+    expect(adHtml).toContain('/u/poster');
     expect(adHtml).toContain('Public body');
     expect(adHtml).toContain('Дата:');
     expect(adHtml).toContain('/search');
@@ -790,6 +795,27 @@ describe('Public ad page', () => {
 
     const deletedResponse = await runRequest(new Request(`http://example.com/ad/${publishedAdId}`));
     expect(deletedResponse.status).toBe(404);
+  });
+});
+
+describe('Not found page', () => {
+  it('shows the shared 404 template for unknown public pages', async () => {
+    const missingCategoryResponse = await runRequest(new Request('http://example.com/category/unknown'));
+    expect(missingCategoryResponse.status).toBe(404);
+    const missingCategoryHtml = await missingCategoryResponse.text();
+    expect(missingCategoryHtml).toContain('страница не найдена');
+    expect(missingCategoryHtml).toContain('/category/misc');
+    expect(missingCategoryHtml).toContain('/new');
+
+    const missingUserResponse = await runRequest(new Request('http://example.com/u/missing-user'));
+    expect(missingUserResponse.status).toBe(404);
+    const missingUserHtml = await missingUserResponse.text();
+    expect(missingUserHtml).toContain('такого объявления, пользователя или страницы здесь нет');
+
+    const missingRouteResponse = await runRequest(new Request('http://example.com/does-not-exist'));
+    expect(missingRouteResponse.status).toBe(404);
+    const missingRouteHtml = await missingRouteResponse.text();
+    expect(missingRouteHtml).toContain('страница не найдена');
   });
 });
 
@@ -985,6 +1011,148 @@ describe('Ad images', () => {
   });
 });
 
+describe('User avatars and public profiles', () => {
+  it('uploads, replaces and deletes an avatar, and shows a public profile page', async () => {
+    await seedUser({
+      id: 80,
+      login: 'profileuser',
+      email: 'profileuser@example.com',
+      sessionToken: 'profile-session',
+    });
+
+    const publishedAdId = await insertAd({
+      title: 'Profile ad',
+      body: 'Profile body',
+      category: 'misc',
+      ownerUserId: 80,
+      status: 'published',
+    });
+
+    const profileResponse = await runRequest(new Request('http://example.com/u/profileuser'));
+    expect(profileResponse.status).toBe(200);
+    const profileHtml = await profileResponse.text();
+    expect(profileHtml).toContain('profileuser');
+    expect(profileHtml).toContain('ad-grid');
+    expect(profileHtml).toContain('Profile ad');
+
+    const firstAvatar = new File(
+      [Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7QwGQAAAAASUVORK5CYII=', 'base64')],
+      'avatar.png',
+      { type: 'image/png' }
+    );
+    const avatarForm = new FormData();
+    avatarForm.set('avatar', firstAvatar);
+
+    const avatarUploadResponse = await runRequest(
+      new Request('http://example.com/settings/avatar', {
+        method: 'POST',
+        headers: {
+          Cookie: 'session=profile-session',
+        },
+        body: avatarForm,
+      })
+    );
+    expect(avatarUploadResponse.status).toBe(303);
+
+    const avatarRow = await env.DB.prepare(
+      `
+        SELECT avatar_key, avatar_mime_type, avatar_updated_at
+        FROM users
+        WHERE id = ?
+        LIMIT 1
+      `
+    )
+      .bind(80)
+      .first<{ avatar_key: string | null; avatar_mime_type: string | null; avatar_updated_at: string | null }>();
+
+    expect(avatarRow?.avatar_key).toBeTruthy();
+    expect(avatarRow?.avatar_mime_type).toBe('image/png');
+    expect(avatarRow?.avatar_updated_at).toBeTruthy();
+
+    const settingsResponse = await runRequest(
+      new Request('http://example.com/settings', {
+        headers: {
+          Cookie: 'session=profile-session',
+        },
+      })
+    );
+    expect(settingsResponse.status).toBe(200);
+    const settingsHtml = await settingsResponse.text();
+    expect(settingsHtml).toContain(`/media/${encodeURIComponent(avatarRow?.avatar_key || '')}`);
+    expect(settingsHtml).toContain('/settings/avatar/delete');
+
+    const secondAvatar = new File(
+      [Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8AABQMBgYQnD7QAAAAASUVORK5CYII=', 'base64')],
+      'avatar2.png',
+      { type: 'image/png' }
+    );
+    const replaceForm = new FormData();
+    replaceForm.set('avatar', secondAvatar);
+
+    const replaceResponse = await runRequest(
+      new Request('http://example.com/settings/avatar', {
+        method: 'POST',
+        headers: {
+          Cookie: 'session=profile-session',
+        },
+        body: replaceForm,
+      })
+    );
+    expect(replaceResponse.status).toBe(303);
+
+    const replacedRow = await env.DB.prepare(
+      `
+        SELECT avatar_key, avatar_mime_type, avatar_updated_at
+        FROM users
+        WHERE id = ?
+        LIMIT 1
+      `
+    )
+      .bind(80)
+      .first<{ avatar_key: string | null; avatar_mime_type: string | null; avatar_updated_at: string | null }>();
+
+    expect(replacedRow?.avatar_key).toBeTruthy();
+    expect(replacedRow?.avatar_key).not.toBe(avatarRow?.avatar_key);
+    expect(replacedRow?.avatar_mime_type).toBe('image/png');
+    expect(mediaStore.has(avatarRow?.avatar_key || '')).toBe(false);
+    expect(replacedRow?.avatar_key ? mediaStore.has(replacedRow.avatar_key) : false).toBe(true);
+
+    const profileWithAvatarResponse = await runRequest(new Request('http://example.com/u/profileuser'));
+    expect(profileWithAvatarResponse.status).toBe(200);
+    const profileWithAvatarHtml = await profileWithAvatarResponse.text();
+    expect(profileWithAvatarHtml).toContain(`/media/${encodeURIComponent(replacedRow?.avatar_key || '')}`);
+    expect(profileWithAvatarHtml).toContain('ad-grid');
+
+    const deleteAvatarResponse = await runRequest(
+      new Request('http://example.com/settings/avatar/delete', {
+        method: 'POST',
+        headers: {
+          Cookie: 'session=profile-session',
+        },
+      })
+    );
+    expect(deleteAvatarResponse.status).toBe(303);
+
+    const deletedRow = await env.DB.prepare(
+      `
+        SELECT avatar_key, avatar_mime_type, avatar_updated_at
+        FROM users
+        WHERE id = ?
+        LIMIT 1
+      `
+    )
+      .bind(80)
+      .first<{ avatar_key: string | null; avatar_mime_type: string | null; avatar_updated_at: string | null }>();
+
+    expect(deletedRow?.avatar_key).toBeNull();
+    expect(deletedRow?.avatar_mime_type).toBeNull();
+    expect(deletedRow?.avatar_updated_at).toBeNull();
+    expect(replacedRow?.avatar_key ? mediaStore.has(replacedRow.avatar_key) : false).toBe(false);
+
+    expect(publishedAdId).toBeGreaterThan(0);
+  });
+});
+
 describe('Site search', () => {
   it('returns only published ads that match title or body', async () => {
     await seedUser({
@@ -1013,6 +1181,7 @@ describe('Site search', () => {
     expect(response.status).toBe(200);
     const html = await response.text();
     expect(html).toContain('Поиск');
+    expect(html).toContain('ad-grid');
     expect(html).toContain('Needle in title');
     expect(html).toContain(`/ad/${matchedAdId}`);
     expect(html).not.toContain('Hidden needle');
