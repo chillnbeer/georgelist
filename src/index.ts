@@ -1,9 +1,20 @@
 const CATEGORIES = [
-  { slug: 'things', label: 'Вещи' },
+  { slug: 'sale', label: 'Продаю' },
+  { slug: 'wanted', label: 'Куплю' },
+  { slug: 'free', label: 'Отдаю даром' },
+  { slug: 'auto', label: 'Авто' },
+  { slug: 'electronics', label: 'Электроника' },
+  { slug: 'clothes', label: 'Одежда' },
+  { slug: 'furniture', label: 'Мебель' },
+  { slug: 'housing', label: 'Жильё' },
+  { slug: 'rent', label: 'Аренда' },
   { slug: 'jobs', label: 'Работа' },
   { slug: 'services', label: 'Услуги' },
-  { slug: 'rent', label: 'Аренда' },
+  { slug: 'education', label: 'Обучение' },
+  { slug: 'pets', label: 'Животные' },
+  { slug: 'hobby', label: 'Хобби' },
   { slug: 'creative', label: 'Творчество' },
+  { slug: 'things', label: 'Вещи' },
   { slug: 'misc', label: 'Разное' },
 ] as const;
 
@@ -43,6 +54,7 @@ type AdRow = {
   id: number;
   title: string;
   body: string;
+  contact: string | null;
   category: string | null;
   owner_user_id: number | null;
   status: string;
@@ -58,6 +70,7 @@ type PublicAdCardRow = {
   id: number;
   title: string;
   body: string;
+  contact: string | null;
   category: string | null;
   image_key: string | null;
   image_mime_type: string | null;
@@ -90,6 +103,7 @@ type PublicUserRow = {
 type AdForm = {
   title: string;
   body: string;
+  contact: string;
   category: string;
   image: File | null;
 };
@@ -214,6 +228,7 @@ const AD_SELECT_COLUMNS = `
   id,
   title,
   body,
+  contact,
   category,
   owner_user_id,
   status,
@@ -229,6 +244,7 @@ let cachedTelegramUserBotUsername: string | null = null;
 let cachedTelegramUserBotUsernamePromise: Promise<string | null> | null = null;
 let cachedEnsureAdImageColumnsPromise: Promise<void> | null = null;
 let cachedEnsureUserAvatarColumnsPromise: Promise<void> | null = null;
+let cachedEnsureAdContactColumnPromise: Promise<void> | null = null;
 const NOOP_EXECUTION_CONTEXT = {
   waitUntil(): void {},
   passThroughOnException(): void {},
@@ -1177,6 +1193,13 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       margin-bottom: 16px;
       font-size: 15px;
     }
+    .ad-page-contact {
+      margin-bottom: 12px;
+      padding: 10px 12px;
+      background: #f0f4ff;
+      border-radius: 4px;
+      font-size: 14px;
+    }
     .ad-page-footer {
       color: #999;
       font-size: 12px;
@@ -1338,6 +1361,9 @@ ${nav(currentUser)}
     <label for="body">Текст</label>
     <textarea id="body" name="body" required maxlength="5000"></textarea>
 
+    <label for="contact">Как связаться</label>
+    <input id="contact" name="contact" type="text" maxlength="300" placeholder="Телефон, Telegram, email..." />
+
     <button type="submit">Опубликовать</button>
   </form>
 </div>`
@@ -1386,6 +1412,7 @@ ${nav(currentUser)}
       ${author}
       <div class="ad-page-badges"><span class="badge">${htmlEscape(categoryLabel(ad.category))}</span></div>
       <div class="ad-page-body">${htmlEscape(ad.body)}</div>
+      ${ad.contact ? `<div class="ad-page-contact"><strong>Контакты:</strong> ${htmlEscape(ad.contact)}</div>` : ''}
       <div class="ad-page-footer">${htmlEscape(ad.created_at)}</div>
     </div>
   </div>
@@ -1574,6 +1601,9 @@ ${nav(currentUser)}
 
     <label for="body">Текст</label>
     <textarea id="body" name="body" required maxlength="5000">${htmlEscape(ad.body)}</textarea>
+
+    <label for="contact">Как связаться</label>
+    <input id="contact" name="contact" type="text" maxlength="300" placeholder="Телефон, Telegram, email..." value="${htmlEscape(ad.contact || '')}" />
 
     <button type="submit">Сохранить</button>
   </form>
@@ -2450,7 +2480,7 @@ async function sendUserBotSearchResults(env: Env, chatId: number, query: string,
 }
 
 function buildUserBotPublicAdText(
-  ad: Pick<PublicAdCardRow, 'title' | 'body' | 'category' | 'author_login' | 'created_at'>
+  ad: Pick<PublicAdCardRow, 'title' | 'body' | 'contact' | 'category' | 'author_login' | 'created_at'>
 ): string {
   return [
     `Заголовок: ${ad.title}`,
@@ -2458,6 +2488,7 @@ function buildUserBotPublicAdText(
     ad.author_login ? `Автор: ${ad.author_login}` : null,
     'Текст:',
     truncateText(ad.body, 700),
+    ad.contact ? `Контакты: ${ad.contact}` : null,
     `Дата: ${ad.created_at}`,
   ]
     .filter((line): line is string => line !== null)
@@ -2700,7 +2731,7 @@ async function sendAdminBotUsers(env: Env, chatId: number, page = 1): Promise<vo
 }
 
 function buildAdminBotAdText(
-  ad: Pick<AdRow, 'id' | 'title' | 'body' | 'category' | 'status' | 'owner_user_id' | 'deleted_at' | 'image_key'>,
+  ad: Pick<AdRow, 'id' | 'title' | 'body' | 'contact' | 'category' | 'status' | 'owner_user_id' | 'deleted_at' | 'image_key'>,
   bodyLimit = 2800
 ): string {
   return [
@@ -2712,7 +2743,8 @@ function buildAdminBotAdText(
     `Удалено: ${ad.deleted_at ? 'yes' : 'no'}`,
     'Текст:',
     truncateText(ad.body, bodyLimit),
-  ].join('\n');
+    ad.contact ? `Контакты: ${ad.contact}` : null,
+  ].filter((line): line is string => line !== null).join('\n');
 }
 
 async function sendAdminBotAdDetail(env: Env, chatId: number, ad: AdRow, page: number): Promise<void> {
@@ -3715,6 +3747,7 @@ async function getPublishedAdCardById(env: Env, id: number, category: string | n
       SELECT ads.id,
              ads.title,
              ads.body,
+             ads.contact,
              ads.category,
              ads.image_key,
              ads.image_mime_type,
@@ -3998,11 +4031,30 @@ async function ensureUserAvatarColumns(env: Env): Promise<void> {
   return cachedEnsureUserAvatarColumnsPromise;
 }
 
+async function ensureAdContactColumn(env: Env): Promise<void> {
+  if (cachedEnsureAdContactColumnPromise) {
+    return cachedEnsureAdContactColumnPromise;
+  }
+
+  cachedEnsureAdContactColumnPromise = (async () => {
+    const tableInfo = await env.DB.prepare(`PRAGMA table_info(ads)`).all<{ name: string }>();
+    const columnNames = new Set((tableInfo.results || []).map((row) => row.name));
+    if (!columnNames.has('contact')) {
+      await env.DB.prepare(`ALTER TABLE ads ADD COLUMN contact TEXT`).run();
+    }
+  })().finally(() => {
+    cachedEnsureAdContactColumnPromise = null;
+  });
+
+  return cachedEnsureAdContactColumnPromise;
+}
+
 async function createAd(
   env: Env,
   ctx: ExecutionContext,
   title: string,
   body: string,
+  contact: string | null | undefined,
   categoryInput: string | null | undefined,
   ownerUserId: number | null = null,
   image: File | null = null
@@ -4024,6 +4076,7 @@ async function createAd(
         INSERT INTO ads (
           title,
           body,
+          contact,
           category,
           status,
           owner_user_id,
@@ -4034,10 +4087,10 @@ async function createAd(
           created_at,
           updated_at
         )
-        VALUES (?, ?, ?, 'pending', ?, ?, ?, CASE WHEN ? IS NOT NULL THEN CURRENT_TIMESTAMP ELSE NULL END, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, CASE WHEN ? IS NOT NULL THEN CURRENT_TIMESTAMP ELSE NULL END, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
       `
     )
-      .bind(title, body, category, ownerUserId, imageUpload?.key || null, imageUpload?.mimeType || null, imageUpload?.key || null)
+      .bind(title, body, contact || null, category, ownerUserId, imageUpload?.key || null, imageUpload?.mimeType || null, imageUpload?.key || null)
       .run();
   } catch (error) {
     if (imageUpload) {
@@ -4087,6 +4140,7 @@ async function parseAdForm(request: Request): Promise<AdForm> {
   return {
     title: String(form.get('title') || '').trim(),
     body: String(form.get('body') || '').trim(),
+    contact: String(form.get('contact') || '').trim(),
     category: String(form.get('category') || '').trim(),
     image: isFileLike(imageValue) && imageValue.size > 0 ? imageValue : null,
   };
@@ -4150,7 +4204,7 @@ async function handleMyEditPost(
     return text('Not Found', 404);
   }
 
-  const { title, body, category, image } = await parseAdForm(request);
+  const { title, body, contact, category, image } = await parseAdForm(request);
 
   if (!title || !body) {
     return renderEditPage(env, currentUser, ad, 'Заполни заголовок и текст');
@@ -4173,6 +4227,7 @@ async function handleMyEditPost(
         UPDATE ads
         SET title = ?,
             body = ?,
+            contact = ?,
             category = ?,
             status = ?,
             image_key = ?,
@@ -4190,6 +4245,7 @@ async function handleMyEditPost(
       .bind(
         title,
         body,
+        contact || null,
         normalizedCategory,
         nextStatus,
         newImage?.key ?? ad.image_key,
@@ -4791,7 +4847,7 @@ async function handleUserBotDraftAction(
       }
 
       try {
-        await createAd(env, ctx, draft.title, draft.body, draft.category, identity.user_id);
+        await createAd(env, ctx, draft.title, draft.body, null, draft.category, identity.user_id);
         await clearBotDraft(env, telegramUserId);
         await sendUserBotMenu(env, chatId, 'Объявление отправлено на модерацию');
       } catch (error) {
@@ -5767,7 +5823,7 @@ async function handleAdminEditRoute(request: Request, env: Env, ctx: ExecutionCo
     return text('Method Not Allowed', 405);
   }
 
-  const { title, body, category, image } = await parseAdForm(request);
+  const { title, body, contact, category, image } = await parseAdForm(request);
 
   if (!title || !body) {
     return renderEditPage(env, currentUser, ad, 'Заполни заголовок и текст', buildAdminActionUrl(`/admin/edit/${ad.id}`, 'ads', page));
@@ -5789,6 +5845,7 @@ async function handleAdminEditRoute(request: Request, env: Env, ctx: ExecutionCo
         UPDATE ads
         SET title = ?,
             body = ?,
+            contact = ?,
             category = ?,
             image_key = ?,
             image_mime_type = ?,
@@ -5804,6 +5861,7 @@ async function handleAdminEditRoute(request: Request, env: Env, ctx: ExecutionCo
       .bind(
         title,
         body,
+        contact || null,
         normalizedCategory,
         newImage?.key ?? ad.image_key,
         newImage?.mimeType ?? ad.image_mime_type,
@@ -6299,7 +6357,7 @@ async function handleApiAdsPost(request: Request, env: Env, ctx: ExecutionContex
     return json({ error: 'title and body are required' }, { status: 400 });
   }
 
-  const ad = await createAd(env, ctx, title, body, category, null);
+  const ad = await createAd(env, ctx, title, body, null, category, null);
   return json(
     {
       ok: true,
@@ -6326,14 +6384,14 @@ async function handleNewPost(request: Request, env: Env, ctx: ExecutionContext):
     return redirect('/login?next=/new');
   }
 
-  const { title, body, category, image } = await parseAdForm(request);
+  const { title, body, contact, category, image } = await parseAdForm(request);
 
   if (!title || !body) {
     return renderNewPage(currentUser, 'Заполни заголовок и текст');
   }
 
   try {
-    await createAd(env, ctx, title, body, category, currentUser.id, image);
+    await createAd(env, ctx, title, body, contact, category, currentUser.id, image);
   } catch (error) {
     console.error('Failed to create ad with image', error);
     return renderNewPage(currentUser, 'Не удалось загрузить картинку');
@@ -6405,6 +6463,7 @@ export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     await ensureAdImageColumns(env);
     await ensureUserAvatarColumns(env);
+    await ensureAdContactColumn(env);
     const url = new URL(request.url);
     const path = url.pathname;
 

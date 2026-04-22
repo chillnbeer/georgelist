@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS ads (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   title TEXT NOT NULL,
   body TEXT NOT NULL,
+  contact TEXT,
   category TEXT,
   status TEXT NOT NULL DEFAULT 'pending',
   owner_user_id INTEGER,
