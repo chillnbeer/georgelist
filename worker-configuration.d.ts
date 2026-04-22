@@ -7,6 +7,7 @@ declare namespace Cloudflare {
 	}
 	interface Env {
 		DB: D1Database;
+		MEDIA_BUCKET?: R2Bucket;
 		TELEGRAM_BOT_TOKEN: string;
 		TELEGRAM_ADMIN_ID: string;
 		USER_TELEGRAM_BOT_TOKEN?: string;

@@ -21,6 +21,12 @@
 			"database_name": "georgelist",
 			"database_id": "63d528f3-85e9-40c5-8891-fc045633fb50"
 		}
+	],
+	"r2_buckets": [
+		{
+			"binding": "MEDIA_BUCKET",
+			"bucket_name": "georgelist-media"
+		}
 	]
 	/**
 	 * Smart Placement

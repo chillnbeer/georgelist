@@ -15,6 +15,7 @@ const CATEGORY_LABELS = Object.fromEntries(
 
 type Env = {
   DB: D1Database;
+  MEDIA_BUCKET?: R2Bucket;
   TELEGRAM_BOT_TOKEN: string;
   TELEGRAM_ADMIN_ID: string;
   USER_TELEGRAM_BOT_TOKEN?: string;
@@ -42,6 +43,9 @@ type AdRow = {
   category: string | null;
   owner_user_id: number | null;
   status: string;
+  image_key: string | null;
+  image_mime_type: string | null;
+  image_updated_at: string | null;
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
@@ -52,6 +56,9 @@ type PublicAdCardRow = {
   title: string;
   body: string;
   category: string | null;
+  image_key: string | null;
+  image_mime_type: string | null;
+  image_updated_at: string | null;
   created_at: string;
   author_login: string | null;
 };
@@ -60,6 +67,12 @@ type AdForm = {
   title: string;
   body: string;
   category: string;
+  image: File | null;
+};
+
+type AdImageUpload = {
+  key: string;
+  mimeType: string;
 };
 
 type TelegramCallbackQuery = {
@@ -140,14 +153,18 @@ const TELEGRAM_AUTH_COOKIE_MAX_AGE_SECONDS = 60 * 10;
 const TELEGRAM_AUTH_MAX_AGE_SECONDS = 60 * 60 * 24;
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
+const AD_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
 const USER_BOT_MENU_CREATE = 'user:create';
 const USER_BOT_MENU_SECTIONS = 'user:sections';
+const USER_BOT_MENU_SEARCH = 'user:search';
 const USER_BOT_MENU_EDIT = 'user:edit';
 const USER_BOT_MENU_DELETE = 'user:delete';
 const USER_BOT_MENU_MY = 'user:my';
 const USER_BOT_MENU_MY_AD = 'user:myad:';
 const USER_BOT_SECTION_PREFIX = 'user:section:';
 const USER_BOT_SECTION_AD_PREFIX = 'user:sectionad:';
+const USER_BOT_SEARCH_RESULTS = 'user:search:results';
+const USER_BOT_SEARCH_AD_PREFIX = 'user:searchad:';
 const USER_BOT_DELETE_PREFIX = 'delete_';
 const USER_BOT_DRAFT_PREFIX = 'draft:';
 const USER_BOT_DRAFT_CANCEL = 'draft:confirm:cancel';
@@ -155,8 +172,23 @@ const USER_BOT_DRAFT_SEND = 'draft:confirm:send';
 const USER_BOT_EDIT_DRAFT_CANCEL = 'draft:edit:cancel';
 const USER_BOT_EDIT_DRAFT_SAVE = 'draft:edit:save';
 const ADMIN_BOT_MENU_HOME = 'admin:home';
+const AD_SELECT_COLUMNS = `
+  id,
+  title,
+  body,
+  category,
+  owner_user_id,
+  status,
+  image_key,
+  image_mime_type,
+  image_updated_at,
+  created_at,
+  updated_at,
+  deleted_at
+`;
 let cachedTelegramUserBotUsername: string | null = null;
 let cachedTelegramUserBotUsernamePromise: Promise<string | null> | null = null;
+let cachedEnsureAdImageColumnsPromise: Promise<void> | null = null;
 const NOOP_EXECUTION_CONTEXT = {
   waitUntil(): void {},
   passThroughOnException(): void {},
@@ -223,6 +255,80 @@ function categoryLabel(slug: string | null): string {
 function normalizeCategory(slug: string | null | undefined): CategorySlug {
   const value = (slug || '').trim() as CategorySlug;
   return CATEGORIES.some((category) => category.slug === value) ? value : 'misc';
+}
+
+function escapeLikePattern(value: string): string {
+  return value.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_');
+}
+
+function isImageMimeType(mimeType: string): boolean {
+  return mimeType.startsWith('image/');
+}
+
+function getImageExtension(mimeType: string): string {
+  switch (mimeType) {
+    case 'image/jpeg':
+      return 'jpg';
+    case 'image/png':
+      return 'png';
+    case 'image/webp':
+      return 'webp';
+    case 'image/gif':
+      return 'gif';
+    case 'image/avif':
+      return 'avif';
+    case 'image/svg+xml':
+      return 'svg';
+    default:
+      return 'bin';
+  }
+}
+
+function buildMediaUrl(env: Env, key: string): string {
+  return buildPublicSiteUrl(env, `/media/${encodeURIComponent(key)}`);
+}
+
+async function readImageUpload(file: File | null): Promise<AdImageUpload | null> {
+  if (!file || file.size <= 0) {
+    return null;
+  }
+
+  if (file.size > AD_IMAGE_MAX_BYTES) {
+    throw new Error('Image is too large');
+  }
+
+  if (!isImageMimeType(file.type)) {
+    throw new Error('Invalid image type');
+  }
+
+  return {
+    key: `ads/${crypto.randomUUID()}.${getImageExtension(file.type)}`,
+    mimeType: file.type,
+  };
+}
+
+async function putAdImage(env: Env, upload: AdImageUpload, file: File): Promise<void> {
+  if (!env.MEDIA_BUCKET) {
+    throw new Error('Media bucket is not configured');
+  }
+
+  await env.MEDIA_BUCKET.put(upload.key, await file.arrayBuffer(), {
+    httpMetadata: {
+      contentType: upload.mimeType,
+    },
+  });
+}
+
+async function deleteAdImage(env: Env, key: string | null | undefined): Promise<void> {
+  if (!key || !env.MEDIA_BUCKET) {
+    return;
+  }
+
+  await env.MEDIA_BUCKET.delete(key);
+}
+
+function isFileLike(value: FormDataEntryValue | null): value is File {
+  return typeof value !== 'string' && value instanceof File;
 }
 
 function bytesToBase64(bytes: Uint8Array): string {
@@ -631,7 +737,7 @@ function nav(currentUser: CurrentUser | null = null): string {
     ? `<a href="/my">мои объявления</a> <a href="/settings">настройки</a>${adminLink} <form method="post" action="/logout" style="display:inline"><button class="link-button" type="submit">выйти</button></form>`
     : `<a href="/login">войти</a> <a href="/register">зарегистрироваться</a>`;
 
-  return `<div class="nav"><a href="/">главная</a> <a href="/new">подать объявление</a> ${authLinks}</div>`;
+  return `<div class="nav"><a href="/">главная</a> <a href="/new">создать объявление</a> ${authLinks}</div>`;
 }
 
 function shell(title: string, body: string, currentUser: CurrentUser | null = null): Response {
@@ -716,9 +822,15 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
     }
     .section { margin: 0 0 14px; }
     .ad {
-      margin: 0 0 10px;
-      padding: 0 0 8px;
+      display: grid;
+      grid-template-columns: 120px 1fr;
+      gap: 12px;
+      margin: 0 0 12px;
+      padding: 0 0 12px;
       border-bottom: 1px solid #eee;
+    }
+    .ad-content {
+      min-width: 0;
     }
     .title {
       margin: 0 0 2px;
@@ -733,6 +845,38 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
     .body {
       white-space: pre-wrap;
     }
+    .ad-image,
+    .ad-page-image,
+    .image-preview {
+      width: 100%;
+      aspect-ratio: 1 / 1;
+      overflow: hidden;
+      background: #f2f2f2;
+      border: 1px solid #ddd;
+      box-sizing: border-box;
+    }
+    .ad-page-image,
+    .image-preview {
+      max-width: 420px;
+      margin: 0 0 12px;
+    }
+    .ad-image img,
+    .ad-page-image img,
+    .image-preview img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+    .ad-image-placeholder,
+    .ad-page-image-placeholder,
+    .image-preview-placeholder {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #777;
+      font-size: 13px;
+    }
     .empty {
       color: #666;
       font-style: italic;
@@ -746,6 +890,15 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       border-top: 1px solid #ddd;
       margin: 10px 0;
     }
+    @media (max-width: 640px) {
+      .ad {
+        grid-template-columns: 1fr;
+      }
+      .ad-page-image,
+      .image-preview {
+        max-width: 100%;
+      }
+    }
   </style>
 </head>
 <body>
@@ -754,7 +907,7 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
 </html>`);
 }
 
-function renderAdList(ads: AdRow[]): string {
+function renderAdList(env: Env, ads: AdRow[]): string {
   if (!ads.length) {
     return '<div class="empty">Пока нет объявлений.</div>';
   }
@@ -763,12 +916,32 @@ function renderAdList(ads: AdRow[]): string {
     .map((ad) => {
       const category = ad.category ? `${htmlEscape(categoryLabel(ad.category))} · ` : '';
       return `<div class="ad">
-  <div class="title"><a href="/ad/${ad.id}">${htmlEscape(ad.title)}</a></div>
-  <div class="meta">${category}${htmlEscape(ad.created_at)}</div>
-  <div class="body">${htmlEscape(ad.body)}</div>
+  ${renderAdImage(env, ad.image_key, ad.title, 'ad-image')}
+  <div class="ad-content">
+    <div class="title"><a href="/ad/${ad.id}">${htmlEscape(ad.title)}</a></div>
+    <div class="meta">${category}${htmlEscape(ad.created_at)}</div>
+  </div>
 </div>`;
     })
     .join('');
+}
+
+function renderSearchForm(query = ''): string {
+  return `<div class="section">
+  <h2>Поиск</h2>
+  <form method="get" action="/search">
+    <input name="q" type="search" value="${htmlEscape(query)}" placeholder="Искать объявления" />
+    <button type="submit">Найти</button>
+  </form>
+</div>`;
+}
+
+function renderAdImage(env: Env, key: string | null, alt: string, className: string): string {
+  if (!key) {
+    return `<div class="${className} ${className}-placeholder"><span>Без фото</span></div>`;
+  }
+
+  return `<div class="${className}"><img src="${htmlEscape(buildMediaUrl(env, key))}" alt="${htmlEscape(alt)}" loading="lazy" /></div>`;
 }
 
 function renderHome(currentUser: CurrentUser | null = null): Response {
@@ -779,7 +952,6 @@ function renderHome(currentUser: CurrentUser | null = null): Response {
   return shell(
     'жоржлист',
     `<h1>жоржлист</h1>
-<p>Минимальная доска объявлений.</p>
 ${nav(currentUser)}
 <div class="section">
   <h2>Категории</h2>
@@ -787,9 +959,33 @@ ${nav(currentUser)}
     ${categories}
   </ul>
 </div>
+${renderSearchForm()}`
+  );
+}
+
+function renderSearchPage(env: Env, query: string, ads: AdRow[], currentUser: CurrentUser | null = null): Response {
+  const hasQuery = query.trim().length > 0;
+  const content = hasQuery
+    ? ads.length
+      ? renderAdList(env, ads)
+      : '<div class="empty">Ничего не найдено.</div>'
+    : '<div class="empty">Введите запрос.</div>';
+
+  return shell(
+    'поиск - жоржлист',
+    `<h1>жоржлист</h1>
+${nav(currentUser)}
 <div class="section">
-  <a href="/new">подать объявление</a>
-</div>`
+  <h2>Поиск</h2>
+  <form method="get" action="/search">
+    <input name="q" type="search" value="${htmlEscape(query)}" placeholder="Искать объявления" />
+    <button type="submit">Найти</button>
+  </form>
+</div>
+<div class="section">
+  ${content}
+</div>`,
+    currentUser
   );
 }
 
@@ -799,13 +995,13 @@ function renderNewPage(currentUser: CurrentUser | null = null, error: string | n
   ).join('');
 
   return shell(
-    'подать объявление - жоржлист',
+    'создать объявление - жоржлист',
     `<h1>жоржлист</h1>
 ${nav(currentUser)}
 <div class="section">
-  <h2>Подать объявление</h2>
+  <h2>Создать объявление</h2>
   ${error ? `<p class="empty">${htmlEscape(error)}</p>` : ''}
-  <form method="post" action="/new">
+  <form method="post" action="/new" enctype="multipart/form-data">
     <label for="title">Заголовок</label>
     <input id="title" name="title" type="text" required maxlength="200" />
 
@@ -813,6 +1009,9 @@ ${nav(currentUser)}
     <select id="category" name="category">
       ${options}
     </select>
+
+    <label for="image">Картинка</label>
+    <input id="image" name="image" type="file" accept="image/*" />
 
     <label for="body">Текст</label>
     <textarea id="body" name="body" required maxlength="5000"></textarea>
@@ -823,7 +1022,7 @@ ${nav(currentUser)}
   );
 }
 
-function renderCategoryPage(slug: string, ads: AdRow[], currentUser: CurrentUser | null = null): Response {
+function renderCategoryPage(env: Env, slug: string, ads: AdRow[], currentUser: CurrentUser | null = null): Response {
   const category = CATEGORIES.find((item) => item.slug === slug);
   if (!category) {
     return text('Not Found', 404);
@@ -835,12 +1034,13 @@ function renderCategoryPage(slug: string, ads: AdRow[], currentUser: CurrentUser
 ${nav(currentUser)}
 <div class="section">
   <h2>${htmlEscape(category.label)}</h2>
-  ${renderAdList(ads)}
-</div>`
+      ${renderAdList(env, ads)}
+</div>
+${renderSearchForm()}`
   );
 }
 
-function renderPublicAdPage(ad: PublicAdCardRow, currentUser: CurrentUser | null = null): Response {
+function renderPublicAdPage(env: Env, ad: PublicAdCardRow, currentUser: CurrentUser | null = null): Response {
   const authorLine = ad.author_login
     ? `<p><strong>Автор:</strong> ${htmlEscape(ad.author_login)}</p>`
     : '';
@@ -850,13 +1050,15 @@ function renderPublicAdPage(ad: PublicAdCardRow, currentUser: CurrentUser | null
     `<h1>жоржлист</h1>
 ${nav(currentUser)}
 <div class="section">
+  ${renderAdImage(env, ad.image_key, ad.title, 'ad-page-image')}
   <h2>${htmlEscape(ad.title)}</h2>
   <p><strong>Категория:</strong> ${htmlEscape(categoryLabel(ad.category))}</p>
   ${authorLine}
   <p><strong>Текст:</strong></p>
   <div class="body">${htmlEscape(ad.body)}</div>
   <p><strong>Дата:</strong> ${htmlEscape(ad.created_at)}</p>
-</div>`
+</div>
+${renderSearchForm()}`
   );
 }
 
@@ -953,7 +1155,6 @@ ${nav(currentUser)}
 <div class="section">
   <h2>Мои объявления</h2>
   <p>Пользователь: ${htmlEscape(currentUser.login)}</p>
-  <p><a href="/new">подать объявление</a></p>
   ${items}
 </div>`,
     currentUser
@@ -961,6 +1162,7 @@ ${nav(currentUser)}
 }
 
 function renderEditPage(
+  env: Env,
   currentUser: CurrentUser,
   ad: AdRow,
   error: string | null = null,
@@ -969,6 +1171,9 @@ function renderEditPage(
   const options = CATEGORIES.map(
     (category) => `<option value="${category.slug}"${category.slug === ad.category ? ' selected' : ''}>${htmlEscape(category.label)}</option>`
   ).join('');
+  const currentImagePreview = ad.image_key
+    ? `<div class="image-preview"><img src="${htmlEscape(buildMediaUrl(env, ad.image_key))}" alt="${htmlEscape(ad.title)}" /></div>`
+    : '<div class="image-preview image-preview-placeholder"><span>Без фото</span></div>';
 
   return shell(
     'редактировать объявление - жоржлист',
@@ -977,7 +1182,7 @@ ${nav(currentUser)}
 <div class="section">
   <h2>Редактировать объявление</h2>
   ${error ? `<p class="empty">${htmlEscape(error)}</p>` : ''}
-  <form method="post" action="${htmlEscape(formAction)}">
+  <form method="post" action="${htmlEscape(formAction)}" enctype="multipart/form-data">
     <label for="title">Заголовок</label>
     <input id="title" name="title" type="text" required maxlength="200" value="${htmlEscape(ad.title)}" />
 
@@ -985,6 +1190,12 @@ ${nav(currentUser)}
     <select id="category" name="category">
       ${options}
     </select>
+
+    <label>Текущая картинка</label>
+    ${currentImagePreview}
+
+    <label for="image">Заменить картинку</label>
+    <input id="image" name="image" type="file" accept="image/*" />
 
     <label for="body">Текст</label>
     <textarea id="body" name="body" required maxlength="5000">${htmlEscape(ad.body)}</textarea>
@@ -1094,7 +1305,7 @@ async function listAdminAdsPage(env: Env, page: number): Promise<AdRow[]> {
   const offset = (page - 1) * ADMIN_PAGE_SIZE;
   const result = await env.DB.prepare(
     `
-      SELECT id, title, body, category, owner_user_id, status, created_at, updated_at, deleted_at
+      SELECT ${AD_SELECT_COLUMNS}
       FROM ads
       WHERE deleted_at IS NULL
       ORDER BY created_at DESC, id DESC
@@ -1558,6 +1769,7 @@ function userBotMenuMarkup(env: Env): Record<string, unknown> {
       [{ text: 'Создать', callback_data: USER_BOT_MENU_CREATE }],
       [{ text: 'Мои объявления', callback_data: USER_BOT_MENU_MY }],
       [{ text: 'Разделы', callback_data: USER_BOT_MENU_SECTIONS }],
+      [{ text: 'Поиск', callback_data: USER_BOT_MENU_SEARCH }],
       [{ text: 'Открыть сайт', url: buildPublicSiteUrl(env, '/') }],
     ],
   };
@@ -1592,6 +1804,27 @@ function userBotSectionAdMarkup(category: string): Record<string, unknown> {
   return {
     inline_keyboard: [
       [{ text: 'Назад к категории', callback_data: `${USER_BOT_SECTION_PREFIX}${category}` }],
+      [{ text: 'Назад к разделам', callback_data: USER_BOT_MENU_SECTIONS }],
+    ],
+  };
+}
+
+function userBotSearchMarkup(ads: Array<{ id: number; title: string }>): Record<string, unknown> {
+  return {
+    inline_keyboard: [
+      ...ads.map((ad) => [
+        { text: ad.title.slice(0, 40) || `#${ad.id}`, callback_data: `${USER_BOT_SEARCH_AD_PREFIX}${ad.id}` },
+      ]),
+      [{ text: 'Новый поиск', callback_data: USER_BOT_MENU_SEARCH }],
+      [{ text: 'Назад к разделам', callback_data: USER_BOT_MENU_SECTIONS }],
+    ],
+  };
+}
+
+function userBotSearchAdMarkup(): Record<string, unknown> {
+  return {
+    inline_keyboard: [
+      [{ text: 'Назад к поиску', callback_data: USER_BOT_SEARCH_RESULTS }],
       [{ text: 'Назад к разделам', callback_data: USER_BOT_MENU_SECTIONS }],
     ],
   };
@@ -1670,6 +1903,85 @@ async function sendUserBotSections(env: Env, chatId: number): Promise<void> {
   await sendUserBotMessage(env, chatId, 'Разделы', userBotSectionsMarkup());
 }
 
+async function sendUserBotSearchPrompt(env: Env, chatId: number): Promise<void> {
+  await sendUserBotMessage(env, chatId, 'Введи текст для поиска');
+}
+
+async function sendUserBotSearchResults(env: Env, chatId: number, query: string): Promise<void> {
+  const ads = await searchPublishedAds(env, query);
+  if (!ads.length) {
+    await sendUserBotMessage(env, chatId, 'Ничего не найдено', {
+      inline_keyboard: [
+        [{ text: 'Новый поиск', callback_data: USER_BOT_MENU_SEARCH }],
+        [{ text: 'Назад к разделам', callback_data: USER_BOT_MENU_SECTIONS }],
+      ],
+    });
+    return;
+  }
+
+  await sendUserBotMessage(
+    env,
+    chatId,
+    `Поиск: ${query.trim()}`,
+    userBotSearchMarkup(ads.map((ad) => ({ id: ad.id, title: ad.title })))
+  );
+}
+
+function buildUserBotPublicAdText(
+  ad: Pick<PublicAdCardRow, 'title' | 'body' | 'category' | 'author_login' | 'created_at'>
+): string {
+  return [
+    `Заголовок: ${ad.title}`,
+    `Категория: ${categoryLabel(ad.category)}`,
+    ad.author_login ? `Автор: ${ad.author_login}` : null,
+    'Текст:',
+    ad.body.length > 700 ? `${ad.body.slice(0, 699)}…` : ad.body,
+    `Дата: ${ad.created_at}`,
+  ]
+    .filter((line): line is string => line !== null)
+    .join('\n');
+}
+
+async function sendUserBotPublicAdCard(
+  env: Env,
+  chatId: number,
+  ad: PublicAdCardRow,
+  replyMarkup: Record<string, unknown>
+): Promise<void> {
+  const text = buildUserBotPublicAdText(ad);
+
+  if (ad.image_key) {
+    const response = await userBotApi(env, 'sendPhoto', {
+      chat_id: chatId,
+      photo: buildMediaUrl(env, ad.image_key),
+      caption: text,
+      reply_markup: replyMarkup,
+    });
+
+    if (!response.ok) {
+      throw new Error(`Telegram sendPhoto failed with status ${response.status}`);
+    }
+    return;
+  }
+
+  await sendUserBotMessage(env, chatId, text, replyMarkup);
+}
+
+async function sendUserBotSearchAdDetail(env: Env, chatId: number, adId: number): Promise<void> {
+  const ad = await getPublishedAdCardById(env, adId);
+  if (!ad) {
+    await sendUserBotMessage(env, chatId, 'Объявление не найдено', {
+      inline_keyboard: [
+        [{ text: 'Новый поиск', callback_data: USER_BOT_MENU_SEARCH }],
+        [{ text: 'Назад к разделам', callback_data: USER_BOT_MENU_SECTIONS }],
+      ],
+    });
+    return;
+  }
+
+  await sendUserBotPublicAdCard(env, chatId, ad, userBotSearchAdMarkup());
+}
+
 async function sendUserBotSectionAds(env: Env, chatId: number, category: string): Promise<void> {
   const categoryKey = normalizeCategory(category);
   const ads = await listPublishedAdsByCategory(env, categoryKey);
@@ -1700,18 +2012,7 @@ async function sendUserBotSectionAdDetail(env: Env, chatId: number, category: st
     return;
   }
 
-  const text = [
-    `Заголовок: ${ad.title}`,
-    `Категория: ${categoryLabel(ad.category)}`,
-    ad.author_login ? `Автор: ${ad.author_login}` : null,
-    'Текст:',
-    ad.body,
-    `Дата: ${ad.created_at}`,
-  ]
-    .filter((line): line is string => line !== null)
-    .join('\n');
-
-  await sendUserBotMessage(env, chatId, text, userBotSectionAdMarkup(categoryKey));
+  await sendUserBotPublicAdCard(env, chatId, ad, userBotSectionAdMarkup(categoryKey));
 }
 
 function isAdminTelegramChat(env: Env, chatId: number): boolean {
@@ -2089,7 +2390,7 @@ async function sendUserBotMyAds(env: Env, telegramUserId: string, chatId: number
 
   const result = await env.DB.prepare(
     `
-      SELECT id, title, category, status, created_at
+      SELECT id, title, category, status, image_key, image_mime_type, image_updated_at, created_at
       FROM ads
       WHERE owner_user_id = ?
         AND deleted_at IS NULL
@@ -2119,7 +2420,7 @@ async function getOwnedAdForTelegramUser(
 
   const result = await env.DB.prepare(
     `
-      SELECT id, title, category, status, created_at, body
+      SELECT id, title, category, status, image_key, image_mime_type, image_updated_at, created_at, body
       FROM ads
       WHERE id = ?
         AND owner_user_id = ?
@@ -2248,6 +2549,47 @@ async function editTelegramMessage(
 
   if (!response.ok) {
     throw new Error(`Telegram editMessageText failed with status ${response.status}`);
+  }
+}
+
+async function notifyAdOwnerStatusChange(
+  env: Env,
+  ad: Pick<AdRow, 'id' | 'title' | 'category' | 'owner_user_id'>,
+  status: 'published' | 'rejected'
+): Promise<void> {
+  if (!ad.owner_user_id) {
+    return;
+  }
+
+  const telegramIdentity = await findTelegramIdentityByUserId(env, ad.owner_user_id);
+  if (!telegramIdentity?.provider_user_id) {
+    return;
+  }
+
+  const chatId = Number(telegramIdentity.provider_user_id);
+  if (!Number.isInteger(chatId) || chatId <= 0) {
+    return;
+  }
+
+  const statusLabel = status === 'published' ? 'опубликовано' : 'отклонено';
+  const text = [
+    status === 'published' ? 'Твоё объявление опубликовано' : 'Твоё объявление отклонено',
+    `Заголовок: ${ad.title}`,
+    `Категория: ${categoryLabel(ad.category)}`,
+    `Статус: ${status}`,
+  ].join('\n');
+
+  try {
+    const response = await userBotApi(env, 'sendMessage', {
+      chat_id: chatId,
+      text,
+    });
+
+    if (!response.ok) {
+      throw new Error(`Telegram sendMessage failed with status ${response.status}`);
+    }
+  } catch (error) {
+    console.error(`Failed to notify user about ad ${statusLabel}`, error);
   }
 }
 
@@ -2422,6 +2764,8 @@ async function handleAdminBotCallback(
       console.error('Failed to edit Telegram message', error);
     }
 
+    await notifyAdOwnerStatusChange(env, ad, status);
+
     await answerAdminCallbackQuery(env, callbackQuery.id, status === 'published' ? 'Published' : 'Rejected').catch(() => {});
     return json({ ok: true });
   }
@@ -2567,7 +2911,7 @@ async function handleAdminBotCallback(
 async function getAdById(env: Env, id: number): Promise<AdRow | null> {
   const result = await env.DB.prepare(
     `
-      SELECT id, title, body, category, owner_user_id, status, created_at, updated_at, deleted_at
+      SELECT ${AD_SELECT_COLUMNS}
       FROM ads
       WHERE id = ?
         AND deleted_at IS NULL
@@ -2587,6 +2931,9 @@ async function getPublishedAdCardById(env: Env, id: number, category: string | n
              ads.title,
              ads.body,
              ads.category,
+             ads.image_key,
+             ads.image_mime_type,
+             ads.image_updated_at,
              ads.created_at,
              users.login AS author_login
       FROM ads
@@ -2614,7 +2961,7 @@ async function getPublishedAdCardById(env: Env, id: number, category: string | n
 async function listPublishedAds(env: Env): Promise<AdRow[]> {
   const result = await env.DB.prepare(
     `
-      SELECT id, title, body, category, owner_user_id, status, created_at, updated_at, deleted_at
+      SELECT ${AD_SELECT_COLUMNS}
       FROM ads
       WHERE status = 'published'
         AND deleted_at IS NULL
@@ -2628,7 +2975,7 @@ async function listPublishedAds(env: Env): Promise<AdRow[]> {
 async function listAllAds(env: Env): Promise<AdRow[]> {
   const result = await env.DB.prepare(
     `
-      SELECT id, title, body, category, owner_user_id, status, created_at, updated_at, deleted_at
+      SELECT ${AD_SELECT_COLUMNS}
       FROM ads
       WHERE deleted_at IS NULL
       ORDER BY created_at DESC, id DESC
@@ -2641,7 +2988,7 @@ async function listAllAds(env: Env): Promise<AdRow[]> {
 async function listPublishedAdsByCategory(env: Env, category: string): Promise<AdRow[]> {
   const result = await env.DB.prepare(
     `
-      SELECT id, title, body, category, owner_user_id, status, created_at, updated_at, deleted_at
+      SELECT ${AD_SELECT_COLUMNS}
       FROM ads
       WHERE status = 'published'
         AND deleted_at IS NULL
@@ -2655,10 +3002,36 @@ async function listPublishedAdsByCategory(env: Env, category: string): Promise<A
   return result.results;
 }
 
+async function searchPublishedAds(env: Env, query: string): Promise<AdRow[]> {
+  const trimmed = query.trim();
+  if (!trimmed) {
+    return [];
+  }
+
+  const pattern = `%${escapeLikePattern(trimmed.toLowerCase())}%`;
+  const result = await env.DB.prepare(
+    `
+      SELECT ${AD_SELECT_COLUMNS}
+      FROM ads
+      WHERE status = 'published'
+        AND deleted_at IS NULL
+        AND (
+          LOWER(title) LIKE ? ESCAPE '\\'
+          OR LOWER(body) LIKE ? ESCAPE '\\'
+        )
+      ORDER BY created_at DESC, id DESC
+    `
+  )
+    .bind(pattern, pattern)
+    .all<AdRow>();
+
+  return result.results;
+}
+
 async function listPendingAds(env: Env): Promise<Response> {
   const result = await env.DB.prepare(
     `
-      SELECT id, title, body, category, owner_user_id, status, created_at, updated_at, deleted_at
+      SELECT ${AD_SELECT_COLUMNS}
       FROM ads
       WHERE status = 'pending'
         AND deleted_at IS NULL
@@ -2669,23 +3042,80 @@ async function listPendingAds(env: Env): Promise<Response> {
   return json({ ads: result.results });
 }
 
+async function ensureAdImageColumns(env: Env): Promise<void> {
+  if (cachedEnsureAdImageColumnsPromise) {
+    return cachedEnsureAdImageColumnsPromise;
+  }
+
+  cachedEnsureAdImageColumnsPromise = (async () => {
+    const tableInfo = await env.DB.prepare(`PRAGMA table_info(ads)`).all<{ name: string }>();
+    const columnNames = new Set((tableInfo.results || []).map((row) => row.name));
+
+    if (!columnNames.has('image_key')) {
+      await env.DB.prepare(`ALTER TABLE ads ADD COLUMN image_key TEXT`).run();
+    }
+
+    if (!columnNames.has('image_mime_type')) {
+      await env.DB.prepare(`ALTER TABLE ads ADD COLUMN image_mime_type TEXT`).run();
+    }
+
+    if (!columnNames.has('image_updated_at')) {
+      await env.DB.prepare(`ALTER TABLE ads ADD COLUMN image_updated_at TEXT`).run();
+    }
+  })().finally(() => {
+    cachedEnsureAdImageColumnsPromise = null;
+  });
+
+  return cachedEnsureAdImageColumnsPromise;
+}
+
 async function createAd(
   env: Env,
   ctx: ExecutionContext,
   title: string,
   body: string,
   categoryInput: string | null | undefined,
-  ownerUserId: number | null = null
+  ownerUserId: number | null = null,
+  image: File | null = null
 ): Promise<{ id: number; category: CategorySlug }> {
   const category = normalizeCategory(categoryInput);
-  const result = await env.DB.prepare(
-    `
-      INSERT INTO ads (title, body, category, status, owner_user_id, deleted_at, created_at, updated_at)
-      VALUES (?, ?, ?, 'pending', ?, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-    `
-  )
-    .bind(title, body, category, ownerUserId)
-    .run();
+  let imageUpload: AdImageUpload | null = null;
+
+  if (image) {
+    imageUpload = await readImageUpload(image);
+    if (imageUpload) {
+      await putAdImage(env, imageUpload, image);
+    }
+  }
+
+  let result;
+  try {
+    result = await env.DB.prepare(
+      `
+        INSERT INTO ads (
+          title,
+          body,
+          category,
+          status,
+          owner_user_id,
+          image_key,
+          image_mime_type,
+          image_updated_at,
+          deleted_at,
+          created_at,
+          updated_at
+        )
+        VALUES (?, ?, ?, 'pending', ?, ?, ?, CASE WHEN ? IS NOT NULL THEN CURRENT_TIMESTAMP ELSE NULL END, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      `
+    )
+      .bind(title, body, category, ownerUserId, imageUpload?.key || null, imageUpload?.mimeType || null, imageUpload?.key || null)
+      .run();
+  } catch (error) {
+    if (imageUpload) {
+      await deleteAdImage(env, imageUpload.key);
+    }
+    throw error;
+  }
 
   ctx.waitUntil(
     sendTelegramMessage(env, {
@@ -2707,7 +3137,7 @@ async function createAd(
 async function getOwnedAdById(env: Env, id: number, userId: number): Promise<AdRow | null> {
   const result = await env.DB.prepare(
     `
-      SELECT id, title, body, category, owner_user_id, status, created_at, updated_at, deleted_at
+      SELECT ${AD_SELECT_COLUMNS}
       FROM ads
       WHERE id = ?
         AND owner_user_id = ?
@@ -2723,10 +3153,12 @@ async function getOwnedAdById(env: Env, id: number, userId: number): Promise<AdR
 
 async function parseAdForm(request: Request): Promise<AdForm> {
   const form = await request.formData();
+  const imageValue = form.get('image');
   return {
     title: String(form.get('title') || '').trim(),
     body: String(form.get('body') || '').trim(),
     category: String(form.get('category') || '').trim(),
+    image: isFileLike(imageValue) && imageValue.size > 0 ? imageValue : null,
   };
 }
 
@@ -2767,7 +3199,7 @@ async function handleMyEditGet(env: Env, userId: number, id: string, currentUser
     return text('Not Found', 404);
   }
 
-  return renderEditPage(currentUser, ad);
+  return renderEditPage(env, currentUser, ad);
 }
 
 async function handleMyEditPost(
@@ -2788,32 +3220,66 @@ async function handleMyEditPost(
     return text('Not Found', 404);
   }
 
-  const form = await request.formData();
-  const title = String(form.get('title') || '').trim();
-  const body = String(form.get('body') || '').trim();
-  const category = String(form.get('category') || '').trim();
+  const { title, body, category, image } = await parseAdForm(request);
 
   if (!title || !body) {
-    return renderEditPage(currentUser, ad, 'Заполни заголовок и текст');
+    return renderEditPage(env, currentUser, ad, 'Заполни заголовок и текст');
   }
 
   const nextStatus = ad.status === 'published' || ad.status === 'rejected' ? 'pending' : ad.status;
   const normalizedCategory = normalizeCategory(category);
-  await env.DB.prepare(
-    `
-      UPDATE ads
-      SET title = ?,
-          body = ?,
-          category = ?,
-          status = ?,
-          updated_at = CURRENT_TIMESTAMP
-      WHERE id = ?
-        AND owner_user_id = ?
-        AND deleted_at IS NULL
-    `
-  )
-    .bind(title, body, normalizedCategory, nextStatus, numericId, userId)
-    .run();
+  let newImage: AdImageUpload | null = null;
+  try {
+    if (image) {
+      newImage = await readImageUpload(image);
+      if (newImage) {
+        await putAdImage(env, newImage, image);
+      }
+    }
+
+    const oldImageKey = ad.image_key;
+    await env.DB.prepare(
+      `
+        UPDATE ads
+        SET title = ?,
+            body = ?,
+            category = ?,
+            status = ?,
+            image_key = ?,
+            image_mime_type = ?,
+            image_updated_at = CASE
+              WHEN ? IS NOT NULL THEN CURRENT_TIMESTAMP
+              ELSE image_updated_at
+            END,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+          AND owner_user_id = ?
+          AND deleted_at IS NULL
+      `
+    )
+      .bind(
+        title,
+        body,
+        normalizedCategory,
+        nextStatus,
+        newImage?.key ?? ad.image_key,
+        newImage?.mimeType ?? ad.image_mime_type,
+        newImage?.key ?? null,
+        numericId,
+        userId
+      )
+      .run();
+
+    if (newImage && oldImageKey) {
+      await deleteAdImage(env, oldImageKey);
+    }
+  } catch (error) {
+    if (newImage) {
+      await deleteAdImage(env, newImage.key);
+    }
+    console.error('Failed to update ad with image', error);
+    return renderEditPage(env, currentUser, ad, 'Не удалось сохранить картинку', `/my/edit/${ad.id}`);
+  }
 
   ctx.waitUntil(
     sendTelegramMessage(env, {
@@ -2835,6 +3301,11 @@ async function updateAdStatus(env: Env, id: string, status: 'published' | 'rejec
     return json({ error: 'Invalid id' }, { status: 400 });
   }
 
+  const ad = await getAdById(env, numericId);
+  if (!ad) {
+    return text('Not Found', 404);
+  }
+
   const result = await env.DB.prepare(
     `
       UPDATE ads
@@ -2849,6 +3320,8 @@ async function updateAdStatus(env: Env, id: string, status: 'published' | 'rejec
   if (result.meta.changes === 0) {
     return text('Not Found', 404);
   }
+
+  await notifyAdOwnerStatusChange(env, ad, status);
 
   return json({ ok: true, id: numericId, status });
 }
@@ -2931,6 +3404,8 @@ async function handleTelegramWebhook(request: Request, env: Env): Promise<Respon
   } catch (error) {
     console.error('Failed to edit Telegram message', error);
   }
+
+  await notifyAdOwnerStatusChange(env, ad, status);
 
   await answerCallbackQuery(env, callbackQuery.id, status === 'published' ? 'Published' : 'Rejected').catch(() => {});
 
@@ -3308,6 +3783,12 @@ async function handleUserBotMenuAction(
     return;
   }
 
+  if (action === USER_BOT_MENU_SEARCH) {
+    await upsertBotDraft(env, telegramUserId, 'search', 'query');
+    await sendUserBotSearchPrompt(env, chatId);
+    return;
+  }
+
   if (action === USER_BOT_MENU_EDIT) {
     await sendUserBotMessage(env, chatId, 'Редактирование скоро будет');
     return;
@@ -3464,7 +3945,19 @@ async function handleUserBotText(
 
   const draft = await getBotDraft(env, telegramUserId);
 
-  if (!draft || (draft.action !== 'create' && draft.action !== 'edit' && draft.action !== 'register')) {
+  if (!draft || (draft.action !== 'create' && draft.action !== 'edit' && draft.action !== 'register' && draft.action !== 'search')) {
+    return;
+  }
+
+  if (draft.action === 'search') {
+    const query = text.trim();
+    if (!query) {
+      await sendUserBotSearchPrompt(env, chatId);
+      return;
+    }
+
+    await upsertBotDraft(env, telegramUserId, 'search', 'results', null, query);
+    await sendUserBotSearchResults(env, chatId, query);
     return;
   }
 
@@ -3617,6 +4110,13 @@ async function handleUserBotCallback(
     return json({ ok: true });
   }
 
+  if (data === USER_BOT_MENU_SEARCH) {
+    await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
+    await upsertBotDraft(env, telegramUserId, 'search', 'query');
+    await sendUserBotSearchPrompt(env, chatId);
+    return json({ ok: true });
+  }
+
   if (data.startsWith(USER_BOT_SECTION_PREFIX)) {
     const suffix = data.slice(USER_BOT_SECTION_PREFIX.length);
     if (suffix) {
@@ -3642,6 +4142,31 @@ async function handleUserBotCallback(
 
     await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
     await sendUserBotSectionAdDetail(env, chatId, category, adId);
+    return json({ ok: true });
+  }
+
+  if (data === USER_BOT_SEARCH_RESULTS) {
+    const draft = await getBotDraft(env, telegramUserId);
+    const query = draft?.action === 'search' && draft.title ? draft.title : '';
+    await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
+    if (!query) {
+      await sendUserBotSearchPrompt(env, chatId);
+      return json({ ok: true });
+    }
+
+    await sendUserBotSearchResults(env, chatId, query);
+    return json({ ok: true });
+  }
+
+  if (data.startsWith(USER_BOT_SEARCH_AD_PREFIX)) {
+    const adId = Number(data.slice(USER_BOT_SEARCH_AD_PREFIX.length));
+    if (!Number.isInteger(adId) || adId <= 0) {
+      await answerUserCallbackQuery(env, callbackQuery.id, 'Invalid ad').catch(() => {});
+      return json({ ok: true });
+    }
+
+    await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
+    await sendUserBotSearchAdDetail(env, chatId, adId);
     return json({ ok: true });
   }
 
@@ -3779,7 +4304,7 @@ async function handleUserWebhook(request: Request, env: Env, ctx: ExecutionConte
 async function listMyAds(env: Env, userId: number): Promise<AdRow[]> {
   const result = await env.DB.prepare(
     `
-      SELECT id, title, body, category, owner_user_id, status, created_at, updated_at, deleted_at
+      SELECT ${AD_SELECT_COLUMNS}
       FROM ads
       WHERE owner_user_id = ?
         AND deleted_at IS NULL
@@ -4192,36 +4717,68 @@ async function handleAdminEditRoute(request: Request, env: Env, ctx: ExecutionCo
   }
 
   if (request.method === 'GET') {
-    return renderEditPage(currentUser, ad, null, buildAdminActionUrl(`/admin/edit/${ad.id}`, 'ads', page));
+    return renderEditPage(env, currentUser, ad, null, buildAdminActionUrl(`/admin/edit/${ad.id}`, 'ads', page));
   }
 
   if (request.method !== 'POST') {
     return text('Method Not Allowed', 405);
   }
 
-  const form = await request.formData();
-  const title = String(form.get('title') || '').trim();
-  const body = String(form.get('body') || '').trim();
-  const category = String(form.get('category') || '').trim();
+  const { title, body, category, image } = await parseAdForm(request);
 
   if (!title || !body) {
-    return renderEditPage(currentUser, ad, 'Заполни заголовок и текст', buildAdminActionUrl(`/admin/edit/${ad.id}`, 'ads', page));
+    return renderEditPage(env, currentUser, ad, 'Заполни заголовок и текст', buildAdminActionUrl(`/admin/edit/${ad.id}`, 'ads', page));
   }
 
-  const normalizedCategory = normalizeCategory(category);
-  await env.DB.prepare(
-    `
-      UPDATE ads
-      SET title = ?,
-          body = ?,
-          category = ?,
-          updated_at = CURRENT_TIMESTAMP
-      WHERE id = ?
-        AND deleted_at IS NULL
-    `
-  )
-    .bind(title, body, normalizedCategory, numericId)
-    .run();
+  let newImage: AdImageUpload | null = null;
+  try {
+    const normalizedCategory = normalizeCategory(category);
+    if (image) {
+      newImage = await readImageUpload(image);
+      if (newImage) {
+        await putAdImage(env, newImage, image);
+      }
+    }
+
+    const oldImageKey = ad.image_key;
+    await env.DB.prepare(
+      `
+        UPDATE ads
+        SET title = ?,
+            body = ?,
+            category = ?,
+            image_key = ?,
+            image_mime_type = ?,
+            image_updated_at = CASE
+              WHEN ? IS NOT NULL THEN CURRENT_TIMESTAMP
+              ELSE image_updated_at
+            END,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+          AND deleted_at IS NULL
+      `
+    )
+      .bind(
+        title,
+        body,
+        normalizedCategory,
+        newImage?.key ?? ad.image_key,
+        newImage?.mimeType ?? ad.image_mime_type,
+        newImage?.key ?? null,
+        numericId
+      )
+      .run();
+
+    if (newImage && oldImageKey) {
+      await deleteAdImage(env, oldImageKey);
+    }
+  } catch (error) {
+    if (newImage) {
+      await deleteAdImage(env, newImage.key);
+    }
+    console.error('Failed to update admin ad with image', error);
+    return renderEditPage(env, currentUser, ad, 'Не удалось сохранить картинку', buildAdminActionUrl(`/admin/edit/${ad.id}`, 'ads', page));
+  }
 
   return redirectWithHeaders(buildAdminUrl('ads', page, 'Объявление сохранено'));
 }
@@ -4594,16 +5151,18 @@ async function handleNewPost(request: Request, env: Env, ctx: ExecutionContext):
     return redirect('/login?next=/new');
   }
 
-  const form = await request.formData();
-  const title = String(form.get('title') || '').trim();
-  const body = String(form.get('body') || '').trim();
-  const category = String(form.get('category') || '').trim();
+  const { title, body, category, image } = await parseAdForm(request);
 
   if (!title || !body) {
     return renderNewPage(currentUser, 'Заполни заголовок и текст');
   }
 
-  await createAd(env, ctx, title, body, category, currentUser.id);
+  try {
+    await createAd(env, ctx, title, body, category, currentUser.id, image);
+  } catch (error) {
+    console.error('Failed to create ad with image', error);
+    return renderNewPage(currentUser, 'Не удалось загрузить картинку');
+  }
   return redirect('/');
 }
 
@@ -4613,7 +5172,7 @@ async function handleCategoryGet(env: Env, slug: string, currentUser: CurrentUse
     return text('Not Found', 404);
   }
 
-  return renderCategoryPage(slug, await listPublishedAdsByCategory(env, slug), currentUser);
+  return renderCategoryPage(env, slug, await listPublishedAdsByCategory(env, slug), currentUser);
 }
 
 async function handleAdGet(env: Env, id: string, currentUser: CurrentUser | null = null): Promise<Response> {
@@ -4627,11 +5186,33 @@ async function handleAdGet(env: Env, id: string, currentUser: CurrentUser | null
     return text('Not Found', 404);
   }
 
-  return renderPublicAdPage(ad, currentUser);
+  return renderPublicAdPage(env, ad, currentUser);
+}
+
+async function handleMediaGet(env: Env, key: string): Promise<Response> {
+  const decodedKey = decodeURIComponent(key);
+  if (!decodedKey || !env.MEDIA_BUCKET) {
+    return text('Not Found', 404);
+  }
+
+  const object = await env.MEDIA_BUCKET.get(decodedKey);
+  if (!object) {
+    return text('Not Found', 404);
+  }
+
+  const headers = new Headers();
+  object.writeHttpMetadata(headers);
+  headers.set('Cache-Control', 'public, max-age=31536000, immutable');
+  if (!headers.get('Content-Type')) {
+    headers.set('Content-Type', 'application/octet-stream');
+  }
+
+  return new Response(object.body, { status: 200, headers });
 }
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    await ensureAdImageColumns(env);
     const url = new URL(request.url);
     const path = url.pathname;
 
@@ -4732,6 +5313,15 @@ export default {
 
     if (path.startsWith('/ad/') && request.method === 'GET') {
       return handleAdGet(env, path.slice('/ad/'.length), await getCurrentUser(request, env));
+    }
+
+    if (path.startsWith('/media/') && request.method === 'GET') {
+      return handleMediaGet(env, path.slice('/media/'.length));
+    }
+
+    if (path === '/search' && request.method === 'GET') {
+      const query = url.searchParams.get('q') || '';
+      return renderSearchPage(env, query, await searchPublishedAds(env, query), await getCurrentUser(request, env));
     }
 
     if (path === '/api/ads') {

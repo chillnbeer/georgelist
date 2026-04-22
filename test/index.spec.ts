@@ -8,6 +8,41 @@ const CURRENT_SESSION_TOKEN = 'current-session-token';
 const OTHER_SESSION_TOKEN = 'other-session-token';
 const TELEGRAM_ADMIN_CHAT_ID = 9001;
 const telegramFetchCalls: Array<{ url: string; body: unknown }> = [];
+const mediaStore = new Map<string, { bytes: Uint8Array; contentType: string }>();
+
+class MockR2Bucket {
+  async put(key: string, value: ArrayBuffer, options?: { httpMetadata?: { contentType?: string } }): Promise<void> {
+    mediaStore.set(key, {
+      bytes: new Uint8Array(value),
+      contentType: options?.httpMetadata?.contentType || 'application/octet-stream',
+    });
+  }
+
+  async get(key: string): Promise<{
+    body: ReadableStream<Uint8Array>;
+    httpMetadata: { contentType: string };
+    writeHttpMetadata(headers: Headers): void;
+  } | null> {
+    const record = mediaStore.get(key);
+    if (!record) {
+      return null;
+    }
+
+    return {
+      body: new Response(record.bytes).body as ReadableStream<Uint8Array>,
+      httpMetadata: { contentType: record.contentType },
+      writeHttpMetadata(headers: Headers) {
+        headers.set('Content-Type', record.contentType);
+      },
+    };
+  }
+
+  async delete(key: string): Promise<void> {
+    mediaStore.delete(key);
+  }
+}
+
+const mockMediaBucket = new MockR2Bucket();
 const SCHEMA_STATEMENTS = [
   `
     CREATE TABLE IF NOT EXISTS users (
@@ -81,6 +116,9 @@ const SCHEMA_STATEMENTS = [
       category TEXT,
       status TEXT NOT NULL DEFAULT 'pending',
       owner_user_id INTEGER,
+      image_key TEXT,
+      image_mime_type TEXT,
+      image_updated_at TEXT,
       deleted_at TEXT,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -181,6 +219,7 @@ async function resetDatabase(): Promise<void> {
   await env.DB.prepare('DELETE FROM ads').run();
   await env.DB.prepare('DELETE FROM bot_drafts').run();
   await env.DB.prepare('DELETE FROM users').run();
+  mediaStore.clear();
 }
 
 async function seedUser(params: {
@@ -321,6 +360,7 @@ beforeEach(async () => {
   (env as { USER_TELEGRAM_BOT_USERNAME?: string }).USER_TELEGRAM_BOT_USERNAME = 'georgelist_bot';
   (env as { TELEGRAM_USER_BOT_USERNAME?: string }).TELEGRAM_USER_BOT_USERNAME = 'georgelist_bot';
   (env as { TELEGRAM_ADMIN_ID?: string }).TELEGRAM_ADMIN_ID = String(TELEGRAM_ADMIN_CHAT_ID);
+  (env as { MEDIA_BUCKET?: MockR2Bucket }).MEDIA_BUCKET = mockMediaBucket;
   await resetDatabase();
 });
 
@@ -616,6 +656,7 @@ describe('User bot browsing flow', () => {
     expect(flatButtons).toContain('Создать');
     expect(flatButtons).toContain('Мои объявления');
     expect(flatButtons).toContain('Разделы');
+    expect(flatButtons).toContain('Поиск');
     expect(flatButtons).not.toContain('Редактировать');
     expect(flatButtons).not.toContain('Удалить');
 
@@ -722,6 +763,7 @@ describe('Public ad page', () => {
     const categoryHtml = await categoryResponse.text();
     expect(categoryHtml).toContain(`/ad/${publishedAdId}`);
     expect(categoryHtml).not.toContain(`/ad/${pendingAdId}`);
+    expect(categoryHtml).toContain('/search');
 
     const adResponse = await runRequest(new Request(`http://example.com/ad/${publishedAdId}`));
     expect(adResponse.status).toBe(200);
@@ -731,6 +773,7 @@ describe('Public ad page', () => {
     expect(adHtml).toContain('<strong>Автор:</strong> poster');
     expect(adHtml).toContain('Public body');
     expect(adHtml).toContain('Дата:');
+    expect(adHtml).toContain('/search');
 
     const pendingResponse = await runRequest(new Request(`http://example.com/ad/${pendingAdId}`));
     expect(pendingResponse.status).toBe(404);
@@ -747,6 +790,273 @@ describe('Public ad page', () => {
 
     const deletedResponse = await runRequest(new Request(`http://example.com/ad/${publishedAdId}`));
     expect(deletedResponse.status).toBe(404);
+  });
+});
+
+describe('Ad images', () => {
+  it('uploads, replaces and serves a single image for an ad', async () => {
+    await seedUser({
+      id: 70,
+      login: 'imguser',
+      email: 'imguser@example.com',
+      sessionToken: 'img-session',
+    });
+    await insertTelegramIdentity({
+      userId: 70,
+      telegramUserId: '70001',
+      telegramUsername: 'imguser_tg',
+    });
+
+    const firstImage = new File(
+      [Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7QwGQAAAAASUVORK5CYII=', 'base64')],
+      'first.png',
+      { type: 'image/png' }
+    );
+
+    const createForm = new FormData();
+    createForm.set('title', 'Image ad');
+    createForm.set('category', 'things');
+    createForm.set('body', 'Image body');
+    createForm.set('image', firstImage);
+
+    const createResponse = await runRequest(
+      new Request('http://example.com/new', {
+        method: 'POST',
+        headers: {
+          Cookie: 'session=img-session',
+        },
+        body: createForm,
+      })
+    );
+
+    expect(createResponse.status).toBe(303);
+
+    const createdAd = await env.DB.prepare(
+      `
+        SELECT id, image_key, image_mime_type, image_updated_at
+        FROM ads
+        WHERE title = ?
+        LIMIT 1
+      `
+    )
+      .bind('Image ad')
+      .first<{ id: number; image_key: string | null; image_mime_type: string | null; image_updated_at: string | null }>();
+
+    expect(createdAd?.image_key).toBeTruthy();
+    expect(createdAd?.image_mime_type).toBe('image/png');
+    expect(createdAd?.image_updated_at).toBeTruthy();
+
+    const firstKey = createdAd?.image_key || '';
+    const mediaResponse = await runRequest(new Request(`http://example.com/media/${encodeURIComponent(firstKey)}`));
+    expect(mediaResponse.status).toBe(200);
+    expect(mediaResponse.headers.get('Content-Type')).toBe('image/png');
+
+    const secondImage = new File(
+      [Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8AABQMBgYQnD7QAAAAASUVORK5CYII=', 'base64')],
+      'second.png',
+      { type: 'image/png' }
+    );
+    const editForm = new FormData();
+    editForm.set('title', 'Image ad updated');
+    editForm.set('category', 'things');
+    editForm.set('body', 'Image body updated');
+    editForm.set('image', secondImage);
+
+    const editResponse = await runRequest(
+      new Request(`http://example.com/my/edit/${createdAd?.id}`, {
+        method: 'POST',
+        headers: {
+          Cookie: 'session=img-session',
+        },
+        body: editForm,
+      })
+    );
+
+    expect(editResponse.status).toBe(303);
+
+    const editedAd = await env.DB.prepare(
+      `
+        SELECT id, title, image_key, image_mime_type, image_updated_at
+        FROM ads
+        WHERE id = ?
+        LIMIT 1
+      `
+    )
+      .bind(createdAd?.id)
+      .first<{ id: number; title: string; image_key: string | null; image_mime_type: string | null; image_updated_at: string | null }>();
+
+    expect(editedAd?.title).toBe('Image ad updated');
+    expect(editedAd?.image_key).not.toBe(firstKey);
+    expect(editedAd?.image_mime_type).toBe('image/png');
+    expect(editedAd?.image_updated_at).toBeTruthy();
+    expect(mediaStore.has(firstKey)).toBe(false);
+    expect(editedAd?.image_key ? mediaStore.has(editedAd.image_key) : false).toBe(true);
+
+    const publishResponse = await sendTelegramWebhook({
+      callback_query: {
+        id: 'cb-publish-image',
+        data: `admin:ad:1:${createdAd?.id}:publish`,
+        message: {
+          chat: { id: TELEGRAM_ADMIN_CHAT_ID },
+          message_id: 300,
+        },
+      },
+    });
+    expect(publishResponse.status).toBe(200);
+
+    const publishedAdPageResponse = await runRequest(new Request(`http://example.com/ad/${createdAd?.id}`));
+    expect(publishedAdPageResponse.status).toBe(200);
+    const publishedAdPageHtml = await publishedAdPageResponse.text();
+    expect(publishedAdPageHtml).toContain(`/media/${encodeURIComponent(editedAd?.image_key || '')}`);
+    expect(publishedAdPageHtml).toContain('Image ad updated');
+
+    const userAdResponse = await sendUserTelegramWebhook({
+      callback_query: {
+        id: 'cb-user-image',
+        data: `user:sectionad:things:${createdAd?.id}`,
+        message: {
+          chat: { id: 70001 },
+          message_id: 301,
+        },
+      },
+    });
+    expect(userAdResponse.status).toBe(200);
+
+    const photoCall = telegramFetchCalls
+      .filter((call) => call.url.includes('/sendPhoto'))
+      .at(-1);
+    expect(photoCall).toBeTruthy();
+    expect(String((photoCall?.body as { photo?: string }).photo || '')).toContain('/media/');
+    expect(String((photoCall?.body as { caption?: string }).caption || '')).toContain('Image ad updated');
+  });
+});
+
+describe('Site search', () => {
+  it('returns only published ads that match title or body', async () => {
+    await seedUser({
+      id: 51,
+      login: 'searcher',
+      email: 'searcher@example.com',
+      sessionToken: 'searcher-session',
+    });
+
+    const matchedAdId = await insertAd({
+      title: 'Needle in title',
+      body: 'Body with keyword',
+      category: 'misc',
+      ownerUserId: 51,
+      status: 'published',
+    });
+    await insertAd({
+      title: 'Hidden needle',
+      body: 'Should not appear',
+      category: 'misc',
+      ownerUserId: 51,
+      status: 'pending',
+    });
+
+    const response = await runRequest(new Request('http://example.com/search?q=keyword'));
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain('Поиск');
+    expect(html).toContain('Needle in title');
+    expect(html).toContain(`/ad/${matchedAdId}`);
+    expect(html).not.toContain('Hidden needle');
+
+    const emptyResponse = await runRequest(new Request('http://example.com/search?q=missing'));
+    expect(emptyResponse.status).toBe(200);
+    const emptyHtml = await emptyResponse.text();
+    expect(emptyHtml).toContain('Ничего не найдено');
+  });
+});
+
+describe('User bot search flow', () => {
+  it('prompts for a query, shows matches and opens a public card', async () => {
+    await seedUser({
+      id: 60,
+      login: 'botsearch',
+      email: 'botsearch@example.com',
+      sessionToken: 'botsearch-session',
+    });
+    await insertTelegramIdentity({
+      userId: 60,
+      telegramUserId: '60001',
+      telegramUsername: 'botsearch_tg',
+    });
+    const publishedAdId = await insertAd({
+      title: 'Search target',
+      body: 'Keyword body',
+      category: 'services',
+      ownerUserId: 60,
+      status: 'published',
+    });
+    await insertAd({
+      title: 'Search hidden',
+      body: 'Keyword body hidden',
+      category: 'services',
+      ownerUserId: 60,
+      status: 'pending',
+    });
+
+    const searchMenuResponse = await sendUserTelegramWebhook({
+      callback_query: {
+        id: 'cb-search',
+        data: 'user:search',
+        message: {
+          chat: { id: 60001 },
+          message_id: 20,
+        },
+      },
+    });
+
+    expect(searchMenuResponse.status).toBe(200);
+    const promptMessage = telegramFetchCalls.filter(
+      (call) => call.url.includes('/sendMessage') && typeof call.body === 'object' && call.body !== null
+    ).at(-1);
+    const promptText = String((promptMessage?.body as { text?: string }).text || '');
+    expect(promptText).toContain('Введи текст для поиска');
+
+    const searchResponse = await sendUserTelegramWebhook({
+      message: {
+        chat: { id: 60001 },
+        from: { id: 60001, username: 'botsearch_tg' },
+        text: 'keyword',
+      },
+    });
+
+    expect(searchResponse.status).toBe(200);
+    const resultsMessage = telegramFetchCalls.filter(
+      (call) => call.url.includes('/sendMessage') && typeof call.body === 'object' && call.body !== null
+    ).at(-1);
+    const resultsText = String((resultsMessage?.body as { text?: string }).text || '');
+    expect(resultsText).toContain('Поиск: keyword');
+    const resultsMarkup = (resultsMessage?.body as { reply_markup?: { inline_keyboard?: Array<Array<{ text: string }>> } }).reply_markup?.inline_keyboard || [];
+    const resultButtons = resultsMarkup.flat().map((button) => button.text);
+    expect(resultButtons).toContain('Search target');
+    expect(resultButtons).not.toContain('Search hidden');
+
+    const detailResponse = await sendUserTelegramWebhook({
+      callback_query: {
+        id: 'cb-search-ad',
+        data: `user:searchad:${publishedAdId}`,
+        message: {
+          chat: { id: 60001 },
+          message_id: 21,
+        },
+      },
+    });
+
+    expect(detailResponse.status).toBe(200);
+    const detailMessage = telegramFetchCalls.filter(
+      (call) => call.url.includes('/sendMessage') && typeof call.body === 'object' && call.body !== null
+    ).at(-1);
+    const detailText = String((detailMessage?.body as { text?: string }).text || '');
+    expect(detailText).toContain('Search target');
+    expect(detailText).toContain('Автор: botsearch');
+    const detailMarkup = (detailMessage?.body as { reply_markup?: { inline_keyboard?: Array<Array<{ text: string }>> } }).reply_markup?.inline_keyboard || [];
+    const detailButtons = detailMarkup.flat().map((button) => button.text);
+    expect(detailButtons).toContain('Назад к поиску');
+    expect(detailButtons).toContain('Назад к разделам');
   });
 });
 
@@ -1131,5 +1441,80 @@ describe('Admin bot flow', () => {
       .first<{ deleted_at: string | null }>();
 
     expect(deletedAd?.deleted_at).not.toBeNull();
+  });
+
+  it('notifies the owner in the user bot when an ad is published or rejected', async () => {
+    await seedUser({
+      id: 32,
+      login: 'notify',
+      email: 'notify@example.com',
+      sessionToken: 'notify-session',
+    });
+    await insertTelegramIdentity({
+      userId: 32,
+      telegramUserId: '32001',
+      telegramUsername: 'notify_tg',
+    });
+
+    const pendingAdId = await insertAd({
+      title: 'Needs review',
+      body: 'Pending body',
+      category: 'jobs',
+      ownerUserId: 32,
+      status: 'pending',
+    });
+    const publishedAdId = await insertAd({
+      title: 'Already live',
+      body: 'Live body',
+      category: 'services',
+      ownerUserId: 32,
+      status: 'published',
+    });
+
+    const publishResponse = await sendTelegramWebhook({
+      callback_query: {
+        id: 'cb-publish',
+        data: `admin:ad:1:${pendingAdId}:publish`,
+        message: {
+          chat: { id: TELEGRAM_ADMIN_CHAT_ID },
+          message_id: 210,
+        },
+      },
+    });
+
+    expect(publishResponse.status).toBe(200);
+    const publishMessage = telegramFetchCalls.find(
+      (call) =>
+        call.url.includes('/sendMessage') &&
+        typeof call.body === 'object' &&
+        call.body !== null &&
+        String((call.body as { text?: string }).text || '').includes('Твоё объявление опубликовано')
+    );
+    expect(publishMessage).toBeTruthy();
+    expect((publishMessage?.body as { chat_id?: number }).chat_id).toBe(32001);
+    expect(String((publishMessage?.body as { text?: string }).text || '')).toContain('Needs review');
+
+    const rejectResponse = await sendTelegramWebhook({
+      callback_query: {
+        id: 'cb-reject',
+        data: `admin:ad:1:${publishedAdId}:reject`,
+        message: {
+          chat: { id: TELEGRAM_ADMIN_CHAT_ID },
+          message_id: 211,
+        },
+      },
+    });
+
+    expect(rejectResponse.status).toBe(200);
+    const rejectMessage = telegramFetchCalls.find(
+      (call) =>
+        call.url.includes('/sendMessage') &&
+        typeof call.body === 'object' &&
+        call.body !== null &&
+        String((call.body as { text?: string }).text || '').includes('Твоё объявление отклонено')
+    );
+    expect(rejectMessage).toBeTruthy();
+    expect((rejectMessage?.body as { chat_id?: number }).chat_id).toBe(32001);
+    expect(String((rejectMessage?.body as { text?: string }).text || '')).toContain('Already live');
   });
 });
