@@ -745,8 +745,8 @@ function renderHome(currentUser: CurrentUser | null = null): Response {
   ).join('');
 
   return shell(
-    'jorjlist',
-    `<h1>jorjlist</h1>
+    'жоржлист',
+    `<h1>жоржлист</h1>
 <p>Минимальная доска объявлений.</p>
 ${nav(currentUser)}
 <div class="section">
