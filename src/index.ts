@@ -142,8 +142,13 @@ const USER_BOT_DRAFT_CANCEL = 'draft:confirm:cancel';
 const USER_BOT_DRAFT_SEND = 'draft:confirm:send';
 const USER_BOT_EDIT_DRAFT_CANCEL = 'draft:edit:cancel';
 const USER_BOT_EDIT_DRAFT_SAVE = 'draft:edit:save';
+const ADMIN_BOT_MENU_HOME = 'admin:home';
 let cachedTelegramUserBotUsername: string | null = null;
 let cachedTelegramUserBotUsernamePromise: Promise<string | null> | null = null;
+const NOOP_EXECUTION_CONTEXT = {
+  waitUntil(): void {},
+  passThroughOnException(): void {},
+} as ExecutionContext;
 
 function htmlEscape(value: string): string {
   return value
@@ -967,6 +972,231 @@ type AdminUserRow = {
   created_at: string;
 };
 
+type AdminSection = 'users' | 'ads';
+
+type AdminPagination = {
+  page: number;
+  totalPages: number;
+};
+
+const ADMIN_PAGE_SIZE = 5;
+
+function parseAdminSection(value: string | null): AdminSection {
+  return value === 'users' ? 'users' : 'ads';
+}
+
+function parseAdminPage(value: string | null): number {
+  const page = Number(value || '1');
+  return Number.isInteger(page) && page > 0 ? page : 1;
+}
+
+function buildAdminUrl(section: AdminSection, page: number, message: string | null = null): string {
+  const params = new URLSearchParams({
+    section,
+    page: String(page),
+  });
+
+  if (message) {
+    params.set('message', message);
+  }
+
+  return `/admin?${params.toString()}`;
+}
+
+function buildAdminActionUrl(path: string, section: AdminSection, page: number): string {
+  const params = new URLSearchParams({
+    section,
+    page: String(page),
+  });
+
+  return `${path}?${params.toString()}`;
+}
+
+async function countAllUsers(env: Env): Promise<number> {
+  const result = await env.DB.prepare(
+    `
+      SELECT COUNT(*) AS count
+      FROM users
+    `
+  )
+    .first<{ count: number }>();
+
+  return result?.count ?? 0;
+}
+
+async function listAdminUsersPage(env: Env, page: number): Promise<AdminUserRow[]> {
+  const offset = (page - 1) * ADMIN_PAGE_SIZE;
+  const result = await env.DB.prepare(
+    `
+      SELECT users.id,
+             users.login,
+             (SELECT email FROM user_identities WHERE user_id = users.id AND provider = 'email' LIMIT 1) AS email,
+             users.role,
+             users.created_at
+      FROM users
+      ORDER BY users.id ASC
+      LIMIT ?
+      OFFSET ?
+    `
+  )
+    .bind(ADMIN_PAGE_SIZE, offset)
+    .all<AdminUserRow>();
+
+  return result.results ?? [];
+}
+
+async function countAllAds(env: Env): Promise<number> {
+  const result = await env.DB.prepare(
+    `
+      SELECT COUNT(*) AS count
+      FROM ads
+      WHERE deleted_at IS NULL
+    `
+  )
+    .first<{ count: number }>();
+
+  return result?.count ?? 0;
+}
+
+async function listAdminAdsPage(env: Env, page: number): Promise<AdRow[]> {
+  const offset = (page - 1) * ADMIN_PAGE_SIZE;
+  const result = await env.DB.prepare(
+    `
+      SELECT id, title, body, category, owner_user_id, status, created_at, updated_at, deleted_at
+      FROM ads
+      WHERE deleted_at IS NULL
+      ORDER BY created_at DESC, id DESC
+      LIMIT ?
+      OFFSET ?
+    `
+  )
+    .bind(ADMIN_PAGE_SIZE, offset)
+    .all<AdRow>();
+
+  return result.results ?? [];
+}
+
+function renderAdminPagination(section: AdminSection, pagination: AdminPagination): string {
+  if (pagination.totalPages <= 1) {
+    return `<p class="empty">Страница 1 из 1</p>`;
+  }
+
+  const prevLink = pagination.page > 1 ? `<a href="${buildAdminUrl(section, pagination.page - 1)}">Назад</a>` : '<span class="empty">Назад</span>';
+  const nextLink = pagination.page < pagination.totalPages ? `<a href="${buildAdminUrl(section, pagination.page + 1)}">Вперёд</a>` : '<span class="empty">Вперёд</span>';
+  return `<div class="pager">
+  ${prevLink}
+  <span>Страница ${pagination.page} из ${pagination.totalPages}</span>
+  ${nextLink}
+</div>`;
+}
+
+function renderAdminTabs(section: AdminSection): string {
+  const usersTab = section === 'users' ? '<strong>Пользователи</strong>' : `<a href="${buildAdminUrl('users', 1)}">Пользователи</a>`;
+  const adsTab = section === 'ads' ? '<strong>Объявления</strong>' : `<a href="${buildAdminUrl('ads', 1)}">Объявления</a>`;
+  return `<div class="pager">${usersTab}<span>·</span>${adsTab}</div>`;
+}
+
+function renderAdminUsersSection(
+  currentUser: CurrentUser,
+  users: AdminUserRow[],
+  pagination: AdminPagination,
+  message: string | null = null
+): Response {
+  const items = users.length
+    ? users
+        .map((user) => {
+          const email = user.email ? ` · ${htmlEscape(user.email)}` : '';
+          const isSelf = user.id === currentUser.id;
+          const promoteAction = user.role === 'admin'
+            ? '<span class="empty">admin</span>'
+            : `<form method="post" action="${htmlEscape(buildAdminActionUrl(`/admin/users/${user.id}/promote`, 'users', pagination.page))}" style="display:inline">
+  <button class="link-button" type="submit">Сделать admin</button>
+</form>`;
+          const demoteAction = isSelf
+            ? '<span class="empty">Это ваш аккаунт</span>'
+            : user.role === 'admin'
+            ? `<form method="post" action="${htmlEscape(buildAdminActionUrl(`/admin/users/${user.id}/demote`, 'users', pagination.page))}" style="display:inline">
+  <button class="link-button" type="submit">Сделать user</button>
+</form>`
+            : '<span class="empty">user</span>';
+          const deleteAction = isSelf
+            ? '<span class="empty">Нельзя удалить себя</span>'
+            : `<form method="post" action="${htmlEscape(buildAdminActionUrl(`/admin/users/${user.id}/delete`, 'users', pagination.page))}" style="display:inline">
+  <button class="link-button" type="submit">Удалить</button>
+</form>`;
+          return `<div class="ad">
+  <div class="title">#${user.id} · ${htmlEscape(user.login)}${email}</div>
+  <div class="meta">${htmlEscape(user.role)} · ${htmlEscape(user.created_at)}</div>
+  <div>
+    ${promoteAction}
+    ${demoteAction}
+    ${deleteAction}
+  </div>
+</div>`;
+        })
+        .join('')
+    : '<div class="empty">Пользователей на этой странице нет.</div>';
+
+  return shell(
+    'админка - жоржлист',
+    `<h1>жоржлист</h1>
+${nav(currentUser)}
+<div class="section">
+  <h2>Админка</h2>
+  ${renderAdminTabs('users')}
+  ${message ? `<p class="empty">${htmlEscape(message)}</p>` : ''}
+  <p>Пользователь: ${htmlEscape(currentUser.login)}</p>
+  <h3>Пользователи</h3>
+  ${items}
+  ${renderAdminPagination('users', pagination)}
+</div>`,
+    currentUser
+  );
+}
+
+function renderAdminAdsSection(
+  currentUser: CurrentUser,
+  ads: AdRow[],
+  pagination: AdminPagination,
+  message: string | null = null
+): Response {
+  const items = ads.length
+    ? ads
+        .map((ad) => {
+          const owner = ad.owner_user_id ? `owner #${ad.owner_user_id}` : 'no owner';
+          const category = ad.category ? `${htmlEscape(categoryLabel(ad.category))} · ` : '';
+          return `<div class="ad">
+  <div class="title">#${ad.id} · ${htmlEscape(ad.title)}</div>
+  <div class="meta">${htmlEscape(ad.status)} · ${category}${htmlEscape(owner)} · ${htmlEscape(ad.created_at)}</div>
+  <div class="body">${htmlEscape(ad.body)}</div>
+  <div>
+    <a href="${htmlEscape(buildAdminActionUrl(`/admin/edit/${ad.id}`, 'ads', pagination.page))}">Редактировать</a>
+    <form method="post" action="${htmlEscape(buildAdminActionUrl(`/admin/delete/${ad.id}`, 'ads', pagination.page))}" style="display:inline">
+      <button class="link-button" type="submit">Удалить</button>
+    </form>
+  </div>
+</div>`;
+        })
+        .join('')
+    : '<div class="empty">Объявлений на этой странице нет.</div>';
+
+  return shell(
+    'админка - жоржлист',
+    `<h1>жоржлист</h1>
+${nav(currentUser)}
+<div class="section">
+  <h2>Админка</h2>
+  ${renderAdminTabs('ads')}
+  ${message ? `<p class="empty">${htmlEscape(message)}</p>` : ''}
+  <p>Пользователь: ${htmlEscape(currentUser.login)}</p>
+  <h3>Объявления</h3>
+  ${items}
+  ${renderAdminPagination('ads', pagination)}
+</div>`,
+    currentUser
+  );
+}
+
 async function listAllUsers(env: Env): Promise<AdminUserRow[]> {
   return env.DB.prepare(
     `
@@ -981,72 +1211,6 @@ async function listAllUsers(env: Env): Promise<AdminUserRow[]> {
   )
     .all<AdminUserRow>()
     .then((result) => result.results ?? []);
-}
-
-function renderAdminPage(
-  currentUser: CurrentUser,
-  ads: AdRow[],
-  users: AdminUserRow[],
-  message: string | null = null
-): Response {
-  const items = ads.length
-    ? ads
-      .map((ad) => {
-          const owner = ad.owner_user_id ? `owner #${ad.owner_user_id}` : 'no owner';
-          const deleted = ad.deleted_at ? ` · deleted ${htmlEscape(ad.deleted_at)}` : '';
-          const category = ad.category ? `${htmlEscape(categoryLabel(ad.category))} · ` : '';
-          const deleteAction = ad.deleted_at
-            ? '<span class="empty">Уже удалено</span>'
-            : `<form method="post" action="/admin/delete/${ad.id}" style="display:inline">
-      <button class="link-button" type="submit">Удалить</button>
-    </form>`;
-          return `<div class="ad">
-  <div class="title">#${ad.id} · ${htmlEscape(ad.title)}</div>
-  <div class="meta">${htmlEscape(ad.status)} · ${category}${htmlEscape(owner)} · ${htmlEscape(ad.created_at)}${deleted}</div>
-  <div class="body">${htmlEscape(ad.body)}</div>
-  <div>
-    <a href="/admin/edit/${ad.id}">Редактировать</a>
-    ${deleteAction}
-  </div>
-</div>`;
-        })
-        .join('')
-    : '<div class="empty">Пока нет объявлений.</div>';
-  const usersBlock = users.length
-    ? `<div class="section">
-  <h3>Пользователи</h3>
-  ${users
-    .map((user) => {
-      const email = user.email ? ` · ${htmlEscape(user.email)}` : '';
-      const role = htmlEscape(user.role);
-      const action = user.role === 'admin'
-        ? '<span class="empty">admin</span>'
-        : `<form method="post" action="/admin/users/${user.id}/promote" style="display:inline">
-  <button class="link-button" type="submit">Сделать admin</button>
-</form>`;
-      return `<div class="ad">
-  <div class="title">#${user.id} · ${htmlEscape(user.login)}${email}</div>
-  <div class="meta">${role} · ${htmlEscape(user.created_at)}</div>
-  <div>${action}</div>
-</div>`;
-    })
-    .join('')}
-</div>`
-    : '<div class="empty">Пользователей пока нет.</div>';
-
-  return shell(
-    'админка - жоржлист',
-    `<h1>жоржлист</h1>
-${nav(currentUser)}
-<div class="section">
-  <h2>Админка</h2>
-  ${message ? `<p class="empty">${htmlEscape(message)}</p>` : ''}
-  <p>Пользователь: ${htmlEscape(currentUser.login)}</p>
-  ${usersBlock}
-  ${items}
-</div>`,
-    currentUser
-  );
 }
 
 function renderSettingsPage(
@@ -1435,6 +1599,316 @@ async function sendUserBotMenu(env: Env, chatId: number, greeting: string, login
   await sendUserBotMessage(env, chatId, lines.join('\n'), userBotMenuMarkup(env));
 }
 
+function isAdminTelegramChat(env: Env, chatId: number): boolean {
+  return String(chatId) === String(env.TELEGRAM_ADMIN_ID);
+}
+
+function adminBotMenuMarkup(): Record<string, unknown> {
+  return {
+    inline_keyboard: [
+      [{ text: 'Объявления', callback_data: 'admin:ads:page:1' }],
+      [{ text: 'Пользователи', callback_data: 'admin:users:page:1' }],
+      [{ text: 'Обновить', callback_data: ADMIN_BOT_MENU_HOME }],
+    ],
+  };
+}
+
+function adminBotPageMarkup(section: AdminSection, page: number, totalPages: number): Array<Array<{ text: string; callback_data: string }>> {
+  const row: Array<{ text: string; callback_data: string }> = [];
+  if (page > 1) {
+    row.push({ text: 'Назад', callback_data: `admin:${section}:page:${page - 1}` });
+  }
+  row.push({ text: `Стр. ${page}/${totalPages}`, callback_data: `admin:${section}:page:${page}` });
+  if (page < totalPages) {
+    row.push({ text: 'Вперёд', callback_data: `admin:${section}:page:${page + 1}` });
+  }
+  return [row];
+}
+
+function adminBotAdsMarkup(
+  ads: Array<{ id: number; title: string }>,
+  page: number,
+  totalPages: number
+): Record<string, unknown> {
+  return {
+    inline_keyboard: [
+      ...ads.map((ad) => [
+        { text: ad.title.slice(0, 40) || `#${ad.id}`, callback_data: `admin:ad:${page}:${ad.id}` },
+      ]),
+      ...adminBotPageMarkup('ads', page, totalPages),
+      [{ text: 'Назад', callback_data: ADMIN_BOT_MENU_HOME }],
+    ],
+  };
+}
+
+function adminBotUsersMarkup(
+  users: Array<{ id: number; login: string; role: string }>,
+  page: number,
+  totalPages: number
+): Record<string, unknown> {
+  return {
+    inline_keyboard: [
+      ...users.map((user) => [
+        { text: `${user.login}${user.role === 'admin' ? ' · admin' : ''}`, callback_data: `admin:user:${page}:${user.id}` },
+      ]),
+      ...adminBotPageMarkup('users', page, totalPages),
+      [{ text: 'Назад', callback_data: ADMIN_BOT_MENU_HOME }],
+    ],
+  };
+}
+
+function adminBotAdMarkup(adId: number, page: number): Record<string, unknown> {
+  return {
+    inline_keyboard: [
+      [
+        { text: 'Редактировать', callback_data: `admin:ad:${page}:${adId}:edit` },
+        { text: 'Удалить', callback_data: `admin:ad:${page}:${adId}:delete` },
+      ],
+      [
+        { text: 'Publish', callback_data: `admin:ad:${page}:${adId}:publish` },
+        { text: 'Reject', callback_data: `admin:ad:${page}:${adId}:reject` },
+      ],
+      [{ text: 'Назад', callback_data: `admin:ads:page:${page}` }],
+    ],
+  };
+}
+
+function adminBotUserMarkup(userId: number, role: string, page: number): Record<string, unknown> {
+  return {
+    inline_keyboard: [
+      role === 'admin'
+        ? [
+            { text: 'Сделать user', callback_data: `admin:user:${page}:${userId}:demote` },
+            { text: 'Уже admin', callback_data: `admin:user:${page}:${userId}` },
+          ]
+        : [{ text: 'Сделать admin', callback_data: `admin:user:${page}:${userId}:promote` }],
+      [
+        { text: 'Удалить', callback_data: `admin:user:${page}:${userId}:delete` },
+        { text: 'Назад', callback_data: `admin:users:page:${page}` },
+      ],
+    ],
+  };
+}
+
+async function sendAdminBotMessage(
+  env: Env,
+  chatId: number,
+  text: string,
+  replyMarkup?: Record<string, unknown>
+): Promise<void> {
+  const payload: Record<string, unknown> = {
+    chat_id: chatId,
+    text,
+  };
+
+  if (replyMarkup) {
+    payload.reply_markup = replyMarkup;
+  }
+
+  const response = await telegramApi(env, 'sendMessage', payload);
+  if (!response.ok) {
+    throw new Error(`Telegram sendMessage failed with status ${response.status}`);
+  }
+}
+
+async function answerAdminCallbackQuery(env: Env, callbackQueryId: string, text?: string): Promise<void> {
+  await telegramApi(env, 'answerCallbackQuery', {
+    callback_query_id: callbackQueryId,
+    ...(text ? { text } : {}),
+  });
+}
+
+async function sendAdminBotHome(env: Env, chatId: number, message = 'Админ-панель'): Promise<void> {
+  await sendAdminBotMessage(env, chatId, message, adminBotMenuMarkup());
+}
+
+async function sendAdminBotAds(env: Env, chatId: number, page = 1): Promise<void> {
+  const totalAds = await countAllAds(env);
+  const totalPages = Math.max(1, Math.ceil(totalAds / ADMIN_PAGE_SIZE));
+  const normalizedPage = Math.min(Math.max(1, page), totalPages);
+  const ads = await listAdminAdsPage(env, normalizedPage);
+  if (!ads.length) {
+    await sendAdminBotMessage(env, chatId, 'Пока нет объявлений', adminBotMenuMarkup());
+    return;
+  }
+
+  await sendAdminBotMessage(
+    env,
+    chatId,
+    `Объявления: страница ${normalizedPage}/${totalPages}`,
+    adminBotAdsMarkup(ads.map((ad) => ({ id: ad.id, title: ad.title })), normalizedPage, totalPages)
+  );
+}
+
+async function sendAdminBotUsers(env: Env, chatId: number, page = 1): Promise<void> {
+  const totalUsers = await countAllUsers(env);
+  const totalPages = Math.max(1, Math.ceil(totalUsers / ADMIN_PAGE_SIZE));
+  const normalizedPage = Math.min(Math.max(1, page), totalPages);
+  const users = await listAdminUsersPage(env, normalizedPage);
+  if (!users.length) {
+    await sendAdminBotMessage(env, chatId, 'Пока нет пользователей', adminBotMenuMarkup());
+    return;
+  }
+
+  await sendAdminBotMessage(
+    env,
+    chatId,
+    `Пользователи: страница ${normalizedPage}/${totalPages}`,
+    adminBotUsersMarkup(users.map((user) => ({ id: user.id, login: user.login, role: user.role })), normalizedPage, totalPages)
+  );
+}
+
+async function sendAdminBotAdDetail(env: Env, chatId: number, ad: AdRow, page: number): Promise<void> {
+  const text = [
+    `#${ad.id}`,
+    `Заголовок: ${ad.title}`,
+    `Категория: ${categoryLabel(ad.category)}`,
+    `Статус: ${ad.status}`,
+    `Owner: ${ad.owner_user_id ?? 'none'}`,
+    `Удалено: ${ad.deleted_at ? 'yes' : 'no'}`,
+    'Текст:',
+    ad.body,
+  ].join('\n');
+
+  await sendAdminBotMessage(env, chatId, text, adminBotAdMarkup(ad.id, page));
+}
+
+async function sendAdminBotUserDetail(env: Env, chatId: number, user: AdminUserRow, page: number): Promise<void> {
+  const text = [
+    `#${user.id}`,
+    `Login: ${user.login}`,
+    `Email: ${user.email || '—'}`,
+    `Role: ${user.role}`,
+    `Created: ${user.created_at}`,
+  ].join('\n');
+
+  await sendAdminBotMessage(env, chatId, text, adminBotUserMarkup(user.id, user.role, page));
+}
+
+async function deleteAdminAd(env: Env, adId: number): Promise<'deleted' | 'missing' | 'already'> {
+  const result = await env.DB.prepare(
+    `
+      UPDATE ads
+      SET deleted_at = CURRENT_TIMESTAMP,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+        AND deleted_at IS NULL
+    `
+  )
+    .bind(adId)
+    .run();
+
+  if ((result.meta.changes ?? 0) > 0) {
+    return 'deleted';
+  }
+
+  const existing = await env.DB.prepare(
+    `
+      SELECT id, deleted_at
+      FROM ads
+      WHERE id = ?
+      LIMIT 1
+    `
+  )
+    .bind(adId)
+    .first<{ id: number; deleted_at: string | null }>();
+
+  if (!existing) {
+    return 'missing';
+  }
+
+  return existing.deleted_at ? 'already' : 'missing';
+}
+
+async function promoteAdminUser(env: Env, userId: number): Promise<'promoted' | 'already' | 'missing'> {
+  const user = await findUserById(env, userId);
+  if (!user) {
+    return 'missing';
+  }
+
+  if (user.role === 'admin') {
+    return 'already';
+  }
+
+  await env.DB.prepare(
+    `
+      UPDATE users
+      SET role = 'admin',
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `
+  )
+    .bind(userId)
+    .run();
+
+  return 'promoted';
+}
+
+async function demoteAdminUser(env: Env, userId: number): Promise<'demoted' | 'already' | 'missing'> {
+  const user = await findUserById(env, userId);
+  if (!user) {
+    return 'missing';
+  }
+
+  if (user.role !== 'admin') {
+    return 'already';
+  }
+
+  await env.DB.prepare(
+    `
+      UPDATE users
+      SET role = 'user',
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `
+  )
+    .bind(userId)
+    .run();
+
+  return 'demoted';
+}
+
+async function deleteAdminUser(env: Env, userId: number): Promise<'deleted' | 'self' | 'missing'> {
+  const user = await findUserById(env, userId);
+  if (!user) {
+    return 'missing';
+  }
+
+  const adsResult = await env.DB.prepare(
+    `
+      UPDATE ads
+      SET owner_user_id = NULL,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE owner_user_id = ?
+    `
+  )
+    .bind(userId)
+    .run();
+
+  await env.DB.batch([
+    env.DB.prepare(
+      `
+        DELETE FROM sessions
+        WHERE user_id = ?
+      `
+    ).bind(userId),
+    env.DB.prepare(
+      `
+        DELETE FROM user_identities
+        WHERE user_id = ?
+      `
+    ).bind(userId),
+    env.DB.prepare(
+      `
+        DELETE FROM users
+        WHERE id = ?
+      `
+    ).bind(userId),
+  ]);
+
+  return (adsResult.meta.changes ?? 0) >= 0 ? 'deleted' : 'missing';
+}
+
 async function sendUserBotCategoryPrompt(env: Env, chatId: number): Promise<void> {
   await sendUserBotMessage(env, chatId, 'Выбери категорию', userBotCategoryMarkup());
 }
@@ -1660,6 +2134,319 @@ async function editTelegramMessage(
   if (!response.ok) {
     throw new Error(`Telegram editMessageText failed with status ${response.status}`);
   }
+}
+
+async function startAdminBotEditFlow(env: Env, chatId: number, adId: number, page: number): Promise<boolean> {
+  const ad = await getAdById(env, adId);
+  if (!ad) {
+    await sendAdminBotHome(env, chatId, 'Объявление не найдено');
+    return false;
+  }
+
+  await upsertBotDraft(env, String(chatId), `admin-edit:${page}`, 'title', ad.category, ad.title, ad.body, ad.id);
+  await sendAdminBotMessage(env, chatId, 'Введи новый заголовок');
+  return true;
+}
+
+async function handleAdminBotText(
+  env: Env,
+  chatId: number,
+  text: string,
+  ctx: ExecutionContext
+): Promise<void> {
+  const draft = await getBotDraft(env, String(chatId));
+
+  if (!draft || !draft.action.startsWith('admin-edit')) {
+    const normalized = text.trim();
+    if (normalized === '/start' || normalized === '/menu') {
+      await sendAdminBotHome(env, chatId);
+      return;
+    }
+
+    if (normalized === '/ads') {
+      await sendAdminBotAds(env, chatId, 1);
+      return;
+    }
+
+    if (normalized === '/users') {
+      await sendAdminBotUsers(env, chatId, 1);
+      return;
+    }
+
+    return;
+  }
+
+  if (!draft.ad_id) {
+    await clearBotDraft(env, String(chatId));
+    await sendAdminBotHome(env, chatId, 'Черновик потерян');
+    return;
+  }
+
+  if (draft.step === 'title') {
+    const title = text.trim();
+    if (!title) {
+      await sendAdminBotMessage(env, chatId, 'Заголовок не должен быть пустым');
+      return;
+    }
+
+    await upsertBotDraft(env, String(chatId), draft.action, 'body', draft.category, title, draft.body, draft.ad_id);
+    await sendAdminBotMessage(env, chatId, 'Введи новый текст');
+    return;
+  }
+
+  if (draft.step === 'body') {
+    const body = text.trim();
+    if (!body) {
+      await sendAdminBotMessage(env, chatId, 'Текст не должен быть пустым');
+      return;
+    }
+
+    await upsertBotDraft(env, String(chatId), draft.action, 'category', draft.category, draft.title, body, draft.ad_id);
+    await sendAdminBotMessage(env, chatId, 'Введи новую категорию: things, jobs, services, rent, creative, misc');
+    return;
+  }
+
+  if (draft.step === 'category') {
+    const category = normalizeCategory(text.trim());
+    const adId = draft.ad_id;
+    const page = Number(draft.action.split(':')[1] || '1');
+    const normalizedPage = Number.isInteger(page) && page > 0 ? page : 1;
+
+    const result = await env.DB.prepare(
+      `
+        UPDATE ads
+        SET title = ?,
+            body = ?,
+            category = ?,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+          AND deleted_at IS NULL
+      `
+    )
+      .bind(draft.title || '', draft.body || '', category, adId)
+      .run();
+
+    await clearBotDraft(env, String(chatId));
+
+    if ((result.meta.changes ?? 0) === 0) {
+      await sendAdminBotAds(env, chatId, normalizedPage);
+      return;
+    }
+
+    await sendAdminBotAds(env, chatId, normalizedPage);
+    ctx.waitUntil(
+      sendTelegramMessage(env, {
+        id: adId,
+        title: draft.title || '',
+        body: draft.body || '',
+        category,
+      }, 'Edited').catch((error: unknown) => {
+        console.error('Telegram notification failed after admin edit', error);
+      })
+    );
+  }
+}
+
+async function handleAdminBotCallback(
+  update: TelegramUpdate,
+  env: Env,
+  ctx: ExecutionContext
+): Promise<Response> {
+  const callbackQuery = update.callback_query;
+  if (!callbackQuery?.data || !callbackQuery.message) {
+    return json({ ok: true });
+  }
+
+  const chatId = callbackQuery.message.chat.id;
+  const data = callbackQuery.data;
+
+  const [action, id] = data.split(':', 2);
+  if (id && (action === 'publish' || action === 'reject')) {
+    const numericId = Number(id);
+    if (!Number.isInteger(numericId) || numericId <= 0) {
+      await answerAdminCallbackQuery(env, callbackQuery.id, 'Invalid id').catch(() => {});
+      return json({ ok: true });
+    }
+
+    const ad = await getAdById(env, numericId);
+    if (!ad) {
+      await answerAdminCallbackQuery(env, callbackQuery.id, 'Ad not found').catch(() => {});
+      return json({ ok: true });
+    }
+
+    const status = action === 'publish' ? 'published' : 'rejected';
+    const result = await env.DB.prepare(
+      `
+        UPDATE ads
+        SET status = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+          AND deleted_at IS NULL
+      `
+    )
+      .bind(status, numericId)
+      .run();
+
+    if (result.meta.changes === 0) {
+      await answerAdminCallbackQuery(env, callbackQuery.id, 'Ad not found').catch(() => {});
+      return json({ ok: true });
+    }
+
+    const itemKind: 'New' | 'Edited' =
+      callbackQuery.message.text?.startsWith('Type: Edited') ? 'Edited' : 'New';
+
+    try {
+      await editTelegramMessage(
+        env,
+        callbackQuery.message.chat.id,
+        callbackQuery.message.message_id,
+        ad,
+        status === 'published' ? 'Published' : 'Rejected',
+        itemKind
+      );
+    } catch (error) {
+      console.error('Failed to edit Telegram message', error);
+    }
+
+    await answerAdminCallbackQuery(env, callbackQuery.id, status === 'published' ? 'Published' : 'Rejected').catch(() => {});
+    return json({ ok: true });
+  }
+
+  if (data === ADMIN_BOT_MENU_HOME) {
+    await answerAdminCallbackQuery(env, callbackQuery.id).catch(() => {});
+    await sendAdminBotHome(env, chatId);
+    return json({ ok: true });
+  }
+
+  if (action === 'admin' && id === 'ads' && data.split(':')[2] === 'page') {
+    const page = Number(data.split(':')[3] || '1');
+    await answerAdminCallbackQuery(env, callbackQuery.id).catch(() => {});
+    await sendAdminBotAds(env, chatId, Number.isInteger(page) && page > 0 ? page : 1);
+    return json({ ok: true });
+  }
+
+  if (action === 'admin' && id === 'users' && data.split(':')[2] === 'page') {
+    const page = Number(data.split(':')[3] || '1');
+    await answerAdminCallbackQuery(env, callbackQuery.id).catch(() => {});
+    await sendAdminBotUsers(env, chatId, Number.isInteger(page) && page > 0 ? page : 1);
+    return json({ ok: true });
+  }
+
+  if (action === 'admin' && id === 'ad') {
+    const page = Number(data.split(':')[2] || '1');
+    const adId = Number(data.split(':')[3] || '0');
+    const command = data.split(':')[4] || 'view';
+
+    if (!Number.isInteger(page) || page <= 0 || !Number.isInteger(adId) || adId <= 0) {
+      await answerAdminCallbackQuery(env, callbackQuery.id, 'Invalid ad').catch(() => {});
+      return json({ ok: true });
+    }
+
+    if (command === 'edit') {
+      const started = await startAdminBotEditFlow(env, chatId, adId, page);
+      if (!started) {
+        await answerAdminCallbackQuery(env, callbackQuery.id, 'Ad not found').catch(() => {});
+        return json({ ok: true });
+      }
+
+      await answerAdminCallbackQuery(env, callbackQuery.id).catch(() => {});
+      return json({ ok: true });
+    }
+
+    if (command === 'delete') {
+      const result = await deleteAdminAd(env, adId);
+      await answerAdminCallbackQuery(
+        env,
+        callbackQuery.id,
+        result === 'deleted' ? 'Ad deleted' : result === 'already' ? 'Already deleted' : 'Ad not found'
+      ).catch(() => {});
+      await sendAdminBotAds(env, chatId, page);
+      return json({ ok: true });
+    }
+
+    if (command === 'publish' || command === 'reject') {
+      const status = command === 'publish' ? 'published' : 'rejected';
+      const response = await updateAdStatus(env, String(adId), status);
+      if (response.status === 404) {
+        await answerAdminCallbackQuery(env, callbackQuery.id, 'Ad not found').catch(() => {});
+        return json({ ok: true });
+      }
+
+      await answerAdminCallbackQuery(env, callbackQuery.id, status === 'published' ? 'Published' : 'Rejected').catch(() => {});
+      await sendAdminBotAds(env, chatId, page);
+      return json({ ok: true });
+    }
+
+    const ad = await getAdById(env, adId);
+    if (!ad) {
+      await answerAdminCallbackQuery(env, callbackQuery.id, 'Ad not found').catch(() => {});
+      return json({ ok: true });
+    }
+
+    await answerAdminCallbackQuery(env, callbackQuery.id).catch(() => {});
+    await sendAdminBotAdDetail(env, chatId, ad, page);
+    return json({ ok: true });
+  }
+
+  if (action === 'admin' && id === 'user') {
+    const page = Number(data.split(':')[2] || '1');
+    const userId = Number(data.split(':')[3] || '0');
+    const command = data.split(':')[4] || 'view';
+
+    if (!Number.isInteger(page) || page <= 0 || !Number.isInteger(userId) || userId <= 0) {
+      await answerAdminCallbackQuery(env, callbackQuery.id, 'Invalid user').catch(() => {});
+      return json({ ok: true });
+    }
+
+    if (command === 'promote') {
+      const result = await promoteAdminUser(env, userId);
+      await answerAdminCallbackQuery(env, callbackQuery.id, result === 'promoted' ? 'Admin added' : result === 'already' ? 'Already admin' : 'User not found').catch(() => {});
+      await sendAdminBotUsers(env, chatId, page);
+      return json({ ok: true });
+    }
+
+    if (command === 'demote') {
+      if (userId === chatId) {
+        await answerAdminCallbackQuery(env, callbackQuery.id, 'Cannot demote yourself').catch(() => {});
+        return json({ ok: true });
+      }
+
+      const result = await demoteAdminUser(env, userId);
+      await answerAdminCallbackQuery(env, callbackQuery.id, result === 'demoted' ? 'User added' : result === 'already' ? 'Already user' : 'User not found').catch(() => {});
+      await sendAdminBotUsers(env, chatId, page);
+      return json({ ok: true });
+    }
+
+    if (command === 'delete') {
+      if (userId === chatId) {
+        await answerAdminCallbackQuery(env, callbackQuery.id, 'Cannot delete yourself').catch(() => {});
+        return json({ ok: true });
+      }
+
+      const result = await deleteAdminUser(env, userId);
+      await answerAdminCallbackQuery(env, callbackQuery.id, result === 'deleted' ? 'User deleted' : 'User not found').catch(() => {});
+      await sendAdminBotUsers(env, chatId, page);
+      return json({ ok: true });
+    }
+
+    const user = await findUserById(env, userId);
+    if (!user) {
+      await answerAdminCallbackQuery(env, callbackQuery.id, 'User not found').catch(() => {});
+      return json({ ok: true });
+    }
+
+    await answerAdminCallbackQuery(env, callbackQuery.id).catch(() => {});
+    await sendAdminBotUserDetail(env, chatId, {
+      id: user.id,
+      login: user.login,
+      email: user.email,
+      role: user.role,
+      created_at: user.created_at,
+    }, page);
+    return json({ ok: true });
+  }
+
+  await answerAdminCallbackQuery(env, callbackQuery.id, 'Unknown action').catch(() => {});
+  return json({ ok: true });
 }
 
 async function getAdById(env: Env, id: number): Promise<AdRow | null> {
@@ -1929,9 +2716,23 @@ async function handleTelegramWebhook(request: Request, env: Env): Promise<Respon
     return text('Bad Request', 400);
   }
 
+  if (update.message?.text && update.message.from) {
+    const chatId = update.message.chat.id;
+    if (isAdminTelegramChat(env, chatId)) {
+      await handleAdminBotText(env, chatId, update.message.text, NOOP_EXECUTION_CONTEXT).catch((error: unknown) => {
+        console.error('Failed to handle admin bot text', error);
+      });
+      return json({ ok: true });
+    }
+  }
+
   const callbackQuery = update.callback_query;
   if (!callbackQuery?.data || !callbackQuery.message) {
     return json({ ok: true });
+  }
+
+  if (isAdminTelegramChat(env, callbackQuery.message.chat.id)) {
+    return handleAdminBotCallback(update, env, NOOP_EXECUTION_CONTEXT);
   }
 
   const [action, id] = callbackQuery.data.split(':', 2);
@@ -3041,9 +3842,27 @@ async function handleAdminGet(request: Request, env: Env): Promise<Response> {
     return text('Forbidden', 403);
   }
 
-  const message = new URL(request.url).searchParams.get('message');
-  const users = await listAllUsers(env);
-  return renderAdminPage(currentUser, await listAllAds(env), users, message);
+  const url = new URL(request.url);
+  const section = parseAdminSection(url.searchParams.get('section'));
+  const requestedPage = parseAdminPage(url.searchParams.get('page'));
+  const message = url.searchParams.get('message');
+
+  if (section === 'users') {
+    const totalUsers = await countAllUsers(env);
+    const totalPages = Math.max(1, Math.ceil(totalUsers / ADMIN_PAGE_SIZE));
+    const page = Math.min(requestedPage, totalPages);
+    return renderAdminUsersSection(
+      currentUser,
+      await listAdminUsersPage(env, page),
+      { page, totalPages },
+      message
+    );
+  }
+
+  const totalAds = await countAllAds(env);
+  const totalPages = Math.max(1, Math.ceil(totalAds / ADMIN_PAGE_SIZE));
+  const page = Math.min(requestedPage, totalPages);
+  return renderAdminAdsSection(currentUser, await listAdminAdsPage(env, page), { page, totalPages }, message);
 }
 
 async function handleAdminDeleteRoute(request: Request, env: Env, id: string): Promise<Response> {
@@ -3064,6 +3883,9 @@ async function handleAdminDeleteRoute(request: Request, env: Env, id: string): P
   if (!Number.isInteger(numericId) || numericId <= 0) {
     return text('Not Found', 404);
   }
+
+  const url = new URL(request.url);
+  const page = parseAdminPage(url.searchParams.get('page'));
 
   const result = await env.DB.prepare(
     `
@@ -3094,13 +3916,72 @@ async function handleAdminDeleteRoute(request: Request, env: Env, id: string): P
     }
 
     if (existingAd.deleted_at) {
-      return redirectWithMessage('/admin', 'Объявление уже удалено');
+      return redirectWithHeaders(buildAdminUrl('ads', page, 'Объявление уже удалено'));
     }
 
     return text('Not Found', 404);
   }
 
-  return redirectWithMessage('/admin', 'Объявление удалено');
+  return redirectWithHeaders(buildAdminUrl('ads', page, 'Объявление удалено'));
+}
+
+async function handleAdminUserActionRoute(request: Request, env: Env, id: string, action: 'promote' | 'demote' | 'delete'): Promise<Response> {
+  const currentUser = await getCurrentUser(request, env);
+  if (!currentUser) {
+    return redirect('/login?next=/admin');
+  }
+
+  if (currentUser.role !== 'admin') {
+    return text('Forbidden', 403);
+  }
+
+  if (request.method !== 'POST') {
+    return text('Method Not Allowed', 405);
+  }
+
+  const numericId = Number(id);
+  if (!Number.isInteger(numericId) || numericId <= 0) {
+    return text('Not Found', 404);
+  }
+
+  const url = new URL(request.url);
+  const page = parseAdminPage(url.searchParams.get('page'));
+
+  if (action === 'delete' && numericId === currentUser.id) {
+    return redirectWithHeaders(buildAdminUrl('users', page, 'Нельзя удалить себя'));
+  }
+
+  const target = await findUserById(env, numericId);
+  if (!target) {
+    return text('Not Found', 404);
+  }
+
+  if (action === 'promote') {
+    const result = await promoteAdminUser(env, numericId);
+    if (result === 'missing') {
+      return text('Not Found', 404);
+    }
+    return redirectWithHeaders(buildAdminUrl('users', page, result === 'promoted' ? `Пользователь ${target.login} теперь admin` : 'Пользователь уже admin'));
+  }
+
+  if (action === 'demote') {
+    if (numericId === currentUser.id) {
+      return redirectWithHeaders(buildAdminUrl('users', page, 'Нельзя понизить себя'));
+    }
+
+    const result = await demoteAdminUser(env, numericId);
+    if (result === 'missing') {
+      return text('Not Found', 404);
+    }
+    return redirectWithHeaders(buildAdminUrl('users', page, result === 'demoted' ? `Пользователь ${target.login} теперь user` : 'Пользователь уже user'));
+  }
+
+  const result = await deleteAdminUser(env, numericId);
+  if (result === 'missing') {
+    return text('Not Found', 404);
+  }
+
+  return redirectWithHeaders(buildAdminUrl('users', page, `Пользователь ${target.login} удалён`));
 }
 
 async function handleAdminEditRoute(request: Request, env: Env, ctx: ExecutionContext, id: string): Promise<Response> {
@@ -3118,13 +3999,15 @@ async function handleAdminEditRoute(request: Request, env: Env, ctx: ExecutionCo
     return text('Not Found', 404);
   }
 
+  const page = parseAdminPage(new URL(request.url).searchParams.get('page'));
+
   const ad = await getAdById(env, numericId);
   if (!ad) {
     return text('Not Found', 404);
   }
 
   if (request.method === 'GET') {
-    return renderEditPage(currentUser, ad, null, `/admin/edit/${ad.id}`);
+    return renderEditPage(currentUser, ad, null, buildAdminActionUrl(`/admin/edit/${ad.id}`, 'ads', page));
   }
 
   if (request.method !== 'POST') {
@@ -3137,7 +4020,7 @@ async function handleAdminEditRoute(request: Request, env: Env, ctx: ExecutionCo
   const category = String(form.get('category') || '').trim();
 
   if (!title || !body) {
-    return renderEditPage(currentUser, ad, 'Заполни заголовок и текст', `/admin/edit/${ad.id}`);
+    return renderEditPage(currentUser, ad, 'Заполни заголовок и текст', buildAdminActionUrl(`/admin/edit/${ad.id}`, 'ads', page));
   }
 
   const normalizedCategory = normalizeCategory(category);
@@ -3155,7 +4038,7 @@ async function handleAdminEditRoute(request: Request, env: Env, ctx: ExecutionCo
     .bind(title, body, normalizedCategory, numericId)
     .run();
 
-  return redirectWithMessage('/admin', 'Объявление сохранено');
+  return redirectWithHeaders(buildAdminUrl('ads', page, 'Объявление сохранено'));
 }
 
 async function handleAdminPromoteUserRoute(request: Request, env: Env, id: string): Promise<Response> {
@@ -3178,7 +4061,7 @@ async function handleAdminPromoteUserRoute(request: Request, env: Env, id: strin
   }
 
   if (numericId === currentUser.id) {
-    return redirectWithMessage('/admin', 'Нельзя назначить admin самому себе');
+    return redirectWithHeaders(buildAdminUrl('users', 1, 'Нельзя назначить admin самому себе'));
   }
 
   const targetUser = await findUserById(env, numericId);
@@ -3187,7 +4070,7 @@ async function handleAdminPromoteUserRoute(request: Request, env: Env, id: strin
   }
 
   if (targetUser.role === 'admin') {
-    return redirectWithMessage('/admin', 'Пользователь уже admin');
+    return redirectWithHeaders(buildAdminUrl('users', 1, 'Пользователь уже admin'));
   }
 
   await env.DB.prepare(
@@ -3201,7 +4084,7 @@ async function handleAdminPromoteUserRoute(request: Request, env: Env, id: strin
     .bind(numericId)
     .run();
 
-  return redirectWithMessage('/admin', `Пользователь ${targetUser.login} теперь admin`);
+  return redirectWithHeaders(buildAdminUrl('users', 1, `Пользователь ${targetUser.login} теперь admin`));
 }
 
 async function handleSettingsGet(request: Request, env: Env): Promise<Response> {
@@ -3623,7 +4506,15 @@ export default {
     }
 
     if (path.startsWith('/admin/users/') && path.endsWith('/promote')) {
-      return handleAdminPromoteUserRoute(request, env, path.slice('/admin/users/'.length, -'/promote'.length));
+      return handleAdminUserActionRoute(request, env, path.slice('/admin/users/'.length, -'/promote'.length), 'promote');
+    }
+
+    if (path.startsWith('/admin/users/') && path.endsWith('/demote')) {
+      return handleAdminUserActionRoute(request, env, path.slice('/admin/users/'.length, -'/demote'.length), 'demote');
+    }
+
+    if (path.startsWith('/admin/users/') && path.endsWith('/delete')) {
+      return handleAdminUserActionRoute(request, env, path.slice('/admin/users/'.length, -'/delete'.length), 'delete');
     }
 
     if (path.startsWith('/admin/edit/')) {

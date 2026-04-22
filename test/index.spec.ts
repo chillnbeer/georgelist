@@ -1,11 +1,13 @@
 import { env, createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
 import { createHash, createHmac } from 'node:crypto';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import worker from '../src';
 
 const TELEGRAM_BOT_TOKEN = 'telegram-test-token';
 const CURRENT_SESSION_TOKEN = 'current-session-token';
 const OTHER_SESSION_TOKEN = 'other-session-token';
+const TELEGRAM_ADMIN_CHAT_ID = 9001;
+const telegramFetchCalls: Array<{ url: string; body: unknown }> = [];
 const SCHEMA_STATEMENTS = [
   `
     CREATE TABLE IF NOT EXISTS users (
@@ -141,6 +143,16 @@ async function buildTelegramAuthUrl(mode: 'link' | 'login', input: TelegramAuthI
   });
   url.searchParams.set('hash', hash);
   return url.toString();
+}
+
+async function sendTelegramWebhook(update: unknown): Promise<Response> {
+  return runRequest(
+    new Request('http://example.com/telegram/webhook', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(update),
+    })
+  );
 }
 
 async function runRequest(request: Request): Promise<Response> {
@@ -281,10 +293,24 @@ function cookieFromSetCookie(setCookie: string | null, name: string): string | n
 }
 
 beforeEach(async () => {
+  telegramFetchCalls.length = 0;
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' || input instanceof URL ? String(input) : input.url;
+      const body = typeof init?.body === 'string' ? JSON.parse(init.body) : null;
+      telegramFetchCalls.push({ url, body });
+      return new Response(JSON.stringify({ ok: true, result: {} }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    })
+  );
   (env as { USER_TELEGRAM_BOT_TOKEN?: string }).USER_TELEGRAM_BOT_TOKEN = TELEGRAM_BOT_TOKEN;
   (env as { TELEGRAM_USER_BOT_TOKEN?: string }).TELEGRAM_USER_BOT_TOKEN = TELEGRAM_BOT_TOKEN;
   (env as { USER_TELEGRAM_BOT_USERNAME?: string }).USER_TELEGRAM_BOT_USERNAME = 'georgelist_bot';
   (env as { TELEGRAM_USER_BOT_USERNAME?: string }).TELEGRAM_USER_BOT_USERNAME = 'georgelist_bot';
+  (env as { TELEGRAM_ADMIN_ID?: string }).TELEGRAM_ADMIN_ID = String(TELEGRAM_ADMIN_CHAT_ID);
   await resetDatabase();
 });
 
@@ -566,19 +592,14 @@ describe('Admin web flow', () => {
       sessionToken: 'admin-session',
       role: 'admin',
     });
-    await seedUser({
-      id: 11,
-      login: 'alice',
-      email: 'alice@example.com',
-      sessionToken: 'alice-session',
-    });
-
-    await seedUser({
-      id: 12,
-      login: 'bob',
-      email: 'bob@example.com',
-      sessionToken: 'bob-session',
-    });
+    for (const id of [11, 12, 13, 14, 15, 16]) {
+      await seedUser({
+        id,
+        login: `user${id}`,
+        email: `user${id}@example.com`,
+        sessionToken: `user${id}-session`,
+      });
+    }
 
     const adId = await insertAd({
       title: 'Old title',
@@ -591,28 +612,27 @@ describe('Admin web flow', () => {
     const adminCookie = 'session=admin-session';
 
     const adminPage = await runRequest(
-      new Request('http://example.com/admin', {
+      new Request('http://example.com/admin?section=users&page=1', {
         headers: { Cookie: adminCookie },
       })
     );
 
     expect(adminPage.status).toBe(200);
     const adminHtml = await adminPage.text();
-    expect(adminHtml).toContain('Админка');
     expect(adminHtml).toContain('Пользователи');
+    expect(adminHtml).toContain('Страница 1 из 2');
     expect(adminHtml).toContain('Сделать admin');
-    expect(adminHtml).toContain('Old title');
-    expect(adminHtml).toContain(`/admin/edit/${adId}`);
-    expect(adminHtml).toContain(`/admin/delete/${adId}`);
+    expect(adminHtml).not.toContain('user16');
 
     const promoteUserResponse = await runRequest(
-      new Request('http://example.com/admin/users/12/promote', {
+      new Request('http://example.com/admin/users/12/promote?section=users&page=1', {
         method: 'POST',
         headers: { Cookie: adminCookie },
       })
     );
 
     expect(promoteUserResponse.status).toBe(303);
+    expect(promoteUserResponse.headers.get('Location')).toContain('/admin?section=users&page=1');
     const promotedUser = await env.DB.prepare(
       `
         SELECT role
@@ -626,8 +646,21 @@ describe('Admin web flow', () => {
 
     expect(promotedUser?.role).toBe('admin');
 
+    const adminAdsPage = await runRequest(
+      new Request('http://example.com/admin?section=ads&page=1', {
+        headers: { Cookie: adminCookie },
+      })
+    );
+
+    expect(adminAdsPage.status).toBe(200);
+    const adminAdsHtml = await adminAdsPage.text();
+    expect(adminAdsHtml).toContain('Объявления');
+    expect(adminAdsHtml).toContain('Old title');
+    expect(adminAdsHtml).toContain(`/admin/edit/${adId}`);
+    expect(adminAdsHtml).toContain(`/admin/delete/${adId}`);
+
     const editResponse = await runRequest(
-      new Request(`http://example.com/admin/edit/${adId}`, {
+      new Request(`http://example.com/admin/edit/${adId}?section=ads&page=1`, {
         method: 'POST',
         headers: {
           Cookie: adminCookie,
@@ -659,13 +692,14 @@ describe('Admin web flow', () => {
     expect(updatedAd?.deleted_at).toBeNull();
 
     const deleteResponse = await runRequest(
-      new Request(`http://example.com/admin/delete/${adId}`, {
+      new Request(`http://example.com/admin/delete/${adId}?section=ads&page=1`, {
         method: 'POST',
         headers: { Cookie: adminCookie },
       })
     );
 
     expect(deleteResponse.status).toBe(303);
+    expect(deleteResponse.headers.get('Location')).toContain('/admin?section=ads&page=1');
     const deletedAd = await env.DB.prepare(
       `
         SELECT deleted_at
@@ -691,13 +725,220 @@ describe('Admin web flow', () => {
     expect(adminAfterDeleteHtml).not.toContain('Old title');
 
     const secondDeleteResponse = await runRequest(
-      new Request(`http://example.com/admin/delete/${adId}`, {
+      new Request(`http://example.com/admin/delete/${adId}?section=ads&page=1`, {
         method: 'POST',
         headers: { Cookie: adminCookie },
       })
     );
 
     expect(secondDeleteResponse.status).toBe(303);
-    expect(secondDeleteResponse.headers.get('Location')).toContain('/admin');
+    expect(secondDeleteResponse.headers.get('Location')).toContain('/admin?section=ads&page=1');
+  });
+});
+
+describe('Admin bot flow', () => {
+  it('shows the admin menu and can promote a user from the bot', async () => {
+    for (const id of [30, 31, 32, 33, 34, 35]) {
+      await seedUser({
+        id,
+        login: `botuser${id}`,
+        email: `botuser${id}@example.com`,
+        sessionToken: `botuser${id}-session`,
+      });
+    }
+
+    const startResponse = await sendTelegramWebhook({
+      message: {
+        chat: { id: TELEGRAM_ADMIN_CHAT_ID },
+        from: { id: TELEGRAM_ADMIN_CHAT_ID },
+        text: '/start',
+      },
+    });
+
+    expect(startResponse.status).toBe(200);
+    const startMessage = telegramFetchCalls.filter(
+      (call) => call.url.includes('/sendMessage') && typeof call.body === 'object' && call.body !== null
+    ).at(-1);
+    expect(startMessage).toBeTruthy();
+    expect((startMessage?.body as { text?: string }).text).toContain('Админ-панель');
+    expect((startMessage?.body as { reply_markup?: { inline_keyboard?: unknown[][] } }).reply_markup?.inline_keyboard?.length).toBeGreaterThan(0);
+
+    const usersPageResponse = await sendTelegramWebhook({
+      callback_query: {
+        id: 'cb-users',
+        data: 'admin:users:page:1',
+        message: {
+          chat: { id: TELEGRAM_ADMIN_CHAT_ID },
+          message_id: 100,
+        },
+      },
+    });
+
+    expect(usersPageResponse.status).toBe(200);
+    const usersPageMessage = telegramFetchCalls.filter(
+      (call) => call.url.includes('/sendMessage') && typeof call.body === 'object' && call.body !== null
+    ).at(-1);
+    expect((usersPageMessage?.body as { text?: string }).text).toContain('Пользователи: страница 1/2');
+
+    const promoteResponse = await sendTelegramWebhook({
+      callback_query: {
+        id: 'cb-promote',
+        data: `admin:user:1:30:promote`,
+        message: {
+          chat: { id: TELEGRAM_ADMIN_CHAT_ID },
+          message_id: 100,
+        },
+      },
+    });
+
+    expect(promoteResponse.status).toBe(200);
+    const promotedUser = await env.DB.prepare(
+      `
+        SELECT role
+        FROM users
+        WHERE id = ?
+        LIMIT 1
+      `
+    )
+      .bind(30)
+      .first<{ role: string }>();
+
+    expect(promotedUser?.role).toBe('admin');
+
+    const userMessages = telegramFetchCalls
+      .filter((call) => call.url.includes('/sendMessage'))
+      .map((call) => call.body as { text?: string });
+    expect(userMessages.some((body) => String(body.text || '').includes('Пользователи: страница 1/2'))).toBe(true);
+  });
+
+  it('can edit and delete ads from the bot', async () => {
+    await seedUser({
+      id: 31,
+      login: 'owner',
+      email: 'owner@example.com',
+      sessionToken: 'owner-session',
+    });
+
+    const adIds: number[] = [];
+    for (let index = 0; index < 6; index += 1) {
+      adIds.push(
+        await insertAd({
+          title: `Bot title ${index + 1}`,
+          body: `Bot body ${index + 1}`,
+          category: 'misc',
+          ownerUserId: 31,
+          status: 'published',
+        })
+      );
+    }
+
+    const openAdResponse = await sendTelegramWebhook({
+      callback_query: {
+        id: 'cb-open',
+        data: 'admin:ads:page:1',
+        message: {
+          chat: { id: TELEGRAM_ADMIN_CHAT_ID },
+          message_id: 200,
+        },
+      },
+    });
+    expect(openAdResponse.status).toBe(200);
+    expect(
+      telegramFetchCalls.some(
+        (call) => call.url.includes('/sendMessage') && String((call.body as { text?: string }).text || '').includes('Объявления: страница 1/2')
+      )
+    ).toBe(true);
+
+    const adsPage2Response = await sendTelegramWebhook({
+      callback_query: {
+        id: 'cb-page2',
+        data: 'admin:ads:page:2',
+        message: {
+          chat: { id: TELEGRAM_ADMIN_CHAT_ID },
+          message_id: 200,
+        },
+      },
+    });
+    expect(adsPage2Response.status).toBe(200);
+    const adsPage2Message = telegramFetchCalls.filter(
+      (call) => call.url.includes('/sendMessage') && typeof call.body === 'object' && call.body !== null
+    ).at(-1);
+    expect((adsPage2Message?.body as { text?: string }).text).toContain('Объявления: страница 2/2');
+
+    const editStartResponse = await sendTelegramWebhook({
+      callback_query: {
+        id: 'cb-edit',
+        data: `admin:ad:1:${adIds[5]}:edit`,
+        message: {
+          chat: { id: TELEGRAM_ADMIN_CHAT_ID },
+          message_id: 200,
+        },
+      },
+    });
+    expect(editStartResponse.status).toBe(200);
+
+    await sendTelegramWebhook({
+      message: {
+        chat: { id: TELEGRAM_ADMIN_CHAT_ID },
+        from: { id: TELEGRAM_ADMIN_CHAT_ID },
+        text: 'Updated bot title',
+      },
+    });
+    await sendTelegramWebhook({
+      message: {
+        chat: { id: TELEGRAM_ADMIN_CHAT_ID },
+        from: { id: TELEGRAM_ADMIN_CHAT_ID },
+        text: 'Updated bot body',
+      },
+    });
+    const editSaveResponse = await sendTelegramWebhook({
+      message: {
+        chat: { id: TELEGRAM_ADMIN_CHAT_ID },
+        from: { id: TELEGRAM_ADMIN_CHAT_ID },
+        text: 'services',
+      },
+    });
+
+    expect(editSaveResponse.status).toBe(200);
+
+    const editedAd = await env.DB.prepare(
+      `
+        SELECT title, body, category
+        FROM ads
+        WHERE id = ?
+        LIMIT 1
+      `
+    )
+      .bind(adIds[5])
+      .first<{ title: string; body: string; category: string | null }>();
+
+    expect(editedAd?.title).toBe('Updated bot title');
+    expect(editedAd?.body).toBe('Updated bot body');
+    expect(editedAd?.category).toBe('services');
+
+    const deleteResponse = await sendTelegramWebhook({
+      callback_query: {
+        id: 'cb-delete',
+        data: `admin:ad:1:${adIds[5]}:delete`,
+        message: {
+          chat: { id: TELEGRAM_ADMIN_CHAT_ID },
+          message_id: 200,
+        },
+      },
+    });
+
+    expect(deleteResponse.status).toBe(200);
+    const deletedAd = await env.DB.prepare(
+      `
+        SELECT deleted_at
+        FROM ads
+        WHERE id = ?
+        LIMIT 1
+      `
+    )
+      .bind(adIds[5])
+      .first<{ deleted_at: string | null }>();
+
+    expect(deletedAd?.deleted_at).not.toBeNull();
   });
 });
