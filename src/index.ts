@@ -132,10 +132,13 @@ const TELEGRAM_AUTH_MAX_AGE_SECONDS = 60 * 60 * 24;
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 const USER_BOT_MENU_CREATE = 'user:create';
+const USER_BOT_MENU_SECTIONS = 'user:sections';
 const USER_BOT_MENU_EDIT = 'user:edit';
 const USER_BOT_MENU_DELETE = 'user:delete';
 const USER_BOT_MENU_MY = 'user:my';
 const USER_BOT_MENU_MY_AD = 'user:myad:';
+const USER_BOT_SECTION_PREFIX = 'user:section:';
+const USER_BOT_SECTION_AD_PREFIX = 'user:sectionad:';
 const USER_BOT_DELETE_PREFIX = 'delete_';
 const USER_BOT_DRAFT_PREFIX = 'draft:';
 const USER_BOT_DRAFT_CANCEL = 'draft:confirm:cancel';
@@ -1525,7 +1528,42 @@ function userBotMenuMarkup(env: Env): Record<string, unknown> {
     inline_keyboard: [
       [{ text: 'Создать', callback_data: USER_BOT_MENU_CREATE }],
       [{ text: 'Мои объявления', callback_data: USER_BOT_MENU_MY }],
+      [{ text: 'Разделы', callback_data: USER_BOT_MENU_SECTIONS }],
       [{ text: 'Открыть сайт', url: buildPublicSiteUrl(env, '/') }],
+    ],
+  };
+}
+
+function userBotSectionsMarkup(): Record<string, unknown> {
+  return {
+    inline_keyboard: [
+      [{ text: 'Вещи', callback_data: `${USER_BOT_SECTION_PREFIX}things` }],
+      [{ text: 'Работа', callback_data: `${USER_BOT_SECTION_PREFIX}jobs` }],
+      [{ text: 'Услуги', callback_data: `${USER_BOT_SECTION_PREFIX}services` }],
+      [{ text: 'Аренда', callback_data: `${USER_BOT_SECTION_PREFIX}rent` }],
+      [{ text: 'Творчество', callback_data: `${USER_BOT_SECTION_PREFIX}creative` }],
+      [{ text: 'Разное', callback_data: `${USER_BOT_SECTION_PREFIX}misc` }],
+      [{ text: 'Назад', callback_data: USER_BOT_MENU_MY }],
+    ],
+  };
+}
+
+function userBotSectionAdsMarkup(category: string, ads: Array<{ id: number; title: string }>): Record<string, unknown> {
+  return {
+    inline_keyboard: [
+      ...ads.map((ad) => [
+        { text: ad.title.slice(0, 40) || `#${ad.id}`, callback_data: `${USER_BOT_SECTION_AD_PREFIX}${category}:${ad.id}` },
+      ]),
+      [{ text: 'Назад к разделам', callback_data: USER_BOT_MENU_SECTIONS }],
+    ],
+  };
+}
+
+function userBotSectionAdMarkup(category: string): Record<string, unknown> {
+  return {
+    inline_keyboard: [
+      [{ text: 'Назад к категории', callback_data: `${USER_BOT_SECTION_PREFIX}${category}` }],
+      [{ text: 'Назад к разделам', callback_data: USER_BOT_MENU_SECTIONS }],
     ],
   };
 }
@@ -1597,6 +1635,63 @@ async function sendUserBotMenu(env: Env, chatId: number, greeting: string, login
   lines.push('');
   lines.push('Что делаем?');
   await sendUserBotMessage(env, chatId, lines.join('\n'), userBotMenuMarkup(env));
+}
+
+async function sendUserBotSections(env: Env, chatId: number): Promise<void> {
+  await sendUserBotMessage(env, chatId, 'Разделы', userBotSectionsMarkup());
+}
+
+async function sendUserBotSectionAds(env: Env, chatId: number, category: string): Promise<void> {
+  const categoryKey = normalizeCategory(category);
+  const ads = await listPublishedAdsByCategory(env, categoryKey);
+  if (!ads.length) {
+    await sendUserBotMessage(
+      env,
+      chatId,
+      `${categoryLabel(categoryKey)}\n\nОбъявлений пока нет`,
+      userBotSectionsMarkup()
+    );
+    return;
+  }
+
+  await sendUserBotMessage(
+    env,
+    chatId,
+    `${categoryLabel(categoryKey)}\n\nВыбери объявление`,
+    userBotSectionAdsMarkup(categoryKey, ads.map((ad) => ({ id: ad.id, title: ad.title })))
+  );
+}
+
+async function sendUserBotSectionAdDetail(env: Env, chatId: number, category: string, adId: number): Promise<void> {
+  const categoryKey = normalizeCategory(category);
+  const ad = await env.DB.prepare(
+    `
+      SELECT id, title, body, category, created_at
+      FROM ads
+      WHERE id = ?
+        AND category = ?
+        AND status = 'published'
+        AND deleted_at IS NULL
+      LIMIT 1
+    `
+  )
+    .bind(adId, categoryKey)
+    .first<{ id: number; title: string; body: string; category: string | null; created_at: string }>();
+
+  if (!ad) {
+    await sendUserBotMessage(env, chatId, 'Объявление не найдено', userBotSectionsMarkup());
+    return;
+  }
+
+  const text = [
+    `Заголовок: ${ad.title}`,
+    `Категория: ${categoryLabel(ad.category)}`,
+    'Текст:',
+    ad.body,
+    `Дата: ${ad.created_at}`,
+  ].join('\n');
+
+  await sendUserBotMessage(env, chatId, text, userBotSectionAdMarkup(categoryKey));
 }
 
 function isAdminTelegramChat(env: Env, chatId: number): boolean {
@@ -3157,6 +3252,11 @@ async function handleUserBotMenuAction(
     return;
   }
 
+  if (action === USER_BOT_MENU_SECTIONS) {
+    await sendUserBotSections(env, chatId);
+    return;
+  }
+
   if (action === USER_BOT_MENU_EDIT) {
     await sendUserBotMessage(env, chatId, 'Редактирование скоро будет');
     return;
@@ -3454,9 +3554,43 @@ async function handleUserBotCallback(
     return json({ ok: true });
   }
 
+  if (data === USER_BOT_MENU_SECTIONS) {
+    await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
+    await handleUserBotMenuAction(env, telegramUserId, chatId, data);
+    return json({ ok: true });
+  }
+
   if (data === USER_BOT_MENU_MY) {
     await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
     await sendUserBotMyAds(env, telegramUserId, chatId);
+    return json({ ok: true });
+  }
+
+  if (data.startsWith(USER_BOT_SECTION_PREFIX)) {
+    const suffix = data.slice(USER_BOT_SECTION_PREFIX.length);
+    if (suffix) {
+      await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
+      await sendUserBotSectionAds(env, chatId, suffix);
+      return json({ ok: true });
+    }
+
+    await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
+    await sendUserBotSections(env, chatId);
+    return json({ ok: true });
+  }
+
+  if (data.startsWith(USER_BOT_SECTION_AD_PREFIX)) {
+    const payload = data.slice(USER_BOT_SECTION_AD_PREFIX.length);
+    const [category, idText] = payload.split(':', 2);
+    const adId = Number(idText);
+
+    if (!category || !Number.isInteger(adId) || adId <= 0) {
+      await answerUserCallbackQuery(env, callbackQuery.id, 'Invalid ad').catch(() => {});
+      return json({ ok: true });
+    }
+
+    await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
+    await sendUserBotSectionAdDetail(env, chatId, category, adId);
     return json({ ok: true });
   }
 

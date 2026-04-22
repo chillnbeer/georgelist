@@ -155,6 +155,16 @@ async function sendTelegramWebhook(update: unknown): Promise<Response> {
   );
 }
 
+async function sendUserTelegramWebhook(update: unknown): Promise<Response> {
+  return runRequest(
+    new Request('http://example.com/telegram/user-webhook', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(update),
+    })
+  );
+}
+
 async function runRequest(request: Request): Promise<Response> {
   const ctx = createExecutionContext();
   const response = await worker.fetch(request, env, ctx);
@@ -556,6 +566,129 @@ describe('Telegram linking flow', () => {
     const relinkHtml = await settingsAfterRelink.text();
     expect(relinkHtml).toContain('Telegram: @bob_tg_new');
     expect(relinkHtml).toContain('Привязка уже настроена.');
+  });
+});
+
+describe('User bot browsing flow', () => {
+  it('keeps the main menu focused and exposes public browsing through sections', async () => {
+    await seedUser({
+      id: 40,
+      login: 'browser',
+      email: 'browser@example.com',
+      sessionToken: 'browser-session',
+    });
+    await insertTelegramIdentity({
+      userId: 40,
+      telegramUserId: '40001',
+      telegramUsername: 'browser_tg',
+    });
+    const publishedThingsId = await insertAd({
+      title: 'Published things',
+      body: 'Things body',
+      category: 'things',
+      ownerUserId: 40,
+      status: 'published',
+    });
+    await insertAd({
+      title: 'Pending things',
+      body: 'Hidden body',
+      category: 'things',
+      ownerUserId: 40,
+      status: 'pending',
+    });
+
+    const startResponse = await sendUserTelegramWebhook({
+      message: {
+        chat: { id: 40001 },
+        from: { id: 40001, username: 'browser_tg' },
+        text: '/start',
+      },
+    });
+
+    expect(startResponse.status).toBe(200);
+    const startMessage = telegramFetchCalls.filter(
+      (call) => call.url.includes('/sendMessage') && typeof call.body === 'object' && call.body !== null
+    ).at(-1);
+    expect(startMessage).toBeTruthy();
+
+    const startMarkup = (startMessage?.body as { reply_markup?: { inline_keyboard?: Array<Array<{ text: string }>> } }).reply_markup?.inline_keyboard || [];
+    const flatButtons = startMarkup.flat().map((button) => button.text);
+    expect(flatButtons).toContain('Создать');
+    expect(flatButtons).toContain('Мои объявления');
+    expect(flatButtons).toContain('Разделы');
+    expect(flatButtons).not.toContain('Редактировать');
+    expect(flatButtons).not.toContain('Удалить');
+
+    const sectionsResponse = await sendUserTelegramWebhook({
+      callback_query: {
+        id: 'cb-sections',
+        data: 'user:sections',
+        message: {
+          chat: { id: 40001 },
+          message_id: 10,
+        },
+      },
+    });
+
+    expect(sectionsResponse.status).toBe(200);
+    const sectionsMessage = telegramFetchCalls.filter(
+      (call) => call.url.includes('/sendMessage') && typeof call.body === 'object' && call.body !== null
+    ).at(-1);
+    const sectionsText = String((sectionsMessage?.body as { text?: string }).text || '');
+    expect(sectionsText).toContain('Разделы');
+    const sectionsMarkup = (sectionsMessage?.body as { reply_markup?: { inline_keyboard?: Array<Array<{ text: string }>> } }).reply_markup?.inline_keyboard || [];
+    const sectionButtons = sectionsMarkup.flat().map((button) => button.text);
+    expect(sectionButtons).toContain('Вещи');
+    expect(sectionButtons).toContain('Разное');
+
+    const categoryResponse = await sendUserTelegramWebhook({
+      callback_query: {
+        id: 'cb-category',
+        data: 'user:section:things',
+        message: {
+          chat: { id: 40001 },
+          message_id: 11,
+        },
+      },
+    });
+
+    expect(categoryResponse.status).toBe(200);
+    const categoryMessage = telegramFetchCalls.filter(
+      (call) => call.url.includes('/sendMessage') && typeof call.body === 'object' && call.body !== null
+    ).at(-1);
+    const categoryText = String((categoryMessage?.body as { text?: string }).text || '');
+    expect(categoryText).toContain('Вещи');
+    expect(categoryText).toContain('Выбери объявление');
+
+    const categoryMarkup = (categoryMessage?.body as { reply_markup?: { inline_keyboard?: Array<Array<{ text: string }>> } }).reply_markup?.inline_keyboard || [];
+    const categoryButtons = categoryMarkup.flat().map((button) => button.text);
+    expect(categoryButtons).toContain('Published things');
+    expect(categoryButtons).not.toContain('Pending things');
+    expect(categoryButtons).toContain('Назад к разделам');
+
+    const adResponse = await sendUserTelegramWebhook({
+      callback_query: {
+        id: 'cb-ad',
+        data: `user:sectionad:things:${publishedThingsId}`,
+        message: {
+          chat: { id: 40001 },
+          message_id: 12,
+        },
+      },
+    });
+
+    expect(adResponse.status).toBe(200);
+    const adMessage = telegramFetchCalls.filter(
+      (call) => call.url.includes('/sendMessage') && typeof call.body === 'object' && call.body !== null
+    ).at(-1);
+    const adText = String((adMessage?.body as { text?: string }).text || '');
+    expect(adText).toContain('Published things');
+    expect(adText).toContain('Things body');
+    expect(adText).toContain('Дата:');
+    const adMarkup = (adMessage?.body as { reply_markup?: { inline_keyboard?: Array<Array<{ text: string }>> } }).reply_markup?.inline_keyboard || [];
+    const adButtons = adMarkup.flat().map((button) => button.text);
+    expect(adButtons).toContain('Назад к категории');
+    expect(adButtons).toContain('Назад к разделам');
   });
 });
 
