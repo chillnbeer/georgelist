@@ -19,6 +19,10 @@ type Env = {
   TELEGRAM_ADMIN_ID: string;
   USER_TELEGRAM_BOT_TOKEN?: string;
   TELEGRAM_USER_BOT_TOKEN?: string;
+  USER_TELEGRAM_BOT_USERNAME?: string;
+  TELEGRAM_USER_BOT_USERNAME?: string;
+  PUBLIC_SITE_URL?: string;
+  SITE_URL?: string;
 };
 
 type CurrentUser = {
@@ -185,6 +189,10 @@ function redirectWithHeaders(location: string, status = 303, headers?: HeadersIn
     status,
     headers: responseHeaders,
   });
+}
+
+function redirectWithMessage(path: string, message: string, status = 303, headers?: HeadersInit): Response {
+  return redirectWithHeaders(`${path}?message=${encodeURIComponent(message)}`, status, headers);
 }
 
 function categoryLabel(slug: string | null): string {
@@ -480,6 +488,12 @@ async function getTelegramUserBotUsername(env: Env): Promise<string | null> {
     return cachedTelegramUserBotUsername;
   }
 
+  const configuredUsername = env.USER_TELEGRAM_BOT_USERNAME || env.TELEGRAM_USER_BOT_USERNAME || null;
+  if (configuredUsername) {
+    cachedTelegramUserBotUsername = configuredUsername;
+    return configuredUsername;
+  }
+
   if (!cachedTelegramUserBotUsernamePromise) {
     cachedTelegramUserBotUsernamePromise = (async () => {
       const token = await getTelegramUserBotToken(env);
@@ -595,8 +609,9 @@ async function readPendingTelegramAuthValue(env: Env, request: Request): Promise
 }
 
 function nav(currentUser: CurrentUser | null = null): string {
+  const adminLink = currentUser && currentUser.role === 'admin' ? ' <a href="/admin">админка</a>' : '';
   const authLinks = currentUser
-    ? `<a href="/my">мои объявления</a> <a href="/settings">настройки</a> <form method="post" action="/logout" style="display:inline"><button class="link-button" type="submit">выйти</button></form>`
+    ? `<a href="/my">мои объявления</a> <a href="/settings">настройки</a>${adminLink} <form method="post" action="/logout" style="display:inline"><button class="link-button" type="submit">выйти</button></form>`
     : `<a href="/login">войти</a> <a href="/register">зарегистрироваться</a>`;
 
   return `<div class="nav"><a href="/">главная</a> <a href="/new">подать объявление</a> ${authLinks}</div>`;
@@ -767,8 +782,8 @@ function renderNewPage(currentUser: CurrentUser | null = null, error: string | n
   ).join('');
 
   return shell(
-    'подать объявление - jorjlist',
-    `<h1>jorjlist</h1>
+    'подать объявление - жоржлист',
+    `<h1>жоржлист</h1>
 ${nav(currentUser)}
 <div class="section">
   <h2>Подать объявление</h2>
@@ -798,8 +813,8 @@ function renderCategoryPage(slug: string, ads: AdRow[], currentUser: CurrentUser
   }
 
   return shell(
-    `${category.label} - jorjlist`,
-    `<h1>jorjlist</h1>
+    `${category.label} - жоржлист`,
+    `<h1>жоржлист</h1>
 ${nav(currentUser)}
 <div class="section">
   <h2>${htmlEscape(category.label)}</h2>
@@ -810,8 +825,8 @@ ${nav(currentUser)}
 
 function renderLoginPage(error: string | null = null, nextPath = '/my', email = ''): Response {
   return shell(
-    'войти - jorjlist',
-    `<h1>jorjlist</h1>
+    'войти - жоржлист',
+    `<h1>жоржлист</h1>
 ${nav()}
 <div class="section">
   <h2>Войти</h2>
@@ -838,11 +853,15 @@ function renderRegisterPage(
   login = '',
   email = '',
   displayName = '',
-  note: string | null = null
+  note: string | null = null,
+  telegramAuthLink: string | null = null
 ): Response {
+  const telegramAction = telegramAuthLink
+    ? `<p><a href="${htmlEscape(telegramAuthLink)}">Зарегистрироваться через Telegram</a></p>`
+    : '';
   return shell(
-    'зарегистрироваться - jorjlist',
-    `<h1>jorjlist</h1>
+    'зарегистрироваться - жоржлист',
+    `<h1>жоржлист</h1>
 ${nav()}
 <div class="section">
   <h2>Зарегистрироваться</h2>
@@ -865,6 +884,7 @@ ${nav()}
 
     <button type="submit">Создать аккаунт</button>
   </form>
+  ${telegramAction}
 </div>`
   );
 }
@@ -890,8 +910,8 @@ function renderMyPage(currentUser: CurrentUser, ads: AdRow[]): Response {
     : '<div class="empty">Пока нет твоих объявлений.</div>';
 
   return shell(
-    'мои объявления - jorjlist',
-    `<h1>jorjlist</h1>
+    'мои объявления - жоржлист',
+    `<h1>жоржлист</h1>
 ${nav(currentUser)}
 <div class="section">
   <h2>Мои объявления</h2>
@@ -906,20 +926,21 @@ ${nav(currentUser)}
 function renderEditPage(
   currentUser: CurrentUser,
   ad: AdRow,
-  error: string | null = null
+  error: string | null = null,
+  formAction = `/my/edit/${ad.id}`
 ): Response {
   const options = CATEGORIES.map(
     (category) => `<option value="${category.slug}"${category.slug === ad.category ? ' selected' : ''}>${htmlEscape(category.label)}</option>`
   ).join('');
 
   return shell(
-    'редактировать объявление - jorjlist',
-    `<h1>jorjlist</h1>
+    'редактировать объявление - жоржлист',
+    `<h1>жоржлист</h1>
 ${nav(currentUser)}
 <div class="section">
   <h2>Редактировать объявление</h2>
   ${error ? `<p class="empty">${htmlEscape(error)}</p>` : ''}
-  <form method="post" action="/my/edit/${ad.id}">
+  <form method="post" action="${htmlEscape(formAction)}">
     <label for="title">Заголовок</label>
     <input id="title" name="title" type="text" required maxlength="200" value="${htmlEscape(ad.title)}" />
 
@@ -938,19 +959,64 @@ ${nav(currentUser)}
   );
 }
 
+function renderAdminPage(currentUser: CurrentUser, ads: AdRow[], message: string | null = null): Response {
+  const items = ads.length
+    ? ads
+        .map((ad) => {
+          const owner = ad.owner_user_id ? `owner #${ad.owner_user_id}` : 'no owner';
+          const deleted = ad.deleted_at ? ` · deleted ${htmlEscape(ad.deleted_at)}` : '';
+          const category = ad.category ? `${htmlEscape(categoryLabel(ad.category))} · ` : '';
+          return `<div class="ad">
+  <div class="title">#${ad.id} · ${htmlEscape(ad.title)}</div>
+  <div class="meta">${htmlEscape(ad.status)} · ${category}${htmlEscape(owner)} · ${htmlEscape(ad.created_at)}${deleted}</div>
+  <div class="body">${htmlEscape(ad.body)}</div>
+  <div>
+    <a href="/admin/edit/${ad.id}">Редактировать</a>
+    <form method="post" action="/admin/delete/${ad.id}" style="display:inline">
+      <button class="link-button" type="submit">Удалить</button>
+    </form>
+  </div>
+</div>`;
+        })
+        .join('')
+    : '<div class="empty">Пока нет объявлений.</div>';
+
+  return shell(
+    'админка - жоржлист',
+    `<h1>жоржлист</h1>
+${nav(currentUser)}
+<div class="section">
+  <h2>Админка</h2>
+  ${message ? `<p class="empty">${htmlEscape(message)}</p>` : ''}
+  <p>Пользователь: ${htmlEscape(currentUser.login)}</p>
+  ${items}
+</div>`,
+    currentUser
+  );
+}
+
 function renderSettingsPage(
   currentUser: CurrentUser,
   telegramIdentity: UserIdentityRow | null,
-  message: string | null = null
+  message: string | null = null,
+  pendingTelegramAuth: TelegramAuthPayload | null = null
 ): Response {
   const telegramStatus = telegramIdentity
-    ? `Telegram привязан: ${htmlEscape(telegramIdentity.telegram_username ? `@${telegramIdentity.telegram_username}` : telegramIdentity.provider_user_id || '')}`
-    : 'Telegram не привязан';
+    ? `Telegram: ${htmlEscape(telegramIdentity.telegram_username ? `@${telegramIdentity.telegram_username}` : telegramIdentity.provider_user_id || '')}`
+    : 'Telegram: не привязан';
+  const telegramAction = telegramIdentity
+    ? '<p>Привязка уже настроена.</p>'
+    : pendingTelegramAuth
+      ? `<form method="post" action="/settings/link-telegram/confirm">
+  <button type="submit">Перепривязать Telegram к текущему аккаунту</button>
+</form>`
+      : '<p><a href="/settings/link-telegram">Привязать Telegram</a></p>';
+  const statusMessage = message || (pendingTelegramAuth && !telegramIdentity ? 'Этот Telegram уже привязан к другому аккаунту' : null);
   const emailValue = currentUser.email || '';
 
   return shell(
-    'настройки - jorjlist',
-    `<h1>jorjlist</h1>
+    'настройки - жоржлист',
+    `<h1>жоржлист</h1>
 ${nav(currentUser)}
 <div class="section">
   <h2>Настройки</h2>
@@ -964,8 +1030,8 @@ ${nav(currentUser)}
     <button type="submit">Сохранить</button>
   </form>
   <p>${telegramStatus}</p>
-  ${message ? `<p class="empty">${htmlEscape(message)}</p>` : ''}
-  ${telegramIdentity ? '<p>Привязка уже настроена.</p>' : '<p><a href="/settings/link-telegram">Привязать Telegram</a></p>'}
+  ${statusMessage ? `<p class="empty">${htmlEscape(statusMessage)}</p>` : ''}
+  ${telegramAction}
 </div>`,
     currentUser
   );
@@ -981,7 +1047,7 @@ function renderTelegramWidgetPage(
 ): Response {
   return shell(
     title,
-    `<h1>jorjlist</h1>
+    `<h1>жоржлист</h1>
 ${nav(currentUser)}
 <div class="section">
   <h2>${htmlEscape(heading)}</h2>
@@ -1051,6 +1117,27 @@ async function findUserByLogin(env: Env, login: string): Promise<CurrentUser | n
     `
   )
     .bind(login)
+    .first<CurrentUser>();
+
+  return result ?? null;
+}
+
+async function findUserById(env: Env, userId: number): Promise<CurrentUser | null> {
+  const result = await env.DB.prepare(
+    `
+      SELECT users.id,
+             users.login,
+             users.display_name,
+             (SELECT email FROM user_identities WHERE user_id = users.id AND provider = 'email' LIMIT 1) AS email,
+             users.role,
+             users.created_at,
+             users.updated_at
+      FROM users
+      WHERE users.id = ?
+      LIMIT 1
+    `
+  )
+    .bind(userId)
     .first<CurrentUser>();
 
   return result ?? null;
@@ -1173,6 +1260,15 @@ async function userBotApi(env: Env, method: string, payload: Record<string, unkn
   });
 }
 
+function getPublicSiteUrl(env: Env): string {
+  return (env.PUBLIC_SITE_URL || env.SITE_URL || 'https://georgelist.chillnbeer.workers.dev').replace(/\/+$/, '');
+}
+
+function buildPublicSiteUrl(env: Env, path = '/'): string {
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+  return `${getPublicSiteUrl(env)}${normalizedPath}`;
+}
+
 async function sendUserBotMessage(
   env: Env,
   chatId: number,
@@ -1201,11 +1297,12 @@ async function answerUserCallbackQuery(env: Env, callbackQueryId: string, text?:
   });
 }
 
-function userBotMenuMarkup(): Record<string, unknown> {
+function userBotMenuMarkup(env: Env): Record<string, unknown> {
   return {
     inline_keyboard: [
       [{ text: 'Создать', callback_data: USER_BOT_MENU_CREATE }],
       [{ text: 'Мои объявления', callback_data: USER_BOT_MENU_MY }],
+      [{ text: 'Открыть сайт', url: buildPublicSiteUrl(env, '/') }],
     ],
   };
 }
@@ -1268,8 +1365,15 @@ function userBotEditConfirmMarkup(): Record<string, unknown> {
   };
 }
 
-async function sendUserBotMenu(env: Env, chatId: number, greeting: string): Promise<void> {
-  await sendUserBotMessage(env, chatId, `${greeting}\n\nЧто делаем?`, userBotMenuMarkup());
+async function sendUserBotMenu(env: Env, chatId: number, greeting: string, login: string | null = null): Promise<void> {
+  const lines = [greeting];
+  if (login) {
+    lines.push(`Login: ${login}`);
+  }
+  lines.push(`Сайт: ${buildPublicSiteUrl(env, '/')}`);
+  lines.push('');
+  lines.push('Что делаем?');
+  await sendUserBotMessage(env, chatId, lines.join('\n'), userBotMenuMarkup(env));
 }
 
 async function sendUserBotCategoryPrompt(env: Env, chatId: number): Promise<void> {
@@ -1348,7 +1452,7 @@ async function sendUserBotMyAds(env: Env, telegramUserId: string, chatId: number
     .all<{ id: number; title: string; category: string | null; status: string; created_at: string }>();
 
   if (!result.results.length) {
-    await sendUserBotMessage(env, chatId, 'У тебя пока нет объявлений', userBotMenuMarkup());
+    await sendUserBotMessage(env, chatId, 'У тебя пока нет объявлений', userBotMenuMarkup(env));
     return;
   }
 
@@ -1522,6 +1626,18 @@ async function listPublishedAds(env: Env): Promise<AdRow[]> {
       FROM ads
       WHERE status = 'published'
         AND deleted_at IS NULL
+      ORDER BY created_at DESC, id DESC
+    `
+  ).all<AdRow>();
+
+  return result.results;
+}
+
+async function listAllAds(env: Env): Promise<AdRow[]> {
+  const result = await env.DB.prepare(
+    `
+      SELECT id, title, body, category, owner_user_id, status, created_at, updated_at, deleted_at
+      FROM ads
       ORDER BY created_at DESC, id DESC
     `
   ).all<AdRow>();
@@ -1893,6 +2009,54 @@ async function createTelegramUser(
   return userId;
 }
 
+async function createTelegramSignupUser(
+  env: Env,
+  telegramUserId: string,
+  displayName: string,
+  telegramUsername: string | null
+): Promise<number> {
+  let login = `tg_${telegramUserId}`;
+
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const existingLogin = await findUserByLogin(env, login);
+    if (!existingLogin) {
+      const userResult = await env.DB.prepare(
+        `
+          INSERT INTO users (login, display_name, role, created_at, updated_at)
+          VALUES (?, ?, 'user', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        `
+      )
+        .bind(login, displayName)
+        .run();
+
+      const userId = Number(userResult.meta.last_row_id);
+
+      await env.DB.prepare(
+        `
+          INSERT INTO user_identities (
+            user_id,
+            provider,
+            provider_user_id,
+            email,
+            password_hash,
+            telegram_username,
+            created_at
+          )
+          VALUES (?, 'telegram', ?, NULL, NULL, ?, CURRENT_TIMESTAMP)
+        `
+      )
+        .bind(userId, telegramUserId, telegramUsername)
+        .run();
+
+      return userId;
+    }
+
+    login = `tg_${telegramUserId}_${crypto.randomUUID().slice(0, 8)}`;
+  }
+
+  throw new Error('Unable to generate a unique Telegram login');
+}
+
 async function attachTelegramIdentityToUser(
   env: Env,
   userId: number,
@@ -1955,6 +2119,52 @@ async function attachTelegramIdentityToUser(
     `
   )
     .bind(userId, telegramUserId, telegramUsername)
+    .run();
+
+  return 'linked';
+}
+
+async function relinkTelegramIdentityToUser(
+  env: Env,
+  userId: number,
+  telegramUserId: string,
+  telegramUsername: string | null
+): Promise<'linked' | 'already' | 'conflict'> {
+  const identityByTelegram = await findTelegramIdentity(env, telegramUserId);
+  if (!identityByTelegram) {
+    return attachTelegramIdentityToUser(env, userId, telegramUserId, telegramUsername);
+  }
+
+  if (identityByTelegram.user_id === userId) {
+    if (identityByTelegram.telegram_username !== telegramUsername) {
+      await env.DB.prepare(
+        `
+          UPDATE user_identities
+          SET telegram_username = ?
+          WHERE id = ?
+        `
+      )
+        .bind(telegramUsername, identityByTelegram.id)
+        .run();
+    }
+
+    return 'already';
+  }
+
+  const identityByUser = await findTelegramIdentityByUserId(env, userId);
+  if (identityByUser && identityByUser.id !== identityByTelegram.id) {
+    return 'conflict';
+  }
+
+  await env.DB.prepare(
+    `
+      UPDATE user_identities
+      SET user_id = ?,
+          telegram_username = ?
+      WHERE id = ?
+    `
+  )
+    .bind(userId, telegramUsername, identityByTelegram.id)
     .run();
 
   return 'linked';
@@ -2061,7 +2271,8 @@ async function handleUserBotStart(
 
   const existingIdentity = await findTelegramIdentity(env, telegramUserId);
   if (existingIdentity) {
-    await sendUserBotMenu(env, chatId, 'С возвращением в georgelist');
+    const user = await findUserById(env, existingIdentity.user_id);
+    await sendUserBotMenu(env, chatId, 'С возвращением в жоржлист', user?.login || null);
     return;
   }
 
@@ -2286,7 +2497,7 @@ async function handleUserBotText(
       try {
         await createTelegramUser(env, draft.login, email, telegramUserId, telegramUsername);
         await clearBotDraft(env, telegramUserId);
-        await sendUserBotMenu(env, chatId, 'Ты зарегистрирован в georgelist');
+        await sendUserBotMenu(env, chatId, 'Ты зарегистрирован в жоржлист', draft.login);
       } catch (error) {
         console.error('Failed to create user from telegram bot', error);
         await sendUserBotMenu(env, chatId, 'Не удалось зарегистрировать аккаунт');
@@ -2366,13 +2577,13 @@ async function handleUserBotCallback(
 
   if (data === USER_BOT_MENU_EDIT) {
     await answerUserCallbackQuery(env, callbackQuery.id, 'Редактирование скоро будет').catch(() => {});
-    await sendUserBotMessage(env, chatId, 'Редактирование скоро будет', userBotMenuMarkup());
+    await sendUserBotMessage(env, chatId, 'Редактирование скоро будет', userBotMenuMarkup(env));
     return json({ ok: true });
   }
 
   if (data === USER_BOT_MENU_DELETE) {
     await answerUserCallbackQuery(env, callbackQuery.id, 'Удаление скоро будет').catch(() => {});
-    await sendUserBotMessage(env, chatId, 'Удаление скоро будет', userBotMenuMarkup());
+    await sendUserBotMessage(env, chatId, 'Удаление скоро будет', userBotMenuMarkup(env));
     return json({ ok: true });
   }
 
@@ -2557,7 +2768,8 @@ async function handleRegisterGet(request: Request, env: Env): Promise<Response> 
   const nextPath = sanitizeNextPath(url.searchParams.get('next'));
   const message = url.searchParams.get('message');
   const note = url.searchParams.get('source') === 'telegram' ? 'Telegram подтвержден. Заверши регистрацию, чтобы привязать его к аккаунту.' : null;
-  return renderRegisterPage(message, nextPath, '', '', '', note);
+  const telegramAuthLink = `/register/telegram?next=${encodeURIComponent('/settings')}`;
+  return renderRegisterPage(message, nextPath, '', '', '', note, telegramAuthLink);
 }
 
 async function handleLoginPost(request: Request, env: Env): Promise<Response> {
@@ -2759,6 +2971,113 @@ async function handleMyEditRoute(request: Request, env: Env, ctx: ExecutionConte
   return text('Method Not Allowed', 405);
 }
 
+async function handleAdminGet(request: Request, env: Env): Promise<Response> {
+  const currentUser = await getCurrentUser(request, env);
+  if (!currentUser) {
+    return redirect('/login?next=/admin');
+  }
+
+  if (currentUser.role !== 'admin') {
+    return text('Forbidden', 403);
+  }
+
+  const message = new URL(request.url).searchParams.get('message');
+  return renderAdminPage(currentUser, await listAllAds(env), message);
+}
+
+async function handleAdminDeleteRoute(request: Request, env: Env, id: string): Promise<Response> {
+  const currentUser = await getCurrentUser(request, env);
+  if (!currentUser) {
+    return redirect('/login?next=/admin');
+  }
+
+  if (currentUser.role !== 'admin') {
+    return text('Forbidden', 403);
+  }
+
+  if (request.method !== 'POST') {
+    return text('Method Not Allowed', 405);
+  }
+
+  const numericId = Number(id);
+  if (!Number.isInteger(numericId) || numericId <= 0) {
+    return text('Not Found', 404);
+  }
+
+  const result = await env.DB.prepare(
+    `
+      UPDATE ads
+      SET deleted_at = CURRENT_TIMESTAMP,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+        AND deleted_at IS NULL
+    `
+  )
+    .bind(numericId)
+    .run();
+
+  if ((result.meta.changes ?? 0) === 0) {
+    return text('Not Found', 404);
+  }
+
+  return redirectWithMessage('/admin', 'Объявление удалено');
+}
+
+async function handleAdminEditRoute(request: Request, env: Env, ctx: ExecutionContext, id: string): Promise<Response> {
+  const currentUser = await getCurrentUser(request, env);
+  if (!currentUser) {
+    return redirect('/login?next=/admin');
+  }
+
+  if (currentUser.role !== 'admin') {
+    return text('Forbidden', 403);
+  }
+
+  const numericId = Number(id);
+  if (!Number.isInteger(numericId) || numericId <= 0) {
+    return text('Not Found', 404);
+  }
+
+  const ad = await getAdById(env, numericId);
+  if (!ad) {
+    return text('Not Found', 404);
+  }
+
+  if (request.method === 'GET') {
+    return renderEditPage(currentUser, ad, null, `/admin/edit/${ad.id}`);
+  }
+
+  if (request.method !== 'POST') {
+    return text('Method Not Allowed', 405);
+  }
+
+  const form = await request.formData();
+  const title = String(form.get('title') || '').trim();
+  const body = String(form.get('body') || '').trim();
+  const category = String(form.get('category') || '').trim();
+
+  if (!title || !body) {
+    return renderEditPage(currentUser, ad, 'Заполни заголовок и текст', `/admin/edit/${ad.id}`);
+  }
+
+  const normalizedCategory = normalizeCategory(category);
+  await env.DB.prepare(
+    `
+      UPDATE ads
+      SET title = ?,
+          body = ?,
+          category = ?,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+        AND deleted_at IS NULL
+    `
+  )
+    .bind(title, body, normalizedCategory, numericId)
+    .run();
+
+  return redirectWithMessage('/admin', 'Объявление сохранено');
+}
+
 async function handleSettingsGet(request: Request, env: Env): Promise<Response> {
   const currentUser = await getCurrentUser(request, env);
   if (!currentUser) {
@@ -2767,7 +3086,14 @@ async function handleSettingsGet(request: Request, env: Env): Promise<Response> 
 
   const telegramIdentity = await findTelegramIdentityByUserId(env, currentUser.id);
   const message = new URL(request.url).searchParams.get('message');
-  return renderSettingsPage(currentUser, telegramIdentity, message);
+  let pendingTelegramAuth: TelegramAuthPayload | null = null;
+  try {
+    pendingTelegramAuth = await readPendingTelegramAuthValue(env, request);
+  } catch {
+    pendingTelegramAuth = null;
+  }
+
+  return renderSettingsPage(currentUser, telegramIdentity, message, pendingTelegramAuth);
 }
 
 async function handleSettingsLinkTelegramGet(request: Request, env: Env): Promise<Response> {
@@ -2778,7 +3104,7 @@ async function handleSettingsLinkTelegramGet(request: Request, env: Env): Promis
 
   const telegramIdentity = await findTelegramIdentityByUserId(env, currentUser.id);
   if (telegramIdentity) {
-    return redirect('/settings?message=Telegram%20уже%20привязан');
+    return redirectWithMessage('/settings', 'Telegram уже привязан');
   }
 
   const botUsername = await getTelegramUserBotUsername(env);
@@ -2788,7 +3114,7 @@ async function handleSettingsLinkTelegramGet(request: Request, env: Env): Promis
 
   const authUrl = buildTelegramAuthCallbackUrl(request, 'link');
   return renderTelegramWidgetPage(
-    'привязать telegram - jorjlist',
+    'привязать telegram - жоржлист',
     'Привязать Telegram',
     'Подтверди вход в Telegram, чтобы привязать его к аккаунту.',
     botUsername,
@@ -2797,7 +3123,69 @@ async function handleSettingsLinkTelegramGet(request: Request, env: Env): Promis
   );
 }
 
+async function handleSettingsLinkTelegramConfirmPost(request: Request, env: Env): Promise<Response> {
+  const currentUser = await getCurrentUser(request, env);
+  if (!currentUser) {
+    return redirect('/login?next=/settings');
+  }
+
+  let pendingTelegramAuth: TelegramAuthPayload | null = null;
+  try {
+    pendingTelegramAuth = await readPendingTelegramAuthValue(env, request);
+  } catch {
+    pendingTelegramAuth = null;
+  }
+
+  if (!pendingTelegramAuth) {
+    return redirectWithMessage('/settings', 'Нужно сначала подтвердить Telegram');
+  }
+
+  const result = await relinkTelegramIdentityToUser(
+    env,
+    currentUser.id,
+    pendingTelegramAuth.id,
+    pendingTelegramAuth.username
+  );
+
+  const headers = new Headers();
+  headers.append('Set-Cookie', clearTelegramAuthCookie(isSecureRequest(request)));
+
+  if (result === 'conflict') {
+    return redirectWithMessage('/settings', 'У этого аккаунта уже есть другой Telegram', 303, headers);
+  }
+
+  if (result === 'already') {
+    return redirectWithMessage('/settings', 'Telegram уже привязан', 303, headers);
+  }
+
+  return redirectWithMessage('/settings', 'Telegram перепривязан', 303, headers);
+}
+
 async function handleLoginTelegramGet(request: Request, env: Env): Promise<Response> {
+  const currentUser = await getCurrentUser(request, env);
+  if (currentUser) {
+    return redirect('/my');
+  }
+
+  const botUsername = await getTelegramUserBotUsername(env);
+  if (!botUsername) {
+    return text('Telegram login widget unavailable', 500);
+  }
+
+  const url = new URL(request.url);
+  const nextPath = sanitizeNextPath(url.searchParams.get('next') || '/settings');
+  const authUrl = buildTelegramAuthCallbackUrl(request, 'login', nextPath);
+
+  return renderTelegramWidgetPage(
+    'войти через telegram - жоржлист',
+    'Войти через Telegram',
+    'Нажми кнопку ниже и подтверди вход в Telegram.',
+    botUsername,
+    authUrl
+  );
+}
+
+async function handleRegisterTelegramGet(request: Request, env: Env): Promise<Response> {
   const currentUser = await getCurrentUser(request, env);
   if (currentUser) {
     return redirect('/my');
@@ -2813,9 +3201,9 @@ async function handleLoginTelegramGet(request: Request, env: Env): Promise<Respo
   const authUrl = buildTelegramAuthCallbackUrl(request, 'login', nextPath);
 
   return renderTelegramWidgetPage(
-    'войти через telegram - jorjlist',
-    'Войти через Telegram',
-    'Нажми кнопку ниже и подтверди вход в Telegram.',
+    'регистрация через telegram - жоржлист',
+    'Зарегистрироваться через Telegram',
+    'Нажми кнопку ниже, чтобы начать регистрацию через Telegram.',
     botUsername,
     authUrl
   );
@@ -2910,8 +3298,8 @@ async function handleTelegramAuthCallback(request: Request, env: Env): Promise<R
 
   const auth = await verifyTelegramLoginPayload(url.searchParams, env);
   if (!auth) {
-    const target = mode === 'login' ? '/login?message=Неверные данные Telegram' : '/settings?message=Неверные данные Telegram';
-    return redirect(target);
+    const target = mode === 'login' ? '/login' : '/settings';
+    return redirectWithMessage(target, 'Неверные данные Telegram');
   }
 
   const telegramUserId = auth.id;
@@ -2925,20 +3313,27 @@ async function handleTelegramAuthCallback(request: Request, env: Env): Promise<R
 
     const existingIdentity = await findTelegramIdentity(env, telegramUserId);
     if (existingIdentity && existingIdentity.user_id !== currentUser.id) {
-      return redirect('/settings?message=Этот%20Telegram%20уже%20привязан%20к%20другому%20аккаунту');
+      const pendingTelegramAuth = await buildPendingTelegramAuthValue(env, auth);
+      const headers = new Headers();
+      headers.set('Location', '/settings?message=' + encodeURIComponent('Этот Telegram уже привязан к другому аккаунту'));
+      headers.append('Set-Cookie', buildTelegramAuthCookie(pendingTelegramAuth, isSecureRequest(request)));
+      return new Response(null, { status: 303, headers });
     }
 
     const currentTelegramIdentity = await findTelegramIdentityByUserId(env, currentUser.id);
     if (currentTelegramIdentity && currentTelegramIdentity.provider_user_id !== telegramUserId) {
-      return redirect('/settings?message=У%20этого%20аккаунта%20уже%20есть%20другой%20Telegram');
+      return redirectWithMessage('/settings', 'У этого аккаунта уже есть другой Telegram');
     }
 
     const result = await attachTelegramIdentityToUser(env, currentUser.id, telegramUserId, telegramUsername);
+    if (result === 'already') {
+      return redirectWithMessage('/settings', 'Telegram уже привязан');
+    }
     if (result === 'conflict') {
-      return redirect('/settings?message=Telegram%20уже%20привязан%20к%20другому%20аккаунту');
+      return redirectWithMessage('/settings', 'Telegram уже привязан к другому аккаунту');
     }
 
-    return redirect('/settings?message=Telegram%20успешно%20привязан');
+    return redirectWithMessage('/settings', 'Telegram успешно привязан');
   }
 
   const nextPath = sanitizeNextPath(url.searchParams.get('next'));
@@ -2950,11 +3345,11 @@ async function handleTelegramAuthCallback(request: Request, env: Env): Promise<R
     });
   }
 
-  const pendingTelegramAuth = await buildPendingTelegramAuthValue(env, auth);
-  const headers = new Headers();
-  headers.set('Location', `/register?next=${encodeURIComponent(nextPath)}&source=telegram`);
-  headers.append('Set-Cookie', buildTelegramAuthCookie(pendingTelegramAuth, isSecureRequest(request)));
-  return new Response(null, { status: 303, headers });
+  const userId = await createTelegramSignupUser(env, telegramUserId, auth.first_name, telegramUsername);
+  const sessionToken = await createSessionForUser(env, userId);
+  return redirectWithHeaders(nextPath, 303, {
+    'Set-Cookie': buildSessionCookie(sessionToken, isSecureRequest(request)),
+  });
 }
 
 async function handleApiAdsGet(env: Env): Promise<Response> {
@@ -3053,6 +3448,11 @@ export default {
       return text('Method Not Allowed', 405);
     }
 
+    if (path === '/register/telegram') {
+      if (request.method === 'GET') return handleRegisterTelegramGet(request, env);
+      return text('Method Not Allowed', 405);
+    }
+
     if (path === '/logout') {
       if (request.method === 'POST') return handleLogoutPost(request, env);
       return text('Method Not Allowed', 405);
@@ -3069,8 +3469,18 @@ export default {
       return text('Method Not Allowed', 405);
     }
 
+    if (path === '/admin') {
+      if (request.method === 'GET') return handleAdminGet(request, env);
+      return text('Method Not Allowed', 405);
+    }
+
     if (path === '/settings/link-telegram') {
       if (request.method === 'GET') return handleSettingsLinkTelegramGet(request, env);
+      return text('Method Not Allowed', 405);
+    }
+
+    if (path === '/settings/link-telegram/confirm') {
+      if (request.method === 'POST') return handleSettingsLinkTelegramConfirmPost(request, env);
       return text('Method Not Allowed', 405);
     }
 
@@ -3080,6 +3490,14 @@ export default {
 
     if (path.startsWith('/my/edit/')) {
       return handleMyEditRoute(request, env, ctx, path.slice('/my/edit/'.length));
+    }
+
+    if (path.startsWith('/admin/delete/')) {
+      return handleAdminDeleteRoute(request, env, path.slice('/admin/delete/'.length));
+    }
+
+    if (path.startsWith('/admin/edit/')) {
+      return handleAdminEditRoute(request, env, ctx, path.slice('/admin/edit/'.length));
     }
 
     if (path === '/new') {
