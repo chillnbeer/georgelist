@@ -29,7 +29,7 @@ import {
   type ChatThreadRow,
   upsertChatNotification,
 } from './chat';
-import { html, json, methodNotAllowed, redirect, redirectWithHeaders, redirectWithMessage, text } from './http';
+import { html, json, redirect, redirectWithHeaders, redirectWithMessage, text } from './http';
 
 const CATEGORIES = [
   { slug: 'auto', label: 'Авто' },
