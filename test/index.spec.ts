@@ -120,6 +120,29 @@ const SCHEMA_STATEMENTS = [
     )
   `,
   `
+    CREATE TABLE IF NOT EXISTS bot_conversations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ad_id INTEGER NOT NULL,
+      user_low_id INTEGER NOT NULL,
+      user_high_id INTEGER NOT NULL,
+      last_message_sender_user_id INTEGER,
+      last_message_text TEXT,
+      last_message_at TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(ad_id, user_low_id, user_high_id)
+    )
+  `,
+  `
+    CREATE TABLE IF NOT EXISTS bot_chat_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      conversation_id INTEGER NOT NULL,
+      sender_user_id INTEGER NOT NULL,
+      body TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+  `,
+  `
     CREATE TABLE IF NOT EXISTS ads (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       title TEXT NOT NULL,
@@ -234,6 +257,8 @@ async function resetDatabase(): Promise<void> {
   await env.DB.prepare('DELETE FROM user_identities').run();
   await env.DB.prepare('DELETE FROM ads').run();
   await env.DB.prepare('DELETE FROM bot_drafts').run();
+  await env.DB.prepare('DELETE FROM bot_chat_messages').run();
+  await env.DB.prepare('DELETE FROM bot_conversations').run();
   await env.DB.prepare('DELETE FROM users').run();
   mediaStore.clear();
 }
@@ -1912,15 +1937,27 @@ describe('User bot replies and passwords', () => {
     const initialNotification = lastTelegramCall('sendMessage');
     expect(String((initialNotification?.body as { text?: string }).text || '')).toContain('Тебе написал пользователь replywriter');
     const initialReplyMarkup = (initialNotification?.body as { reply_markup?: { inline_keyboard?: Array<Array<{ text?: string; callback_data?: string }>> } }).reply_markup;
-    const replyButton = initialReplyMarkup?.inline_keyboard?.[0]?.[0];
-    expect(replyButton?.text).toBe('Ответить');
-    expect(replyButton?.callback_data).toContain(`user:reply:111:`);
-    expect(replyButton?.callback_data).toContain(String(adId));
+    expect(initialReplyMarkup?.inline_keyboard?.[0]?.[0]?.text).toBe('Открыть чат');
+    expect(initialReplyMarkup?.inline_keyboard?.[1]?.[0]?.text).toBe('Диалоги');
+
+    const conversation = await env.DB.prepare(
+      `
+        SELECT id
+        FROM bot_conversations
+        WHERE ad_id = ?
+          AND user_low_id = ?
+          AND user_high_id = ?
+        LIMIT 1
+      `
+    )
+      .bind(adId, 110, 111)
+      .first<{ id: number }>();
+    expect(conversation?.id).toBeTruthy();
 
     const replyCallbackResponse = await sendUserTelegramWebhook({
       callback_query: {
         id: 'cb-reply-start',
-        data: replyButton?.callback_data || '',
+        data: `user:chat:${conversation?.id}`,
         message: {
           chat: { id: 11001 },
           message_id: 500,
@@ -1929,10 +1966,23 @@ describe('User bot replies and passwords', () => {
     });
     expect(replyCallbackResponse.status).toBe(200);
 
-    const replyPrompt = lastTelegramCall('editMessageText');
-    expect(String((replyPrompt?.body as { text?: string }).text || '')).toContain('Ответ пользователю');
-    expect(String((replyPrompt?.body as { text?: string }).text || '')).toContain('replywriter');
-    expect(String((replyPrompt?.body as { text?: string }).text || '')).toContain('Напиши сообщение');
+    const replyScreen = lastTelegramCall('editMessageText');
+    expect(String((replyScreen?.body as { text?: string }).text || '')).toContain('Диалог с replywriter');
+    expect(String((replyScreen?.body as { text?: string }).text || '')).toContain('По объявлению: Reply chain');
+    expect(String((replyScreen?.body as { text?: string }).text || '')).toContain('replywriter: Привет, ещё актуально?');
+
+    const replyPromptResponse = await sendUserTelegramWebhook({
+      callback_query: {
+        id: 'cb-reply-compose',
+        data: `user:chatreply:${conversation?.id}`,
+        message: {
+          chat: { id: 11001 },
+          message_id: 500,
+        },
+      },
+    });
+    expect(replyPromptResponse.status).toBe(200);
+    expect(String((lastTelegramCall('editMessageText')?.body as { text?: string }).text || '')).toContain('Напиши сообщение');
 
     const replySendResponse = await sendUserTelegramWebhook({
       message: {
@@ -1944,13 +1994,12 @@ describe('User bot replies and passwords', () => {
     expect(replySendResponse.status).toBe(200);
 
     const replySent = lastTelegramCall('sendMessage');
-    expect(String((replySent?.body as { text?: string }).text || '')).toContain('Тебе ответил пользователь replyowner');
+    expect(String((replySent?.body as { text?: string }).text || '')).toContain('Тебе написал пользователь replyowner');
     expect(String((replySent?.body as { text?: string }).text || '')).toContain('по объявлению: Reply chain');
     expect(String((replySent?.body as { text?: string }).text || '')).toContain('Да, актуально');
     const replyReplyMarkup = (replySent?.body as { reply_markup?: { inline_keyboard?: Array<Array<{ text?: string; callback_data?: string }>> } }).reply_markup;
-    expect(replyReplyMarkup?.inline_keyboard?.[0]?.[0]?.text).toBe('Ответить');
-    expect(replyReplyMarkup?.inline_keyboard?.[0]?.[0]?.callback_data).toContain(`user:reply:110:`);
-    expect(replyReplyMarkup?.inline_keyboard?.[0]?.[0]?.callback_data).toContain(String(adId));
+    expect(replyReplyMarkup?.inline_keyboard?.[0]?.[0]?.text).toBe('Открыть чат');
+    expect(replyReplyMarkup?.inline_keyboard?.[1]?.[0]?.text).toBe('Диалоги');
   });
 
   it('lets Telegram users set and change their password from settings', async () => {

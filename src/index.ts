@@ -223,6 +223,38 @@ type BotDraftRow = {
   updated_at: string;
 };
 
+type ChatThreadRow = {
+  id: number;
+  ad_id: number;
+  user_low_id: number;
+  user_high_id: number;
+  last_message_sender_user_id: number | null;
+  last_message_text: string | null;
+  last_message_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+type ChatThreadListRow = {
+  id: number;
+  ad_id: number;
+  ad_title: string;
+  other_user_id: number;
+  other_login: string;
+  other_avatar_key: string | null;
+  last_message_sender_user_id: number | null;
+  last_message_text: string | null;
+  last_message_at: string | null;
+};
+
+type ChatMessageRow = {
+  id: number;
+  conversation_id: number;
+  sender_user_id: number;
+  body: string;
+  created_at: string;
+};
+
 const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30;
 const PASSWORD_HASH_ITERATIONS = 100000;
 const TELEGRAM_AUTH_COOKIE_NAME = 'telegram_auth';
@@ -250,7 +282,10 @@ const USER_BOT_SEARCH_MORE_PREFIX = 'user:searchmore:';
 const BOT_ADS_PAGE_SIZE = 5;
 const USER_BOT_DELETE_PREFIX = 'delete_';
 const USER_BOT_SETTINGS_PREFIX = 'user:settings:';
-const USER_BOT_REPLY_PREFIX = 'user:reply:';
+const USER_BOT_CHAT_PREFIX = 'user:chat:';
+const USER_BOT_CHAT_REPLY_PREFIX = 'user:chatreply:';
+const USER_BOT_CHAT_START_PREFIX = 'user:chatstart:';
+const USER_BOT_CHAT_LIST = 'user:chats';
 const USER_BOT_DRAFT_PREFIX = 'draft:';
 const USER_BOT_DRAFT_TYPE_PREFIX = 'draft:type:';
 const USER_BOT_DRAFT_CANCEL = 'draft:confirm:cancel';
@@ -284,6 +319,7 @@ let cachedEnsureUserAvatarColumnsPromise: Promise<void> | null = null;
 let cachedEnsureAdContactColumnPromise: Promise<void> | null = null;
 let cachedEnsureAdTypeColumnPromise: Promise<void> | null = null;
 let cachedEnsureBotDraftColumnsPromise: Promise<void> | null = null;
+let cachedEnsureChatTablesPromise: Promise<void> | null = null;
 const NOOP_EXECUTION_CONTEXT = {
   waitUntil(): void {},
   passThroughOnException(): void {},
@@ -2789,6 +2825,7 @@ function userBotMenuMarkup(env: Env): Record<string, unknown> {
     inline_keyboard: [
       [{ text: 'Создать', callback_data: USER_BOT_MENU_CREATE }],
       [{ text: 'Мои объявления', callback_data: USER_BOT_MENU_MY }],
+      [{ text: 'Диалоги', callback_data: USER_BOT_CHAT_LIST }],
       [{ text: 'Объявления', callback_data: USER_BOT_MENU_SECTIONS }],
       [{ text: 'Поиск', callback_data: USER_BOT_MENU_SEARCH }],
       [{ text: 'Настройки', callback_data: USER_BOT_MENU_SETTINGS }],
@@ -2870,9 +2907,46 @@ function userBotSingleAdMarkup(adId: number): Record<string, unknown> {
   };
 }
 
-function userBotReplyMarkup(replyUserId: number, adId: number): Record<string, unknown> {
+function userBotChatsMarkup(threads: ChatThreadListRow[]): Record<string, unknown> {
+  const rows = threads.map((thread) => {
+    const title = `${thread.other_login} · ${thread.ad_title}`.slice(0, 60);
+    return [
+      {
+        text: title || `#${thread.id}`,
+        callback_data: `${USER_BOT_CHAT_PREFIX}${thread.id}`,
+      },
+    ];
+  });
+
+  rows.push([{ text: 'Назад', callback_data: USER_BOT_MENU_HOME }]);
+  return { inline_keyboard: rows };
+}
+
+function userBotChatMarkup(conversationId: number): Record<string, unknown> {
   return {
-    inline_keyboard: [[{ text: 'Ответить', callback_data: `${USER_BOT_REPLY_PREFIX}${replyUserId}:${adId}` }]],
+    inline_keyboard: [
+      [{ text: 'Ответить', callback_data: `${USER_BOT_CHAT_REPLY_PREFIX}${conversationId}` }],
+      [{ text: 'Диалоги', callback_data: USER_BOT_CHAT_LIST }],
+      [{ text: 'В меню', callback_data: USER_BOT_MENU_HOME }],
+    ],
+  };
+}
+
+function userBotIncomingChatMarkup(conversationId: number): Record<string, unknown> {
+  return {
+    inline_keyboard: [
+      [{ text: 'Открыть чат', callback_data: `${USER_BOT_CHAT_PREFIX}${conversationId}` }],
+      [{ text: 'Диалоги', callback_data: USER_BOT_CHAT_LIST }],
+    ],
+  };
+}
+
+function userBotChatPromptMarkup(conversationId: number): Record<string, unknown> {
+  return {
+    inline_keyboard: [
+      [{ text: 'Отмена', callback_data: `${USER_BOT_CHAT_PREFIX}${conversationId}` }],
+      [{ text: 'Диалоги', callback_data: USER_BOT_CHAT_LIST }],
+    ],
   };
 }
 
@@ -3024,6 +3098,109 @@ async function sendUserBotSettingsPasswordPrompt(
   const statusLine = hasPassword ? 'Пароль уже задан.' : 'Пароль ещё не задан.';
   const lines = [...(message ? [message, ''] : []), 'Смена пароля', statusLine, stepLabel];
   await showUserBotScreen(env, telegramUserId, chatId, lines.join('\n'), userBotCancelSettingsMarkup());
+}
+
+function buildChatScreenTitle(otherLogin: string, adTitle: string): string {
+  return [`Диалог с ${otherLogin}`, `По объявлению: ${adTitle}`].join('\n');
+}
+
+async function sendUserBotChats(
+  env: Env,
+  telegramUserId: string,
+  chatId: number,
+  message: string | null = null
+): Promise<void> {
+  const telegramIdentity = await findTelegramIdentity(env, telegramUserId);
+  if (!telegramIdentity) {
+    await sendUserBotMenu(env, telegramUserId, chatId, 'Пользователь не найден');
+    return;
+  }
+
+  const threads = await listConversationsForUser(env, telegramIdentity.user_id);
+  if (!threads.length) {
+    const lines = [...(message ? [message, ''] : []), 'Диалоги', 'Пока нет диалогов'];
+    await showUserBotScreen(env, telegramUserId, chatId, lines.join('\n'), userBotMenuMarkup(env));
+    return;
+  }
+
+  const lines = [...(message ? [message, ''] : []), 'Диалоги', 'Выбери чат'];
+  await showUserBotScreen(env, telegramUserId, chatId, lines.join('\n'), userBotChatsMarkup(threads));
+}
+
+async function sendUserBotChatView(
+  env: Env,
+  telegramUserId: string,
+  chatId: number,
+  conversationId: number,
+  message: string | null = null
+): Promise<void> {
+  const telegramIdentity = await findTelegramIdentity(env, telegramUserId);
+  if (!telegramIdentity) {
+    await sendUserBotMenu(env, telegramUserId, chatId, 'Пользователь не найден');
+    return;
+  }
+
+  const conversation = await getConversationById(env, conversationId);
+  if (!conversation || (conversation.user_low_id !== telegramIdentity.user_id && conversation.user_high_id !== telegramIdentity.user_id)) {
+    await sendUserBotChats(env, telegramUserId, chatId, 'Диалог не найден');
+    return;
+  }
+
+  const ad = await getPublishedAdCardById(env, conversation.ad_id);
+  if (!ad) {
+    await sendUserBotChats(env, telegramUserId, chatId, 'Объявление не найдено');
+    return;
+  }
+
+  const otherUserId = conversation.user_low_id === telegramIdentity.user_id ? conversation.user_high_id : conversation.user_low_id;
+  const otherUser = await findUserById(env, otherUserId);
+  const messages = await listConversationMessages(env, conversation.id, 8, 0);
+  const lines = [
+    ...(message ? [message, ''] : []),
+    buildChatScreenTitle(otherUser?.login || 'пользователь', ad.title),
+    '',
+    ...(messages.length
+      ? messages.map((row) => {
+          const senderLogin = row.sender_user_id === telegramIdentity.user_id ? 'Вы' : otherUser?.login || 'пользователь';
+          const time = row.created_at ? row.created_at.slice(11, 16) : '';
+          return `${time ? `${time} ` : ''}${senderLogin}: ${row.body}`;
+        })
+      : ['Пока нет сообщений']),
+  ];
+
+  await showUserBotScreen(env, telegramUserId, chatId, lines.join('\n'), userBotChatMarkup(conversation.id));
+}
+
+async function sendUserBotChatPrompt(
+  env: Env,
+  telegramUserId: string,
+  chatId: number,
+  conversationId: number,
+  message: string | null = null
+): Promise<void> {
+  const telegramIdentity = await findTelegramIdentity(env, telegramUserId);
+  if (!telegramIdentity) {
+    await sendUserBotMenu(env, telegramUserId, chatId, 'Пользователь не найден');
+    return;
+  }
+
+  const conversation = await getConversationById(env, conversationId);
+  if (!conversation || (conversation.user_low_id !== telegramIdentity.user_id && conversation.user_high_id !== telegramIdentity.user_id)) {
+    await sendUserBotChats(env, telegramUserId, chatId, 'Диалог не найден');
+    return;
+  }
+
+  const ad = await getPublishedAdCardById(env, conversation.ad_id);
+  const otherUserId = conversation.user_low_id === telegramIdentity.user_id ? conversation.user_high_id : conversation.user_low_id;
+  const otherUser = await findUserById(env, otherUserId);
+  const lines = [
+    ...(message ? [message, ''] : []),
+    buildChatScreenTitle(otherUser?.login || 'пользователь', ad?.title || `#${conversation.ad_id}`),
+    '',
+    'Напиши сообщение',
+  ];
+
+  await showUserBotScreen(env, telegramUserId, chatId, lines.join('\n'), userBotChatPromptMarkup(conversation.id));
 }
 
 async function sendUserBotReplyPrompt(
@@ -3178,6 +3355,22 @@ async function sendUserBotPublicAdCard(
   ad: PublicAdCardRow,
   replyMarkup: Record<string, unknown>
 ): Promise<void> {
+  const telegramIdentity = await findTelegramIdentity(env, telegramUserId);
+  const canStartChat =
+    telegramIdentity &&
+    ad.owner_user_id !== null &&
+    ad.owner_user_id !== telegramIdentity.user_id &&
+    Boolean(await findTelegramIdentityByUserId(env, ad.owner_user_id));
+  const inlineKeyboard = Array.isArray((replyMarkup as { inline_keyboard?: unknown }).inline_keyboard)
+    ? ((replyMarkup as { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> }).inline_keyboard || []).map((row) => [...row])
+    : [];
+
+  if (canStartChat) {
+    inlineKeyboard.unshift([{ text: 'Написать автору', callback_data: `${USER_BOT_CHAT_START_PREFIX}${ad.id}` }]);
+  }
+
+  const mergedReplyMarkup = inlineKeyboard.length ? { inline_keyboard: inlineKeyboard } : replyMarkup;
+
   if (ad.image_key) {
     await showUserBotPhotoScreen(
       env,
@@ -3195,13 +3388,13 @@ async function sendUserBotPublicAdCard(
       ]
         .filter((line): line is string => line !== null)
         .join('\n'),
-      replyMarkup
+      mergedReplyMarkup
     );
     return;
   }
 
   const text = buildUserBotPublicAdText(ad);
-  await showUserBotScreen(env, telegramUserId, chatId, text, replyMarkup);
+  await showUserBotScreen(env, telegramUserId, chatId, text, mergedReplyMarkup);
 }
 
 async function sendUserBotSearchAdDetail(env: Env, telegramUserId: string, chatId: number, adId: number): Promise<void> {
@@ -4909,6 +5102,226 @@ async function ensureBotDraftColumns(env: Env): Promise<void> {
   return cachedEnsureBotDraftColumnsPromise;
 }
 
+async function ensureChatTables(env: Env): Promise<void> {
+  if (cachedEnsureChatTablesPromise) {
+    return cachedEnsureChatTablesPromise;
+  }
+
+  cachedEnsureChatTablesPromise = (async () => {
+    await env.DB.prepare(
+      `
+        CREATE TABLE IF NOT EXISTS bot_conversations (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          ad_id INTEGER NOT NULL,
+          user_low_id INTEGER NOT NULL,
+          user_high_id INTEGER NOT NULL,
+          last_message_sender_user_id INTEGER,
+          last_message_text TEXT,
+          last_message_at TEXT,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(ad_id, user_low_id, user_high_id)
+        )
+      `
+    ).run();
+
+    await env.DB.prepare(
+      `
+        CREATE TABLE IF NOT EXISTS bot_chat_messages (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          conversation_id INTEGER NOT NULL,
+          sender_user_id INTEGER NOT NULL,
+          body TEXT NOT NULL,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (conversation_id) REFERENCES bot_conversations(id) ON DELETE CASCADE
+        )
+      `
+    ).run();
+
+    await env.DB.prepare(
+      `CREATE INDEX IF NOT EXISTS bot_conversations_last_message_at_idx ON bot_conversations(last_message_at)`
+    ).run();
+
+    await env.DB.prepare(
+      `CREATE INDEX IF NOT EXISTS bot_chat_messages_conversation_id_idx ON bot_chat_messages(conversation_id, id)`
+    ).run();
+  })().finally(() => {
+    cachedEnsureChatTablesPromise = null;
+  });
+
+  return cachedEnsureChatTablesPromise;
+}
+
+function normalizeConversationUserIds(userAId: number, userBId: number): [number, number] {
+  return userAId < userBId ? [userAId, userBId] : [userBId, userAId];
+}
+
+async function getConversationById(env: Env, conversationId: number): Promise<ChatThreadRow | null> {
+  const result = await env.DB.prepare(
+    `
+      SELECT id, ad_id, user_low_id, user_high_id, last_message_sender_user_id, last_message_text, last_message_at, created_at, updated_at
+      FROM bot_conversations
+      WHERE id = ?
+      LIMIT 1
+    `
+  )
+    .bind(conversationId)
+    .first<ChatThreadRow>();
+
+  return result ?? null;
+}
+
+async function getConversationForUsers(env: Env, adId: number, userAId: number, userBId: number): Promise<ChatThreadRow | null> {
+  const [lowUserId, highUserId] = normalizeConversationUserIds(userAId, userBId);
+  const result = await env.DB.prepare(
+    `
+      SELECT id, ad_id, user_low_id, user_high_id, last_message_sender_user_id, last_message_text, last_message_at, created_at, updated_at
+      FROM bot_conversations
+      WHERE ad_id = ?
+        AND user_low_id = ?
+        AND user_high_id = ?
+      LIMIT 1
+    `
+  )
+    .bind(adId, lowUserId, highUserId)
+    .first<ChatThreadRow>();
+
+  return result ?? null;
+}
+
+async function getOrCreateConversation(env: Env, adId: number, userAId: number, userBId: number): Promise<ChatThreadRow> {
+  const existing = await getConversationForUsers(env, adId, userAId, userBId);
+  if (existing) {
+    return existing;
+  }
+
+  const [lowUserId, highUserId] = normalizeConversationUserIds(userAId, userBId);
+  await env.DB.prepare(
+    `
+      INSERT INTO bot_conversations (
+        ad_id,
+        user_low_id,
+        user_high_id,
+        created_at,
+        updated_at
+      )
+      VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      ON CONFLICT(ad_id, user_low_id, user_high_id) DO UPDATE SET
+        updated_at = CURRENT_TIMESTAMP
+    `
+  )
+    .bind(adId, lowUserId, highUserId)
+    .run();
+
+  const created = await getConversationForUsers(env, adId, userAId, userBId);
+  if (!created) {
+    throw new Error('Failed to create conversation');
+  }
+
+  return created;
+}
+
+async function listConversationsForUser(env: Env, userId: number): Promise<ChatThreadListRow[]> {
+  const result = await env.DB.prepare(
+    `
+      SELECT
+        c.id,
+        c.ad_id,
+        a.title AS ad_title,
+        CASE
+          WHEN c.user_low_id = ? THEN c.user_high_id
+          ELSE c.user_low_id
+        END AS other_user_id,
+        u.login AS other_login,
+        u.avatar_key AS other_avatar_key,
+        c.last_message_sender_user_id,
+        c.last_message_text,
+        c.last_message_at
+      FROM bot_conversations c
+      JOIN ads a ON a.id = c.ad_id AND a.deleted_at IS NULL
+      JOIN users u ON u.id = CASE
+        WHEN c.user_low_id = ? THEN c.user_high_id
+        ELSE c.user_low_id
+      END
+      WHERE c.user_low_id = ?
+         OR c.user_high_id = ?
+      ORDER BY COALESCE(c.last_message_at, c.created_at) DESC, c.id DESC
+    `
+  )
+    .bind(userId, userId, userId, userId)
+    .all<ChatThreadListRow>();
+
+  return result.results;
+}
+
+async function listConversationMessages(env: Env, conversationId: number, limit = 8, offset = 0): Promise<ChatMessageRow[]> {
+  const result = await env.DB.prepare(
+    `
+      SELECT id, conversation_id, sender_user_id, body, created_at
+      FROM bot_chat_messages
+      WHERE conversation_id = ?
+      ORDER BY id DESC
+      LIMIT ? OFFSET ?
+    `
+  )
+    .bind(conversationId, limit, offset)
+    .all<ChatMessageRow>();
+
+  return result.results.reverse();
+}
+
+async function storeConversationMessage(
+  env: Env,
+  conversationId: number,
+  senderUserId: number,
+  body: string
+): Promise<ChatMessageRow> {
+  const insert = await env.DB.prepare(
+    `
+      INSERT INTO bot_chat_messages (
+        conversation_id,
+        sender_user_id,
+        body,
+        created_at
+      )
+      VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+    `
+  )
+    .bind(conversationId, senderUserId, body)
+    .run();
+
+  const rowId = Number(insert.meta.last_row_id);
+  const message = await env.DB.prepare(
+    `
+      SELECT id, conversation_id, sender_user_id, body, created_at
+      FROM bot_chat_messages
+      WHERE id = ?
+      LIMIT 1
+    `
+  )
+    .bind(rowId)
+    .first<ChatMessageRow>();
+
+  if (!message) {
+    throw new Error('Failed to store conversation message');
+  }
+
+  await env.DB.prepare(
+    `
+      UPDATE bot_conversations
+      SET last_message_sender_user_id = ?,
+          last_message_text = ?,
+          last_message_at = CURRENT_TIMESTAMP,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `
+  )
+    .bind(senderUserId, body, conversationId)
+    .run();
+
+  return message;
+}
+
 async function createAd(
   env: Env,
   ctx: ExecutionContext,
@@ -5268,10 +5681,21 @@ async function handleTelegramWebhook(request: Request, env: Env): Promise<Respon
   return json({ ok: true });
 }
 
-async function replyUserBot(env: Env, chatId: number, text: string): Promise<void> {
+async function sendChatMessageToUser(
+  env: Env,
+  recipientTelegramUserId: string,
+  text: string,
+  replyMarkup?: Record<string, unknown>
+): Promise<void> {
+  const chatId = Number(recipientTelegramUserId);
+  if (!Number.isInteger(chatId) || chatId <= 0) {
+    throw new Error('Invalid recipient chat id');
+  }
+
   const response = await userBotApi(env, 'sendMessage', {
     chat_id: chatId,
     text,
+    ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
   });
 
   if (!response.ok) {
@@ -5657,6 +6081,47 @@ async function getTelegramIdentityUserId(env: Env, telegramUserId: string): Prom
   return identity ? identity.user_id : null;
 }
 
+async function sendChatMessage(
+  env: Env,
+  senderUserId: number,
+  recipientUserId: number,
+  adId: number,
+  body: string,
+  senderTelegramUserId: string | null = null
+): Promise<ChatThreadRow> {
+  const conversation = await getOrCreateConversation(env, adId, senderUserId, recipientUserId);
+  await storeConversationMessage(env, conversation.id, senderUserId, body);
+
+  const sender = await findUserById(env, senderUserId);
+  const recipientTelegram = await findTelegramIdentityByUserId(env, recipientUserId);
+  const recipientChatId = Number(recipientTelegram?.provider_user_id || '');
+  if (recipientTelegram?.provider_user_id && Number.isInteger(recipientChatId) && recipientChatId > 0) {
+    const ad = await getPublishedAdCardById(env, adId);
+    const title = ad?.title || `#${adId}`;
+    const senderLogin = sender?.login || senderTelegramUserId || 'пользователь';
+    const lines = [
+      `Тебе написал пользователь ${senderLogin}`,
+      `по объявлению: ${title}`,
+      '',
+      'Сообщение:',
+      body,
+    ];
+    const senderIdentity = await findTelegramIdentityByUserId(env, senderUserId);
+    try {
+      await sendChatMessageToUser(
+        env,
+        recipientTelegram.provider_user_id,
+        lines.join('\n'),
+        senderIdentity?.provider_user_id ? userBotIncomingChatMarkup(conversation.id) : undefined
+      );
+    } catch (error) {
+      console.error('Failed to notify chat recipient', error);
+    }
+  }
+
+  return conversation;
+}
+
 async function handleUserBotStart(
   env: Env,
   telegramUserId: string,
@@ -5882,12 +6347,13 @@ async function handleUserBotText(
       draft.action !== 'register' &&
       draft.action !== 'search' &&
       draft.action !== 'settings' &&
-      draft.action !== 'reply')
+      draft.action !== 'reply' &&
+      draft.action !== 'chat')
   ) {
     return;
   }
 
-  if (draft.action === 'reply') {
+  if (draft.action === 'reply' || draft.action === 'chat') {
     if (draft.step !== 'message') {
       return;
     }
@@ -5930,41 +6396,29 @@ async function handleUserBotText(
     }
 
     const senderIdentity = await findTelegramIdentity(env, telegramUserId);
-    const senderUser = senderIdentity ? await findUserById(env, senderIdentity.user_id) : null;
-    const recipientIdentity = await findTelegramIdentityByUserId(env, draft.reply_user_id);
-    const recipientChatId = Number(recipientIdentity?.provider_user_id || '');
-    if (!recipientIdentity?.provider_user_id || !Number.isInteger(recipientChatId) || recipientChatId <= 0) {
+    if (!senderIdentity) {
       await clearBotDraft(env, telegramUserId);
-      await sendUserBotMenu(env, telegramUserId, chatId, 'У пользователя не привязан Telegram');
+      await sendUserBotMenu(env, telegramUserId, chatId, 'Пользователь не найден');
       return;
     }
 
-    const ad = await getPublishedAdCardById(env, draft.reply_ad_id);
-    const adTitle = ad?.title || `#${draft.reply_ad_id}`;
-    const senderReplyMarkup = senderIdentity?.user_id ? userBotReplyMarkup(senderIdentity.user_id, draft.reply_ad_id) : undefined;
-
     try {
-      await sendUserBotMessage(
+      const conversation = await sendChatMessage(
         env,
-        recipientChatId,
-        [
-          `Тебе ответил пользователь ${senderUser?.login || telegramUsername || 'пользователь'}`,
-          `по объявлению: ${adTitle}`,
-          '',
-          'Сообщение:',
-          replyText,
-        ].join('\n'),
-        senderReplyMarkup
+        senderIdentity.user_id,
+        draft.reply_user_id,
+        draft.reply_ad_id,
+        replyText,
+        telegramUsername || null
       );
+      await clearBotDraft(env, telegramUserId);
+      await sendUserBotChatView(env, telegramUserId, chatId, conversation.id, 'Сообщение отправлено');
     } catch (error) {
       console.error('Failed to send reply message to user', error);
       await clearBotDraft(env, telegramUserId);
       await sendUserBotMenu(env, telegramUserId, chatId, 'Не удалось отправить сообщение');
       return;
     }
-
-    await clearBotDraft(env, telegramUserId);
-    await sendUserBotMenu(env, telegramUserId, chatId, 'Ответ отправлен');
     return;
   }
 
@@ -6372,29 +6826,91 @@ async function handleUserBotCallback(
     return json({ ok: true });
   }
 
-  if (data.startsWith(USER_BOT_REPLY_PREFIX)) {
-    const payload = data.slice(USER_BOT_REPLY_PREFIX.length);
-    const [replyUserIdText, adIdText] = payload.split(':', 2);
-    const replyUserId = Number(replyUserIdText);
-    const adId = Number(adIdText);
+  if (data === USER_BOT_CHAT_LIST) {
+    await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
+    await sendUserBotChats(env, telegramUserId, chatId);
+    return json({ ok: true });
+  }
 
-    if (!Number.isInteger(replyUserId) || replyUserId <= 0 || !Number.isInteger(adId) || adId <= 0) {
-      await answerUserCallbackQuery(env, callbackQuery.id, 'Invalid reply').catch(() => {});
+  if (data.startsWith(USER_BOT_CHAT_PREFIX)) {
+    const conversationId = Number(data.slice(USER_BOT_CHAT_PREFIX.length));
+    if (!Number.isInteger(conversationId) || conversationId <= 0) {
+      await answerUserCallbackQuery(env, callbackQuery.id, 'Invalid chat').catch(() => {});
       return json({ ok: true });
     }
 
-    const senderUser = await findUserById(env, replyUserId);
-    const ad = await getPublishedAdCardById(env, adId);
-
-    await upsertBotDraft(env, telegramUserId, 'reply', 'message', null, null, null, null, null, null, null, null, null, replyUserId, adId);
     await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
-    await sendUserBotReplyPrompt(
+    await sendUserBotChatView(env, telegramUserId, chatId, conversationId);
+    return json({ ok: true });
+  }
+
+  if (data.startsWith(USER_BOT_CHAT_REPLY_PREFIX)) {
+    const conversationId = Number(data.slice(USER_BOT_CHAT_REPLY_PREFIX.length));
+    if (!Number.isInteger(conversationId) || conversationId <= 0) {
+      await answerUserCallbackQuery(env, callbackQuery.id, 'Invalid chat').catch(() => {});
+      return json({ ok: true });
+    }
+
+    const telegramIdentity = await findTelegramIdentity(env, telegramUserId);
+    const conversation = await getConversationById(env, conversationId);
+    if (!telegramIdentity || !conversation || (conversation.user_low_id !== telegramIdentity.user_id && conversation.user_high_id !== telegramIdentity.user_id)) {
+      await answerUserCallbackQuery(env, callbackQuery.id, 'Chat not found').catch(() => {});
+      return json({ ok: true });
+    }
+
+    const peerUserId = conversation.user_low_id === telegramIdentity.user_id ? conversation.user_high_id : conversation.user_low_id;
+    await upsertBotDraft(
       env,
       telegramUserId,
-      chatId,
-      senderUser?.login || null,
-      ad?.title || `#${adId}`
+      'chat',
+      'message',
+      null,
+      null,
+      null,
+      conversation.ad_id,
+      null,
+      null,
+      null,
+      null,
+      null,
+      peerUserId,
+      conversation.ad_id,
+      null,
+      null
     );
+    await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
+    await sendUserBotChatPrompt(env, telegramUserId, chatId, conversationId);
+    return json({ ok: true });
+  }
+
+  if (data.startsWith(USER_BOT_CHAT_START_PREFIX)) {
+    const adId = Number(data.slice(USER_BOT_CHAT_START_PREFIX.length));
+    if (!Number.isInteger(adId) || adId <= 0) {
+      await answerUserCallbackQuery(env, callbackQuery.id, 'Invalid ad').catch(() => {});
+      return json({ ok: true });
+    }
+
+    const telegramIdentity = await findTelegramIdentity(env, telegramUserId);
+    if (!telegramIdentity) {
+      await answerUserCallbackQuery(env, callbackQuery.id, 'User not found').catch(() => {});
+      return json({ ok: true });
+    }
+
+    const ad = await getPublishedAdCardById(env, adId);
+    if (!ad || !ad.owner_user_id || ad.owner_user_id === telegramIdentity.user_id) {
+      await answerUserCallbackQuery(env, callbackQuery.id, 'Chat not available').catch(() => {});
+      return json({ ok: true });
+    }
+
+    const ownerTelegram = await findTelegramIdentityByUserId(env, ad.owner_user_id);
+    if (!ownerTelegram?.provider_user_id) {
+      await answerUserCallbackQuery(env, callbackQuery.id, 'У автора не привязан Telegram').catch(() => {});
+      return json({ ok: true });
+    }
+
+    const conversation = await getOrCreateConversation(env, adId, telegramIdentity.user_id, ad.owner_user_id);
+    await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
+    await sendUserBotChatView(env, telegramUserId, chatId, conversation.id);
     return json({ ok: true });
   }
 
@@ -7732,21 +8248,14 @@ async function handleAdMessagePost(
     return renderPublicAdPage(env, ad, currentUser, false, 'У автора не привязан Telegram');
   }
 
-  const senderTelegramIdentity = await findTelegramIdentityByUserId(env, currentUser.id);
-  const senderReplyMarkup = senderTelegramIdentity?.provider_user_id ? userBotReplyMarkup(currentUser.id, ad.id) : undefined;
-
   try {
-    await sendUserBotMessage(
+    await sendChatMessage(
       env,
-      chatId,
-      [
-        `Тебе написал пользователь ${currentUser.login}`,
-        `по объявлению: ${ad.title}`,
-        '',
-        'Сообщение:',
-        message,
-      ].join('\n'),
-      senderReplyMarkup
+      currentUser.id,
+      ad.owner_user_id,
+      ad.id,
+      message,
+      currentUser.login
     );
   } catch (error) {
     console.error('Failed to send ad message to author', error);
@@ -7800,6 +8309,7 @@ export default {
     await ensureAdContactColumn(env);
     await ensureAdTypeColumn(env);
     await ensureBotDraftColumns(env);
+    await ensureChatTables(env);
     const url = new URL(request.url);
     const path = url.pathname;
 
