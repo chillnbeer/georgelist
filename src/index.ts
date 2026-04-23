@@ -2851,15 +2851,6 @@ async function showUserBotScreen(
   const draft = await getBotDraft(env, telegramUserId);
   const uiRef = readBotDraftUiRef(draft);
 
-  if (uiRef && uiRef.chatId === chatId) {
-    try {
-      await editUserBotMessage(env, chatId, uiRef.messageId, text, replyMarkup);
-      return;
-    } catch (error) {
-      console.error('Failed to edit user bot screen', error);
-    }
-  }
-
   if (fallbackMessageId !== null) {
     try {
       await editUserBotMessage(env, chatId, fallbackMessageId, text, replyMarkup);
@@ -2867,6 +2858,15 @@ async function showUserBotScreen(
       return;
     } catch (error) {
       console.error('Failed to edit fallback user bot screen', error);
+    }
+  }
+
+  if (uiRef && uiRef.chatId === chatId) {
+    try {
+      await editUserBotMessage(env, chatId, uiRef.messageId, text, replyMarkup);
+      return;
+    } catch (error) {
+      console.error('Failed to edit user bot screen', error);
     }
   }
 
@@ -2888,15 +2888,6 @@ async function showUserBotPhotoScreen(
   const draft = await getBotDraft(env, telegramUserId);
   const uiRef = readBotDraftUiRef(draft);
 
-  if (uiRef && uiRef.chatId === chatId) {
-    try {
-      await editUserBotMediaMessage(env, chatId, uiRef.messageId, photo, caption, replyMarkup);
-      return;
-    } catch (error) {
-      console.error('Failed to edit user bot photo screen', error);
-    }
-  }
-
   if (fallbackMessageId !== null) {
     try {
       await editUserBotMediaMessage(env, chatId, fallbackMessageId, photo, caption, replyMarkup);
@@ -2904,6 +2895,15 @@ async function showUserBotPhotoScreen(
       return;
     } catch (error) {
       console.error('Failed to edit fallback user bot photo screen', error);
+    }
+  }
+
+  if (uiRef && uiRef.chatId === chatId) {
+    try {
+      await editUserBotMediaMessage(env, chatId, uiRef.messageId, photo, caption, replyMarkup);
+      return;
+    } catch (error) {
+      console.error('Failed to edit user bot photo screen', error);
     }
   }
 
