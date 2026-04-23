@@ -1137,15 +1137,37 @@ async function readPendingTelegramAuthValue(env: Env, request: Request): Promise
   }
 }
 
-function nav(currentUser: CurrentUser | null = null, city: string | null = null): string {
-  const citySlug = normalizeCity(city);
-  const cityLink = `<a href="/city">${htmlEscape(cityLabel(citySlug))}</a>`;
+function renderCityPicker(currentCity: string | null = null, nextPath = '/'): string {
+  const citySlug = normalizeCity(currentCity);
+  const nextValue = htmlEscape(nextPath || '/');
+  const currentLabel = htmlEscape(cityLabel(citySlug));
+
+  return `<details class="city-picker">
+  <summary>${currentLabel} <span aria-hidden="true">▼</span></summary>
+  <div class="city-picker-panel">
+    <div class="city-picker-title">Выбери город</div>
+    <div class="city-picker-list">
+      ${CITIES.map(
+        (city) => `<form method="post" action="/city">
+  <input type="hidden" name="next" value="${nextValue}" />
+  <input type="hidden" name="city" value="${htmlEscape(city.slug)}" />
+  <button type="submit"${city.slug === citySlug ? ' class="active"' : ''}>${htmlEscape(city.label)}</button>
+</form>`
+      ).join('')}
+    </div>
+    <div class="city-picker-foot"><a href="/city?next=${nextValue}">все города</a></div>
+  </div>
+</details>`;
+}
+
+function nav(currentUser: CurrentUser | null = null, city: string | null = null, nextPath = '/'): string {
+  const cityPicker = renderCityPicker(city, nextPath);
   const adminLink = currentUser && currentUser.role === 'admin' ? ' <a href="/admin">админка</a>' : '';
   const authLinks = currentUser
     ? `<a href="/u/${encodeURIComponent(currentUser.login)}">мой профиль</a> <a href="/settings">настройки</a>${adminLink} <form method="post" action="/logout" style="display:inline"><button class="link-button" type="submit">выйти</button></form>`
     : `<a href="/login">войти</a> <a href="/register">зарегистрироваться</a>`;
 
-  return `<div class="nav"><a href="/">главная</a> <a href="/new">создать объявление</a> ${cityLink} ${authLinks}</div>`;
+  return `<div class="nav"><div class="nav-links"><a href="/">главная</a> <a href="/new">создать объявление</a> <a href="/about">о проекте</a></div>${cityPicker}<div class="nav-auth">${authLinks}</div></div>`;
 }
 
 function shell(title: string, body: string, currentUser: CurrentUser | null = null, status = 200): Response {
@@ -1181,11 +1203,96 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       text-decoration: underline;
     }
     .nav {
-      margin: 0 0 10px;
+      margin: 0 0 12px;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 10px 16px;
+    }
+    .nav-links,
+    .nav-auth {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 10px 14px;
+    }
+    .nav-auth {
+      margin-left: auto;
     }
     .nav form {
       display: inline;
       margin: 0;
+    }
+    .city-picker {
+      position: relative;
+      display: inline-block;
+      min-width: 0;
+    }
+    .city-picker summary {
+      list-style: none;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 4px 10px;
+      border: 1px solid #bbb;
+      border-radius: 999px;
+      background: #f6f6f6;
+      user-select: none;
+      white-space: nowrap;
+    }
+    .city-picker summary::-webkit-details-marker {
+      display: none;
+    }
+    .city-picker[open] summary {
+      background: #ececec;
+    }
+    .city-picker-panel {
+      position: absolute;
+      top: calc(100% + 8px);
+      left: 0;
+      z-index: 20;
+      width: min(320px, calc(100vw - 24px));
+      padding: 10px;
+      border: 1px solid #ddd;
+      border-radius: 12px;
+      background: #fff;
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.12);
+    }
+    .city-picker-title {
+      margin: 0 0 8px;
+      font-size: 12px;
+      color: #555;
+    }
+    .city-picker-list {
+      display: grid;
+      gap: 6px;
+    }
+    .city-picker-list form {
+      display: block;
+      margin: 0;
+    }
+    .city-picker-list button {
+      width: 100%;
+      text-align: left;
+      margin: 0;
+      border-radius: 8px;
+      background: #f7f7f7;
+    }
+    .city-picker-list button.active {
+      border-color: #777;
+      background: #ebebeb;
+      font-weight: 700;
+    }
+    .city-picker-foot {
+      margin-top: 8px;
+      font-size: 12px;
+    }
+    .reading-column {
+      max-width: 620px;
+    }
+    .reading-column p {
+      margin: 0 0 12px;
     }
     .link-button {
       color: #00f;
@@ -1596,11 +1703,11 @@ function renderAvatar(env: Env, key: string | null, alt: string, className = 'av
   return `<div class="${className}"><img src="${htmlEscape(buildMediaUrl(env, key))}" alt="${htmlEscape(alt)}" loading="lazy" /></div>`;
 }
 
-function renderNotFoundPage(currentUser: CurrentUser | null = null, currentCity: string | null = null): Response {
+function renderNotFoundPage(currentUser: CurrentUser | null = null, currentCity: string | null = null, currentPath = '/'): Response {
   return shell(
     'страница не найдена - жоржлист',
     `<h1>жоржлист</h1>
-${nav(currentUser, currentCity)}
+${nav(currentUser, currentCity, currentPath)}
 <div class="section">
   <h2>страница не найдена</h2>
   <p>такого объявления, пользователя или страницы здесь нет</p>
@@ -1615,7 +1722,7 @@ ${nav(currentUser, currentCity)}
   );
 }
 
-function renderHome(currentUser: CurrentUser | null = null, currentCity: string | null = null): Response {
+function renderHome(currentUser: CurrentUser | null = null, currentCity: string | null = null, currentPath = '/'): Response {
   const categories = CATEGORIES.map(
     (category) => `<li><a href="/category/${category.slug}">${htmlEscape(category.label)}</a></li>`
   ).join('');
@@ -1623,7 +1730,7 @@ function renderHome(currentUser: CurrentUser | null = null, currentCity: string 
   return shell(
     'жоржлист',
     `<h1>жоржлист</h1>
-${nav(currentUser, currentCity)}
+${nav(currentUser, currentCity, currentPath)}
 <div class="section">
   <h2>Категории</h2>
   <ul>
@@ -1634,7 +1741,25 @@ ${renderSearchForm()}`
   );
 }
 
-function renderSearchPage(env: Env, query: string, ads: AdCardRow[], currentUser: CurrentUser | null = null, currentCity: string | null = null): Response {
+function renderAboutPage(currentUser: CurrentUser | null = null, currentCity: string | null = null, currentPath = '/about'): Response {
+  return shell(
+    'о проекте - жоржлист',
+    `<h1>жоржлист</h1>
+${nav(currentUser, currentCity, currentPath)}
+<div class="section reading-column">
+  <h2>О проекте</h2>
+  <p>это простая доска объявлений</p>
+  <p>ты размещаешь объявление<br />тебе пишут<br />вы договариваетесь</p>
+  <p>без лишних шагов<br />без посредников<br />без сложного интерфейса</p>
+  <p>здесь не нужно разбираться<br />как что работает</p>
+  <p>достаточно просто<br />написать другому человеку</p>
+  <p>и решить вопрос</p>
+</div>`,
+    currentUser
+  );
+}
+
+function renderSearchPage(env: Env, query: string, ads: AdCardRow[], currentUser: CurrentUser | null = null, currentCity: string | null = null, currentPath = '/search'): Response {
   const hasQuery = query.trim().length > 0;
   const content = hasQuery
     ? ads.length
@@ -1645,7 +1770,7 @@ function renderSearchPage(env: Env, query: string, ads: AdCardRow[], currentUser
   return shell(
     'поиск - жоржлист',
     `<h1>жоржлист</h1>
-${nav(currentUser, currentCity)}
+${nav(currentUser, currentCity, currentPath)}
 <div class="section">
   <h2>Поиск</h2>
   <form method="get" action="/search">
@@ -1665,7 +1790,7 @@ function renderCityPage(currentUser: CurrentUser | null = null, currentCity: str
   return shell(
     'город - жоржлист',
     `<h1>жоржлист</h1>
-${nav(currentUser, city)}
+${nav(currentUser, city, nextPath)}
 <div class="section">
   <h2>Выбери город</h2>
   ${message ? `<p class="empty">${htmlEscape(message)}</p>` : ''}
@@ -1680,7 +1805,7 @@ ${nav(currentUser, city)}
   );
 }
 
-function renderNewPage(currentUser: CurrentUser | null = null, currentCity: string | null = null, error: string | null = null): Response {
+function renderNewPage(currentUser: CurrentUser | null = null, currentCity: string | null = null, error: string | null = null, currentPath = '/new'): Response {
   const options = CATEGORIES.map(
     (category) => `<option value="${category.slug}"${category.slug === 'misc' ? ' selected' : ''}>${htmlEscape(category.label)}</option>`
   ).join('');
@@ -1688,7 +1813,7 @@ function renderNewPage(currentUser: CurrentUser | null = null, currentCity: stri
   return shell(
     'создать объявление - жоржлист',
     `<h1>жоржлист</h1>
-${nav(currentUser, currentCity)}
+${nav(currentUser, currentCity, currentPath)}
 <div class="section">
   <h2>Создать объявление</h2>
   ${error ? `<p class="empty">${htmlEscape(error)}</p>` : ''}
@@ -1728,7 +1853,8 @@ function renderCategoryPage(
   ads: AdCardRow[],
   currentUser: CurrentUser | null = null,
   typeFilter: string | null = null,
-  currentCity: string | null = null
+  currentCity: string | null = null,
+  currentPath = '/'
 ): Response {
   const category = CATEGORIES.find((item) => item.slug === slug);
   if (!category) {
@@ -1738,7 +1864,7 @@ function renderCategoryPage(
   return shell(
     `${category.label} - жоржлист`,
     `<h1>жоржлист</h1>
-${nav(currentUser, currentCity)}
+${nav(currentUser, currentCity, currentPath)}
 <div class="section">
   <h2>${htmlEscape(category.label)}</h2>
   ${renderTypeFilter(typeFilter, `/category/${encodeURIComponent(category.slug)}`)}
@@ -1810,7 +1936,8 @@ function renderPublicAdPage(
   canMessageAuthor = false,
   currentUserHasTelegram = false,
   message: string | null = null,
-  currentCity: string | null = null
+  currentCity: string | null = null,
+  currentPath = '/'
 ): Response {
   const media = ad.image_key
     ? `<div class="ad-page-media"><img src="${htmlEscape(buildMediaUrl(env, ad.image_key))}" alt="${htmlEscape(ad.title)}" /></div>`
@@ -1826,7 +1953,7 @@ function renderPublicAdPage(
   return shell(
     `${ad.title} - жоржлист`,
     `<h1>жоржлист</h1>
-${nav(currentUser, currentCity)}
+${nav(currentUser, currentCity, currentPath)}
 <div class="section">
   <div class="ad-page">
     ${media}
@@ -1847,7 +1974,7 @@ ${renderSearchForm()}`,
   );
 }
 
-function renderPublicUserPage(env: Env, user: PublicUserRow, ads: AdCardRow[], currentUser: CurrentUser | null = null, currentCity: string | null = null): Response {
+function renderPublicUserPage(env: Env, user: PublicUserRow, ads: AdCardRow[], currentUser: CurrentUser | null = null, currentCity: string | null = null, currentPath = '/'): Response {
   const isOwner = currentUser?.login === user.login;
   const adItems = ads.length
     ? `<div class="ad-grid">${ads
@@ -1878,7 +2005,7 @@ function renderPublicUserPage(env: Env, user: PublicUserRow, ads: AdCardRow[], c
   return shell(
     `${user.login} - жоржлист`,
     `<h1>жоржлист</h1>
-${nav(currentUser, currentCity)}
+${nav(currentUser, currentCity, currentPath)}
 <div class="section">
   ${renderAvatar(env, user.avatar_key, user.login)}
   <h2>${htmlEscape(user.login)}</h2>
@@ -1893,11 +2020,11 @@ ${renderSearchForm()}`,
   );
 }
 
-function renderLoginPage(error: string | null = null, nextPath = '/my', email = ''): Response {
+function renderLoginPage(error: string | null = null, nextPath = '/my', email = '', currentPath = '/login'): Response {
   return shell(
     'войти - жоржлист',
     `<h1>жоржлист</h1>
-${nav()}
+${nav(null, null, currentPath)}
 <div class="section">
   <h2>Войти</h2>
   ${error ? `<p class="empty">${htmlEscape(error)}</p>` : ''}
@@ -1924,7 +2051,8 @@ function renderRegisterPage(
   email = '',
   displayName = '',
   note: string | null = null,
-  telegramAuthLink: string | null = null
+  telegramAuthLink: string | null = null,
+  currentPath = '/register'
 ): Response {
   const telegramAction = telegramAuthLink
     ? `<p><a href="${htmlEscape(telegramAuthLink)}">Зарегистрироваться через Telegram</a></p>`
@@ -1932,7 +2060,7 @@ function renderRegisterPage(
   return shell(
     'зарегистрироваться - жоржлист',
     `<h1>жоржлист</h1>
-${nav()}
+${nav(null, null, currentPath)}
 <div class="section">
   <h2>Зарегистрироваться</h2>
   ${error ? `<p class="empty">${htmlEscape(error)}</p>` : ''}
@@ -1956,7 +2084,7 @@ ${nav()}
   );
 }
 
-function renderMyPage(env: Env, currentUser: CurrentUser, ads: AdRow[], message: string | null = null, currentCity: string | null = null): Response {
+function renderMyPage(env: Env, currentUser: CurrentUser, ads: AdRow[], message: string | null = null, currentCity: string | null = null, currentPath = '/my'): Response {
   const items = ads.length
     ? ads
         .map((ad) => {
@@ -1983,7 +2111,7 @@ function renderMyPage(env: Env, currentUser: CurrentUser, ads: AdRow[], message:
   return shell(
     'мои объявления - жоржлист',
     `<h1>жоржлист</h1>
-${nav(currentUser, currentCity)}
+${nav(currentUser, currentCity, currentPath)}
 <div class="section">
   <h2>Мои объявления</h2>
   ${message ? `<p class="empty">${htmlEscape(message)}</p>` : ''}
@@ -1999,7 +2127,8 @@ function renderEditPage(
   ad: AdRow,
   error: string | null = null,
   formAction = `/my/edit/${ad.id}`,
-  currentCity: string | null = null
+  currentCity: string | null = null,
+  currentPath = '/my'
 ): Response {
   const options = CATEGORIES.map(
     (category) => `<option value="${category.slug}"${category.slug === ad.category ? ' selected' : ''}>${htmlEscape(category.label)}</option>`
@@ -2011,7 +2140,7 @@ function renderEditPage(
   return shell(
     'редактировать объявление - жоржлист',
     `<h1>жоржлист</h1>
-${nav(currentUser, currentCity)}
+${nav(currentUser, currentCity, currentPath)}
 <div class="section">
   <h2>Редактировать объявление</h2>
   ${error ? `<p class="empty">${htmlEscape(error)}</p>` : ''}
@@ -2204,7 +2333,8 @@ function renderAdminUsersSection(
   currentUser: CurrentUser,
   users: AdminUserRow[],
   pagination: AdminPagination,
-  message: string | null = null
+  message: string | null = null,
+  currentPath = '/admin?section=users'
 ): Response {
   const items = users.length
     ? users
@@ -2245,7 +2375,7 @@ function renderAdminUsersSection(
   return shell(
     'админка - жоржлист',
     `<h1>жоржлист</h1>
-${nav(currentUser)}
+${nav(currentUser, currentUser.city, currentPath)}
 <div class="section">
   <h2>Админка</h2>
   ${renderAdminTabs('users')}
@@ -2264,7 +2394,8 @@ function renderAdminAdsSection(
   currentUser: CurrentUser,
   ads: AdRow[],
   pagination: AdminPagination,
-  message: string | null = null
+  message: string | null = null,
+  currentPath = '/admin?section=ads'
 ): Response {
   const items = ads.length
     ? ads
@@ -2305,7 +2436,7 @@ function renderAdminAdsSection(
   return shell(
     'админка - жоржлист',
     `<h1>жоржлист</h1>
-${nav(currentUser)}
+${nav(currentUser, currentUser.city, currentPath)}
 <div class="section">
   <h2>Админка</h2>
   ${renderAdminTabs('ads')}
@@ -2342,7 +2473,8 @@ function renderSettingsPage(
   telegramIdentity: UserIdentityRow | null,
   emailIdentity: UserIdentityRow | null,
   message: string | null = null,
-  pendingTelegramAuth: TelegramAuthPayload | null = null
+  pendingTelegramAuth: TelegramAuthPayload | null = null,
+  currentPath = '/settings'
 ): Response {
   const telegramStatus = telegramIdentity
     ? `Telegram: ${htmlEscape(telegramIdentity.telegram_username ? `@${telegramIdentity.telegram_username}` : telegramIdentity.provider_user_id || '')}`
@@ -2401,7 +2533,7 @@ function renderSettingsPage(
   return shell(
     'настройки - жоржлист',
     `<h1>жоржлист</h1>
-${nav(currentUser)}
+${nav(currentUser, currentUser.city, currentPath)}
 <div class="section">
   <h2>Настройки</h2>
   <p>Роль: ${htmlEscape(currentUser.role)}</p>
@@ -2432,12 +2564,13 @@ function renderTelegramWidgetPage(
   description: string,
   botUsername: string,
   authUrl: string,
-  currentUser: CurrentUser | null = null
+  currentUser: CurrentUser | null = null,
+  currentPath = '/'
 ): Response {
   return shell(
     title,
     `<h1>жоржлист</h1>
-${nav(currentUser)}
+${nav(currentUser, currentUser?.city || null, currentPath)}
 <div class="section">
   <h2>${htmlEscape(heading)}</h2>
   <p>${htmlEscape(description)}</p>
@@ -7610,7 +7743,7 @@ async function handleLoginGet(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   const nextPath = sanitizeNextPath(url.searchParams.get('next'));
   const message = url.searchParams.get('message');
-  return renderLoginPage(message, nextPath);
+  return renderLoginPage(message, nextPath, '', `${url.pathname}${url.search}`);
 }
 
 async function handleRegisterGet(request: Request, env: Env): Promise<Response> {
@@ -7624,7 +7757,7 @@ async function handleRegisterGet(request: Request, env: Env): Promise<Response> 
   const message = url.searchParams.get('message');
   const note = url.searchParams.get('source') === 'telegram' ? 'Telegram подтвержден. Заверши регистрацию, чтобы привязать его к аккаунту.' : null;
   const telegramAuthLink = `/register/telegram?next=${encodeURIComponent('/settings')}`;
-  return renderRegisterPage(message, nextPath, '', '', '', note, telegramAuthLink);
+  return renderRegisterPage(message, nextPath, '', '', '', note, telegramAuthLink, `${url.pathname}${url.search}`);
 }
 
 async function handleLoginPost(request: Request, env: Env): Promise<Response> {
@@ -7793,8 +7926,9 @@ async function handleMyGet(request: Request, env: Env): Promise<Response> {
     return redirect('/login?next=/my');
   }
 
+  const url = new URL(request.url);
   const message = new URL(request.url).searchParams.get('message');
-  return renderMyPage(env, currentUser, await listMyAds(env, currentUser.id), message);
+  return renderMyPage(env, currentUser, await listMyAds(env, currentUser.id), message, getCurrentCityFromRequest(request, currentUser), `${url.pathname}${url.search}`);
 }
 
 async function handleMyDeleteRoute(request: Request, env: Env, id: string): Promise<Response> {
@@ -7841,6 +7975,7 @@ async function handleAdminGet(request: Request, env: Env): Promise<Response> {
   const section = parseAdminSection(url.searchParams.get('section'));
   const requestedPage = parseAdminPage(url.searchParams.get('page'));
   const message = url.searchParams.get('message');
+  const currentPath = `${url.pathname}${url.search}`;
 
   if (section === 'users') {
     const totalUsers = await countAllUsers(env);
@@ -7851,14 +7986,15 @@ async function handleAdminGet(request: Request, env: Env): Promise<Response> {
       currentUser,
       await listAdminUsersPage(env, page),
       { page, totalPages },
-      message
+      message,
+      currentPath
     );
   }
 
   const totalAds = await countAllAds(env);
   const totalPages = Math.max(1, Math.ceil(totalAds / ADMIN_PAGE_SIZE));
   const page = Math.min(requestedPage, totalPages);
-  return renderAdminAdsSection(env, currentUser, await listAdminAdsPage(env, page), { page, totalPages }, message);
+  return renderAdminAdsSection(env, currentUser, await listAdminAdsPage(env, page), { page, totalPages }, message, currentPath);
 }
 
 async function handleAdminDeleteRoute(request: Request, env: Env, id: string): Promise<Response> {
@@ -8173,7 +8309,8 @@ async function handleSettingsGet(request: Request, env: Env): Promise<Response> 
     pendingTelegramAuth = null;
   }
 
-  return renderSettingsPage(env, currentUser, telegramIdentity, emailIdentity, message, pendingTelegramAuth);
+  const url = new URL(request.url);
+  return renderSettingsPage(env, currentUser, telegramIdentity, emailIdentity, message, pendingTelegramAuth, `${url.pathname}${url.search}`);
 }
 
 async function handleSettingsLinkTelegramGet(request: Request, env: Env): Promise<Response> {
@@ -8285,8 +8422,15 @@ async function handleRegisterTelegramGet(request: Request, env: Env): Promise<Re
     'Зарегистрироваться через Telegram',
     'Нажми кнопку ниже, чтобы начать регистрацию через Telegram.',
     botUsername,
-    authUrl
+    authUrl,
+    null,
+    `${url.pathname}${url.search}`
   );
+}
+
+async function handleAboutGet(request: Request, env: Env): Promise<Response> {
+  const currentUser = await getCurrentUser(request, env);
+  return renderAboutPage(currentUser, getCurrentCityFromRequest(request, currentUser), new URL(request.url).pathname);
 }
 
 async function handleSettingsPost(request: Request, env: Env): Promise<Response> {
@@ -8625,7 +8769,8 @@ async function handleNewGet(request: Request, env: Env): Promise<Response> {
     return redirect('/login?next=/new');
   }
 
-  return renderNewPage(currentUser, getCurrentCityFromRequest(request, currentUser));
+  const url = new URL(request.url);
+  return renderNewPage(currentUser, getCurrentCityFromRequest(request, currentUser), null, `${url.pathname}${url.search}`);
 }
 
 async function handleNewPost(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -8654,7 +8799,7 @@ async function handleCategoryGet(request: Request, env: Env, slug: string, curre
   const currentCity = getCurrentCityFromRequest(request, currentUser);
   const category = CATEGORIES.find((item) => item.slug === slug);
   if (!category) {
-    return renderNotFoundPage(currentUser, currentCity);
+    return renderNotFoundPage(currentUser, currentCity, new URL(request.url).pathname);
   }
 
   const typeFilter = new URL(request.url).searchParams.get('type');
@@ -8662,7 +8807,8 @@ async function handleCategoryGet(request: Request, env: Env, slug: string, curre
   const ads = normalizedTypeFilter
     ? await listPublishedAdsByCategoryAndType(env, slug, normalizedTypeFilter, currentCity)
     : await listPublishedAdsByCategory(env, slug, currentCity);
-  return renderCategoryPage(env, slug, ads, currentUser, normalizedTypeFilter, currentCity);
+  const url = new URL(request.url);
+  return renderCategoryPage(env, slug, ads, currentUser, normalizedTypeFilter, currentCity, `${url.pathname}${url.search}`);
 }
 
 async function handleAdGet(
@@ -8679,13 +8825,14 @@ async function handleAdGet(
 
   const ad = await getPublishedAdCardById(env, numericId);
   if (!ad) {
-    return renderNotFoundPage(currentUser, getCurrentCityFromRequest(request, currentUser));
+    return renderNotFoundPage(currentUser, getCurrentCityFromRequest(request, currentUser), new URL(request.url).pathname);
   }
 
   const canMessageAuthor = Boolean(ad.owner_user_id && (await findTelegramIdentityByUserId(env, ad.owner_user_id)));
   const currentUserHasTelegram = currentUser ? Boolean(await findTelegramIdentityByUserId(env, currentUser.id)) : false;
   const currentCity = getCurrentCityFromRequest(request, currentUser);
-  return renderPublicAdPage(env, ad, currentUser, canMessageAuthor, currentUserHasTelegram, message, currentCity);
+  const url = new URL(request.url);
+  return renderPublicAdPage(env, ad, currentUser, canMessageAuthor, currentUserHasTelegram, message, currentCity, `${url.pathname}${url.search}`);
 }
 
 async function handleAdMessagePost(
@@ -8705,18 +8852,18 @@ async function handleAdMessagePost(
 
   const ad = await getPublishedAdCardById(env, numericId);
   if (!ad) {
-    return renderNotFoundPage(currentUser, currentUser ? currentUser.city : CITY_DEFAULT_SLUG);
+    return renderNotFoundPage(currentUser, currentUser ? currentUser.city : CITY_DEFAULT_SLUG, new URL(request.url).pathname);
   }
 
   const canMessageAuthor = Boolean(ad.owner_user_id && (await findTelegramIdentityByUserId(env, ad.owner_user_id)));
   const currentUserHasTelegram = Boolean(await findTelegramIdentityByUserId(env, currentUser.id));
 
   if (!ad.owner_user_id) {
-    return renderPublicAdPage(env, ad, currentUser, canMessageAuthor, currentUserHasTelegram, 'У объявления не указан автор', currentUser.city);
+    return renderPublicAdPage(env, ad, currentUser, canMessageAuthor, currentUserHasTelegram, 'У объявления не указан автор', currentUser.city, new URL(request.url).pathname);
   }
 
   if (ad.owner_user_id === currentUser.id) {
-    return renderPublicAdPage(env, ad, currentUser, canMessageAuthor, currentUserHasTelegram, 'Нельзя написать самому себе', currentUser.city);
+    return renderPublicAdPage(env, ad, currentUser, canMessageAuthor, currentUserHasTelegram, 'Нельзя написать самому себе', currentUser.city, new URL(request.url).pathname);
   }
 
   if (!currentUserHasTelegram) {
@@ -8727,24 +8874,25 @@ async function handleAdMessagePost(
       canMessageAuthor,
       currentUserHasTelegram,
       'Чтобы написать продавцу в Telegram, подключи Telegram-бот в настройках',
-      currentUser.city
+      currentUser.city,
+      new URL(request.url).pathname
     );
   }
 
   const form = await request.formData();
   const message = String(form.get('message') || '').trim();
   if (!message) {
-    return renderPublicAdPage(env, ad, currentUser, canMessageAuthor, currentUserHasTelegram, 'Введите текст сообщения', currentUser.city);
+    return renderPublicAdPage(env, ad, currentUser, canMessageAuthor, currentUserHasTelegram, 'Введите текст сообщения', currentUser.city, new URL(request.url).pathname);
   }
 
   if (message.length > 1000) {
-    return renderPublicAdPage(env, ad, currentUser, canMessageAuthor, currentUserHasTelegram, 'Сообщение слишком длинное', currentUser.city);
+    return renderPublicAdPage(env, ad, currentUser, canMessageAuthor, currentUserHasTelegram, 'Сообщение слишком длинное', currentUser.city, new URL(request.url).pathname);
   }
 
   const telegramIdentity = await findTelegramIdentityByUserId(env, ad.owner_user_id);
   const chatId = Number(telegramIdentity?.provider_user_id || '');
   if (!telegramIdentity?.provider_user_id || !Number.isInteger(chatId) || chatId <= 0) {
-    return renderPublicAdPage(env, ad, currentUser, false, currentUserHasTelegram, 'У продавца не подключён Telegram-бот', currentUser.city);
+    return renderPublicAdPage(env, ad, currentUser, false, currentUserHasTelegram, 'У продавца не подключён Telegram-бот', currentUser.city, new URL(request.url).pathname);
   }
 
   try {
@@ -8758,7 +8906,7 @@ async function handleAdMessagePost(
     );
   } catch (error) {
     console.error('Failed to send ad message to author', error);
-    return renderPublicAdPage(env, ad, currentUser, canMessageAuthor, currentUserHasTelegram, 'Не удалось отправить сообщение', currentUser.city);
+    return renderPublicAdPage(env, ad, currentUser, canMessageAuthor, currentUserHasTelegram, 'Не удалось отправить сообщение', currentUser.city, new URL(request.url).pathname);
   }
 
   return redirectWithMessage(`/ad/${ad.id}`, 'Сообщение отправлено в Telegram продавцу');
@@ -8774,10 +8922,11 @@ async function handlePublicUserGet(request: Request, env: Env, login: string, cu
 
   const user = await getPublicUserByLogin(env, decodedLogin);
   if (!user) {
-    return renderNotFoundPage(currentUser, getCurrentCityFromRequest(request, currentUser));
+    return renderNotFoundPage(currentUser, getCurrentCityFromRequest(request, currentUser), new URL(request.url).pathname);
   }
 
-  return renderPublicUserPage(env, user, await listPublishedAdsByUser(env, user.id, getCurrentCityFromRequest(request, currentUser)), currentUser, getCurrentCityFromRequest(request, currentUser));
+  const url = new URL(request.url);
+  return renderPublicUserPage(env, user, await listPublishedAdsByUser(env, user.id, getCurrentCityFromRequest(request, currentUser)), currentUser, getCurrentCityFromRequest(request, currentUser), `${url.pathname}${url.search}`);
 }
 
 async function handleMediaGet(env: Env, key: string): Promise<Response> {
@@ -8817,7 +8966,12 @@ export default {
 
     if (path === '/') {
       const currentUser = await getCurrentUser(request, env);
-      return renderHome(currentUser, getCurrentCityFromRequest(request, currentUser));
+      const currentUrl = new URL(request.url);
+      return renderHome(currentUser, getCurrentCityFromRequest(request, currentUser), `${currentUrl.pathname}${currentUrl.search}`);
+    }
+
+    if (path === '/about') {
+      return handleAboutGet(request, env);
     }
 
     if (path === '/register') {
@@ -8956,7 +9110,7 @@ export default {
     if (path === '/search' && request.method === 'GET') {
       const query = url.searchParams.get('q') || '';
       const currentUser = await getCurrentUser(request, env);
-      return renderSearchPage(env, query, await searchPublishedAds(env, query, getCurrentCityFromRequest(request, currentUser)), currentUser, getCurrentCityFromRequest(request, currentUser));
+      return renderSearchPage(env, query, await searchPublishedAds(env, query, getCurrentCityFromRequest(request, currentUser)), currentUser, getCurrentCityFromRequest(request, currentUser), `${url.pathname}${url.search}`);
     }
 
     if (path === '/city') {

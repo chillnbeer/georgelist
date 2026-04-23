@@ -349,6 +349,7 @@ async function insertAd(params: {
   ownerUserId: number | null;
   status?: string;
   type?: string;
+  city?: string;
 }): Promise<number> {
   const result = await env.DB.prepare(
     `
@@ -356,7 +357,7 @@ async function insertAd(params: {
       VALUES (?, ?, ?, ?, ?, ?, ?, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
     `
   )
-    .bind(params.title, params.body, 'ekb', params.category, params.type || 'sell', params.status || 'pending', params.ownerUserId)
+    .bind(params.title, params.body, params.city || 'ekb', params.category, params.type || 'sell', params.status || 'pending', params.ownerUserId)
     .run();
 
   return Number(result.meta.last_row_id);
@@ -2468,6 +2469,70 @@ describe('Site search', () => {
     expect(emptyResponse.status).toBe(200);
     const emptyHtml = await emptyResponse.text();
     expect(emptyHtml).toContain('Ничего не найдено');
+  });
+});
+
+describe('Site about and city picker', () => {
+  it('renders the about page and exposes the city picker in the header', async () => {
+    const homeResponse = await runRequest(new Request('http://example.com/'));
+    expect(homeResponse.status).toBe(200);
+    const homeHtml = await homeResponse.text();
+    expect(homeHtml).toContain('о проекте');
+    expect(homeHtml).toContain('Екатеринбург');
+
+    const aboutResponse = await runRequest(new Request('http://example.com/about'));
+    expect(aboutResponse.status).toBe(200);
+    const aboutHtml = await aboutResponse.text();
+    expect(aboutHtml).toContain('это простая доска объявлений');
+    expect(aboutHtml).toContain('без лишних шагов');
+    expect(aboutHtml).toContain('достаточно просто');
+  });
+
+  it('changes city from the picker and filters site listings by the selected city', async () => {
+    await insertAd({
+      title: 'MSK keyword listing',
+      body: 'common body',
+      category: 'misc',
+      ownerUserId: null,
+      status: 'published',
+      city: 'msk',
+    });
+    await insertAd({
+      title: 'EKB keyword listing',
+      body: 'common body',
+      category: 'misc',
+      ownerUserId: null,
+      status: 'published',
+      city: 'ekb',
+    });
+
+    const cityForm = new FormData();
+    cityForm.set('city', 'msk');
+    cityForm.set('next', '/search?q=keyword');
+
+    const cityResponse = await runRequest(
+      new Request('http://example.com/city', {
+        method: 'POST',
+        body: cityForm,
+      })
+    );
+
+    expect(cityResponse.status).toBe(303);
+    expect(cityResponse.headers.get('Location')).toBe('/search?q=keyword&city=msk');
+    const cityCookie = cookieFromSetCookie(cityResponse.headers.get('Set-Cookie'), 'city');
+    expect(cityCookie).toBeTruthy();
+
+    const filteredResponse = await runRequest(
+      new Request('http://example.com/search?q=keyword', {
+        headers: {
+          Cookie: cityCookie || '',
+        },
+      })
+    );
+    expect(filteredResponse.status).toBe(200);
+    const filteredHtml = await filteredResponse.text();
+    expect(filteredHtml).toContain('MSK keyword listing');
+    expect(filteredHtml).not.toContain('EKB keyword listing');
   });
 });
 
