@@ -1107,6 +1107,18 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       color: #444;
       font-size: 12px;
     }
+    .settings-account,
+    .settings-password {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      max-width: 640px;
+    }
+    .settings-account button,
+    .settings-password button {
+      align-self: flex-start;
+      margin-top: 8px;
+    }
     .ad-image img,
     .ad-page-image img,
     .image-preview img {
@@ -1902,9 +1914,13 @@ function renderSettingsPage(
     ? `<div class="section">
     <h3>Сменить пароль</h3>
     <p>${htmlEscape(emailIdentity.password_hash ? 'Пароль: установлен' : 'Пароль: не задан')}</p>
-    <form method="post" action="/settings/password">
-      <label for="current_password">Текущий пароль</label>
-      <input id="current_password" name="current_password" type="password" autocomplete="current-password" />
+    <form class="settings-password" method="post" action="/settings/password">
+      ${
+        emailIdentity.password_hash
+          ? `<label for="current_password">Текущий пароль</label>
+      <input id="current_password" name="current_password" type="password" autocomplete="current-password" />`
+          : `<p class="empty">Текущий пароль не нужен: пароль ещё не задан.</p>`
+      }
 
       <label for="new_password">Новый пароль</label>
       <input id="new_password" name="new_password" type="password" minlength="8" autocomplete="new-password" />
@@ -1912,7 +1928,7 @@ function renderSettingsPage(
       <label for="confirm_password">Подтверждение нового пароля</label>
       <input id="confirm_password" name="confirm_password" type="password" minlength="8" autocomplete="new-password" />
 
-      <button type="submit">Сменить пароль</button>
+      <button type="submit">${htmlEscape(emailIdentity.password_hash ? 'Сменить пароль' : 'Задать пароль')}</button>
     </form>
   </div>`
     : `<div class="section">
@@ -1942,14 +1958,14 @@ ${nav(currentUser)}
 <div class="section">
   <h2>Настройки</h2>
   <p>Роль: ${htmlEscape(currentUser.role)}</p>
-  <form method="post" action="/settings">
+  <form class="settings-account" method="post" action="/settings">
     <label for="login">Login</label>
     <input id="login" name="login" type="text" required value="${htmlEscape(currentUser.login)}" />
 
     <label for="email">Email</label>
     <input id="email" name="email" type="email" required value="${htmlEscape(emailValue)}" />
 
-    <button type="submit">Сохранить</button>
+    <button type="submit">Сохранить настройки</button>
   </form>
   <p>${telegramStatus}</p>
   ${statusMessage ? `<p class="empty">${htmlEscape(statusMessage)}</p>` : ''}

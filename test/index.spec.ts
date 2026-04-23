@@ -1240,6 +1240,62 @@ describe('Site password settings', () => {
     expect(newLoginResponse.status).toBe(303);
     expect(newLoginResponse.headers.get('Location')).toBe('/my');
   });
+
+  it('allows setting a password for a Telegram-only account without a current password', async () => {
+    await seedUser({
+      id: 21,
+      login: 'tgonly',
+      email: 'tgonly@example.com',
+      sessionToken: 'tgonly-session',
+    });
+    await insertTelegramIdentity({
+      userId: 21,
+      telegramUserId: '21001',
+      telegramUsername: 'tgonly_tg',
+    });
+
+    const settingsResponse = await runRequest(
+      new Request('http://example.com/settings', {
+        headers: {
+          Cookie: 'session=tgonly-session',
+        },
+      })
+    );
+
+    expect(settingsResponse.status).toBe(200);
+    const settingsHtml = await settingsResponse.text();
+    expect(settingsHtml).toContain('Пароль: не задан');
+    expect(settingsHtml).toContain('Текущий пароль не нужен');
+
+    const setPasswordForm = new FormData();
+    setPasswordForm.set('new_password', 'tgpassword123');
+    setPasswordForm.set('confirm_password', 'tgpassword123');
+
+    const setPasswordResponse = await runRequest(
+      new Request('http://example.com/settings/password', {
+        method: 'POST',
+        headers: {
+          Cookie: 'session=tgonly-session',
+        },
+        body: setPasswordForm,
+      })
+    );
+
+    expect(setPasswordResponse.status).toBe(303);
+
+    const loginForm = new FormData();
+    loginForm.set('email', 'tgonly@example.com');
+    loginForm.set('password', 'tgpassword123');
+    const loginResponse = await runRequest(
+      new Request('http://example.com/login', {
+        method: 'POST',
+        body: loginForm,
+      })
+    );
+
+    expect(loginResponse.status).toBe(303);
+    expect(loginResponse.headers.get('Location')).toBe('/my');
+  });
 });
 
 describe('User bot settings', () => {
@@ -1608,6 +1664,7 @@ describe('Settings page', () => {
     expect(response.status).toBe(200);
     const html = await response.text();
     expect(html).toContain('Роль: user');
+    expect(html).toContain('Сохранить настройки');
     expect(html).toContain('Админка доступна только аккаунтам с ролью admin.');
   });
 });
