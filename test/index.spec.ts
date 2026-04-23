@@ -2,7 +2,7 @@ import { env, createExecutionContext, waitOnExecutionContext } from 'cloudflare:
 import { createHash, createHmac } from 'node:crypto';
 import Jimp from 'jimp';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import worker from '../src';
+import worker, { buildConversationExportFilename, buildConversationHistoryExport } from '../src';
 
 const TELEGRAM_BOT_TOKEN = 'telegram-test-token';
 const CURRENT_SESSION_TOKEN = 'current-session-token';
@@ -251,7 +251,7 @@ async function sendUserTelegramWebhook(update: unknown): Promise<Response> {
   );
 }
 
-function lastTelegramCall(method: 'sendMessage' | 'editMessageText' | 'sendPhoto' | 'editMessageCaption' | 'editMessageMedia' | 'deleteMessage') {
+function lastTelegramCall(method: 'sendMessage' | 'editMessageText' | 'sendPhoto' | 'editMessageCaption' | 'editMessageMedia' | 'deleteMessage' | 'sendDocument') {
   return telegramFetchCalls.filter((call) => call.url.includes(`/${method}`) && typeof call.body === 'object' && call.body !== null).at(-1);
 }
 
@@ -410,9 +410,11 @@ beforeEach(async () => {
     'fetch',
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === 'string' || input instanceof URL ? String(input) : input.url;
-      const body = typeof init?.body === 'string' ? JSON.parse(init.body) : null;
+      const body = typeof init?.body === 'string' ? JSON.parse(init.body) : init?.body ?? null;
       telegramFetchCalls.push({ url, body });
-      const result = url.includes('/sendMessage') || url.includes('/sendPhoto') ? { message_id: telegramMessageId++ } : {};
+      const result = url.includes('/sendMessage') || url.includes('/sendPhoto') || url.includes('/sendDocument')
+        ? { message_id: telegramMessageId++ }
+        : {};
       return new Response(JSON.stringify({ ok: true, result }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
@@ -2158,6 +2160,11 @@ describe('User bot replies and passwords', () => {
     expect((writerChatScreen?.body as { chat_id?: number }).chat_id).toBe(11101);
     expect(String((writerChatScreen?.body as { text?: string }).text || '')).toContain('Диалог с replyowner');
     expect(String((writerChatScreen?.body as { text?: string }).text || '')).toContain('Да, актуально');
+    const writerChatReplyMarkup = (writerChatScreen?.body as {
+      reply_markup?: { inline_keyboard?: Array<Array<{ text?: string; callback_data?: string }>> };
+    }).reply_markup;
+    expect(writerChatReplyMarkup?.inline_keyboard?.[0]?.[0]?.text).toBe('Скачать историю');
+    expect(writerChatReplyMarkup?.inline_keyboard?.[1]?.[0]?.text).toBe('Диалоги');
 
     const writerSendCountBefore = telegramFetchCalls.filter(
       (call) => call.url.includes('/sendMessage') && (call.body as { chat_id?: number }).chat_id === 11101
@@ -2186,6 +2193,69 @@ describe('User bot replies and passwords', () => {
     const secondDelete = telegramFetchCalls.filter((call) => call.url.includes('/deleteMessage')).at(-1);
     expect((secondDelete?.body as { chat_id?: number }).chat_id).toBe(11001);
     expect((secondDelete?.body as { message_id?: number }).message_id).toBe(602);
+
+    const downloadResponse = await sendUserTelegramWebhook({
+      callback_query: {
+        id: 'cb-writer-download-history',
+        data: `user:chatdownload:${conversation?.id}`,
+        message: {
+          chat: { id: 11101 },
+          message_id: 700,
+        },
+      },
+    });
+    expect(downloadResponse.status).toBe(200);
+    const downloadCall = telegramFetchCalls.find((call) => call.url.includes('/sendDocument'));
+    expect(downloadCall?.url).toContain('/sendDocument');
+    const exportConversation = await env.DB.prepare(
+      `
+        SELECT id, ad_id, user_low_id, user_high_id, last_message_sender_user_id, last_message_text, last_message_at, created_at, updated_at
+        FROM bot_conversations
+        WHERE id = ?
+        LIMIT 1
+      `
+    )
+      .bind(conversation?.id)
+      .first();
+    const exportMessages = await env.DB.prepare(
+      `
+        SELECT id, conversation_id, sender_user_id, body, is_read, created_at
+        FROM bot_chat_messages
+        WHERE conversation_id = ?
+        ORDER BY id ASC
+      `
+    )
+      .bind(conversation?.id)
+      .all();
+    const exportText = buildConversationHistoryExport(
+      exportConversation as {
+        id: number;
+        ad_id: number;
+        user_low_id: number;
+        user_high_id: number;
+        last_message_sender_user_id: number | null;
+        last_message_text: string | null;
+        last_message_at: string | null;
+        created_at: string;
+        updated_at: string;
+      },
+      'Reply chain',
+      'replywriter',
+      exportMessages.results as Array<{
+        id: number;
+        conversation_id: number;
+        sender_user_id: number;
+        body: string;
+        is_read: number;
+        created_at: string;
+      }>,
+      110
+    );
+    expect(exportText).toContain('Диалог с replywriter');
+    expect(exportText).toContain('Да, актуально');
+    expect(exportText).toContain('Ещё одно сообщение');
+    expect(buildConversationExportFilename(conversation?.id || 0, 'replywriter', 'Reply chain')).toContain('chat-history-');
+    expect(buildConversationExportFilename(conversation?.id || 0, 'replywriter', 'Reply chain')).toContain('replywriter');
   });
 
   it('lets Telegram users set and change their password from settings', async () => {

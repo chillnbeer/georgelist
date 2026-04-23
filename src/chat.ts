@@ -157,6 +157,21 @@ export async function listConversationMessages(env: { DB: D1Database }, conversa
   return result.results.reverse();
 }
 
+export async function listAllConversationMessages(env: { DB: D1Database }, conversationId: number): Promise<ChatMessageRow[]> {
+  const result = await env.DB.prepare(
+    `
+      SELECT id, conversation_id, sender_user_id, body, is_read, created_at
+      FROM bot_chat_messages
+      WHERE conversation_id = ?
+      ORDER BY id ASC
+    `
+  )
+    .bind(conversationId)
+    .all<ChatMessageRow>();
+
+  return result.results;
+}
+
 export async function getChatNotification(env: { DB: D1Database }, conversationId: number, userId: number): Promise<ChatNotificationRow | null> {
   const result = await env.DB.prepare(
     `

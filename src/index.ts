@@ -16,6 +16,7 @@ import {
   getConversationById,
   getConversationForUsers,
   getOrCreateConversation,
+  listAllConversationMessages,
   listConversationMessages,
   listConversationsForUser,
   markConversationMessagesRead,
@@ -283,6 +284,7 @@ const BOT_ADS_PAGE_SIZE = 5;
 const USER_BOT_DELETE_PREFIX = 'delete_';
 const USER_BOT_SETTINGS_PREFIX = 'user:settings:';
 const USER_BOT_CHAT_PREFIX = 'user:chat:';
+const USER_BOT_CHAT_DOWNLOAD_PREFIX = 'user:chatdownload:';
 const USER_BOT_CHAT_HIDE_PREFIX = 'user:chathide:';
 const USER_BOT_CHAT_START_PREFIX = 'user:chatstart:';
 const USER_BOT_CHAT_LIST = 'user:chats';
@@ -2713,6 +2715,39 @@ async function sendUserBotMessageWithId(
   return typeof body?.result?.message_id === 'number' ? body.result.message_id : null;
 }
 
+async function sendUserBotDocument(
+  env: Env,
+  chatId: number,
+  file: File,
+  caption?: string,
+  replyMarkup?: Record<string, unknown>
+): Promise<void> {
+  const payload = new FormData();
+  payload.set('chat_id', String(chatId));
+  payload.set('document', file, file.name);
+
+  if (caption) {
+    payload.set('caption', caption);
+  }
+
+  if (replyMarkup) {
+    payload.set('reply_markup', JSON.stringify(replyMarkup));
+  }
+
+  const token = env.USER_TELEGRAM_BOT_TOKEN || env.TELEGRAM_USER_BOT_TOKEN;
+  if (!token) {
+    throw new Error('Missing user Telegram bot token');
+  }
+
+  const response = await fetch(`https://api.telegram.org/bot${token}/sendDocument`, {
+    method: 'POST',
+    body: payload,
+  });
+  if (!response.ok) {
+    throw new Error(`Telegram sendDocument failed with status ${response.status}`);
+  }
+}
+
 async function editUserBotMessage(
   env: Env,
   chatId: number,
@@ -3026,6 +3061,7 @@ function userBotChatsMarkup(threads: ChatThreadListRow[]): Record<string, unknow
 function userBotChatMarkup(conversationId: number): Record<string, unknown> {
   return {
     inline_keyboard: [
+      [{ text: 'Скачать историю', callback_data: `${USER_BOT_CHAT_DOWNLOAD_PREFIX}${conversationId}` }],
       [{ text: 'Диалоги', callback_data: USER_BOT_CHAT_LIST }],
       [{ text: 'В меню', callback_data: USER_BOT_MENU_HOME }],
     ],
@@ -3224,6 +3260,45 @@ async function sendUserBotSettingsPasswordPrompt(
 
 function buildChatScreenTitle(otherLogin: string, adTitle: string): string {
   return [`Диалог с ${otherLogin}`, `По объявлению: ${adTitle}`].join('\n');
+}
+
+export function buildConversationHistoryExport(
+  conversation: ChatThreadRow,
+  adTitle: string,
+  otherLogin: string,
+  messages: ChatMessageRow[],
+  currentUserId: number
+): string {
+  const lines = [
+    `Диалог с ${otherLogin}`,
+    `По объявлению: ${adTitle}`,
+    `Conversation ID: ${conversation.id}`,
+    '',
+  ];
+
+  if (!messages.length) {
+    lines.push('Пока нет сообщений');
+    return lines.join('\n');
+  }
+
+  for (const row of messages) {
+    const time = row.created_at ? row.created_at.replace('T', ' ').slice(0, 19) : '';
+    const senderLogin = row.sender_user_id === currentUserId ? 'Вы' : otherLogin;
+    const body = row.body.replace(/\r?\n/g, '\n');
+    lines.push(`${time ? `${time} ` : ''}${senderLogin}: ${body}`);
+  }
+
+  return lines.join('\n');
+}
+
+export function buildConversationExportFilename(conversationId: number, otherLogin: string, adTitle: string): string {
+  const safePart = `${otherLogin}-${adTitle}`
+    .toLowerCase()
+    .replace(/[^a-z0-9а-яё._-]+/giu, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 48) || `chat-${conversationId}`;
+  return `chat-history-${conversationId}-${safePart}.txt`;
 }
 
 async function sendUserBotChats(
@@ -7103,6 +7178,41 @@ async function handleUserBotCallback(
   if (data === USER_BOT_CHAT_LIST) {
     await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
     await sendUserBotChats(env, telegramUserId, chatId);
+    return json({ ok: true });
+  }
+
+  if (data.startsWith(USER_BOT_CHAT_DOWNLOAD_PREFIX)) {
+    const conversationId = Number(data.slice(USER_BOT_CHAT_DOWNLOAD_PREFIX.length));
+    if (!Number.isInteger(conversationId) || conversationId <= 0) {
+      await answerUserCallbackQuery(env, callbackQuery.id, 'Invalid chat').catch(() => {});
+      return json({ ok: true });
+    }
+
+    const telegramIdentity = await findTelegramIdentity(env, telegramUserId);
+    const conversation = await getConversationById(env, conversationId);
+    if (!telegramIdentity || !conversation || (conversation.user_low_id !== telegramIdentity.user_id && conversation.user_high_id !== telegramIdentity.user_id)) {
+      await answerUserCallbackQuery(env, callbackQuery.id, 'Chat not found').catch(() => {});
+      return json({ ok: true });
+    }
+
+    const ad = await getPublishedAdCardById(env, conversation.ad_id);
+    if (!ad) {
+      await answerUserCallbackQuery(env, callbackQuery.id, 'Объявление не найдено').catch(() => {});
+      return json({ ok: true });
+    }
+
+    const otherUserId = conversation.user_low_id === telegramIdentity.user_id ? conversation.user_high_id : conversation.user_low_id;
+    const otherUser = await findUserById(env, otherUserId);
+    const messages = await listAllConversationMessages(env, conversation.id);
+    const exportText = buildConversationHistoryExport(conversation, ad.title, otherUser?.login || 'пользователь', messages, telegramIdentity.user_id);
+    const exportFile = new File(
+      [exportText],
+      buildConversationExportFilename(conversation.id, otherUser?.login || 'user', ad.title),
+      { type: 'text/plain;charset=utf-8' }
+    );
+
+    await answerUserCallbackQuery(env, callbackQuery.id, 'История отправлена').catch(() => {});
+    await sendUserBotDocument(env, chatId, exportFile);
     return json({ ok: true });
   }
 
