@@ -2845,7 +2845,8 @@ async function showUserBotScreen(
   telegramUserId: string,
   chatId: number,
   text: string,
-  replyMarkup?: Record<string, unknown>
+  replyMarkup?: Record<string, unknown>,
+  fallbackMessageId: number | null = null
 ): Promise<void> {
   const draft = await getBotDraft(env, telegramUserId);
   const uiRef = readBotDraftUiRef(draft);
@@ -2856,6 +2857,16 @@ async function showUserBotScreen(
       return;
     } catch (error) {
       console.error('Failed to edit user bot screen', error);
+    }
+  }
+
+  if (fallbackMessageId !== null) {
+    try {
+      await editUserBotMessage(env, chatId, fallbackMessageId, text, replyMarkup);
+      await rememberUserBotScreen(env, telegramUserId, chatId, fallbackMessageId);
+      return;
+    } catch (error) {
+      console.error('Failed to edit fallback user bot screen', error);
     }
   }
 
@@ -2871,7 +2882,8 @@ async function showUserBotPhotoScreen(
   chatId: number,
   photo: string,
   caption: string,
-  replyMarkup?: Record<string, unknown>
+  replyMarkup?: Record<string, unknown>,
+  fallbackMessageId: number | null = null
 ): Promise<void> {
   const draft = await getBotDraft(env, telegramUserId);
   const uiRef = readBotDraftUiRef(draft);
@@ -2882,6 +2894,16 @@ async function showUserBotPhotoScreen(
       return;
     } catch (error) {
       console.error('Failed to edit user bot photo screen', error);
+    }
+  }
+
+  if (fallbackMessageId !== null) {
+    try {
+      await editUserBotMediaMessage(env, chatId, fallbackMessageId, photo, caption, replyMarkup);
+      await rememberUserBotScreen(env, telegramUserId, chatId, fallbackMessageId);
+      return;
+    } catch (error) {
+      console.error('Failed to edit fallback user bot photo screen', error);
     }
   }
 
@@ -3185,7 +3207,8 @@ async function sendUserBotSettingsPasswordPrompt(
   chatId: number,
   hasPassword: boolean,
   step: 'current' | 'new' | 'confirm',
-  message: string | null = null
+  message: string | null = null,
+  fallbackMessageId: number | null = null
 ): Promise<void> {
   const stepLabel =
     step === 'current'
@@ -3195,7 +3218,7 @@ async function sendUserBotSettingsPasswordPrompt(
         : 'Повтори новый пароль';
   const statusLine = hasPassword ? 'Пароль уже задан.' : 'Пароль ещё не задан.';
   const lines = [...(message ? [message, ''] : []), 'Смена пароля', statusLine, stepLabel];
-  await showUserBotScreen(env, telegramUserId, chatId, lines.join('\n'), userBotCancelSettingsMarkup());
+  await showUserBotScreen(env, telegramUserId, chatId, lines.join('\n'), userBotCancelSettingsMarkup(), fallbackMessageId);
 }
 
 function buildChatScreenTitle(otherLogin: string, adTitle: string): string {
@@ -3270,7 +3293,7 @@ async function sendUserBotChatView(
     ...(composeHint ? ['', 'Пиши сообщение сразу в чат, кнопка не нужна.'] : []),
   ];
 
-  await showUserBotScreen(env, telegramUserId, chatId, lines.join('\n'), userBotChatMarkup(conversation.id));
+  await showUserBotScreen(env, telegramUserId, chatId, lines.join('\n'), userBotChatMarkup(conversation.id), currentMessageId);
   await clearChatNotification(env, conversation.id, telegramIdentity.user_id, currentMessageId);
 }
 
@@ -3293,9 +3316,15 @@ async function sendUserBotReplyPrompt(
   await showUserBotScreen(env, telegramUserId, chatId, lines.join('\n'), userBotCancelHomeMarkup());
 }
 
-async function sendUserBotSearchPrompt(env: Env, telegramUserId: string, chatId: number, message: string | null = null): Promise<void> {
+async function sendUserBotSearchPrompt(
+  env: Env,
+  telegramUserId: string,
+  chatId: number,
+  message: string | null = null,
+  fallbackMessageId: number | null = null
+): Promise<void> {
   const lines = [...(message ? [message, ''] : []), 'Введи текст для поиска'];
-  await showUserBotScreen(env, telegramUserId, chatId, lines.join('\n'), userBotCancelHomeMarkup());
+  await showUserBotScreen(env, telegramUserId, chatId, lines.join('\n'), userBotCancelHomeMarkup(), fallbackMessageId);
 }
 
 function buildUserBotAdListText(
@@ -5610,7 +5639,7 @@ async function handleMyDeletePost(request: Request, env: Env, userId: number, id
     .bind(numericId, userId)
     .run();
 
-  return redirect('/my?message=Объявление удалено');
+  return redirectWithMessage('/my', 'Объявление удалено');
 }
 
 async function handleMyEditGet(env: Env, userId: number, id: string, currentUser: CurrentUser): Promise<Response> {
@@ -5725,7 +5754,7 @@ async function handleMyEditPost(
     })
   );
 
-  return redirect('/my?message=Объявление сохранено');
+  return redirectWithMessage('/my', 'Объявление сохранено');
 }
 
 async function updateAdStatus(env: Env, id: string, status: 'published' | 'rejected'): Promise<Response> {
@@ -6952,7 +6981,7 @@ async function handleUserBotCallback(
   if (data === USER_BOT_MENU_SEARCH) {
     await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
     await upsertBotDraft(env, telegramUserId, 'search', 'query');
-    await sendUserBotSearchPrompt(env, telegramUserId, chatId);
+    await sendUserBotSearchPrompt(env, telegramUserId, chatId, null, callbackQuery.message.message_id);
     return json({ ok: true });
   }
 
@@ -7027,7 +7056,7 @@ async function handleUserBotCallback(
     const query = draft?.action === 'search' && draft.title ? draft.title : '';
     await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
     if (!query) {
-      await sendUserBotSearchPrompt(env, telegramUserId, chatId);
+      await sendUserBotSearchPrompt(env, telegramUserId, chatId, null, callbackQuery.message.message_id);
       return json({ ok: true });
     }
     await sendUserBotSearchResults(env, telegramUserId, chatId, query, Number.isInteger(offset) && offset >= 0 ? offset : 0);
@@ -7039,7 +7068,7 @@ async function handleUserBotCallback(
     const query = draft?.action === 'search' && draft.title ? draft.title : '';
     await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
     if (!query) {
-      await sendUserBotSearchPrompt(env, telegramUserId, chatId);
+      await sendUserBotSearchPrompt(env, telegramUserId, chatId, null, callbackQuery.message.message_id);
       return json({ ok: true });
     }
 
@@ -7242,7 +7271,15 @@ async function handleUserBotCallback(
       const hasPassword = Boolean(emailIdentity?.password_hash);
       await upsertBotDraft(env, telegramUserId, 'settings', hasPassword ? 'password-current' : 'password-new');
       await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
-      await sendUserBotSettingsPasswordPrompt(env, telegramUserId, chatId, hasPassword, hasPassword ? 'current' : 'new');
+      await sendUserBotSettingsPasswordPrompt(
+        env,
+        telegramUserId,
+        chatId,
+        hasPassword,
+        hasPassword ? 'current' : 'new',
+        null,
+        callbackQuery.message.message_id
+      );
       return json({ ok: true });
     }
 
@@ -8483,7 +8520,7 @@ async function handleNewPost(request: Request, env: Env, ctx: ExecutionContext):
     console.error('Failed to create ad with image', error);
     return renderNewPage(currentUser, currentCity, 'Не удалось загрузить картинку');
   }
-  return redirect('/my?message=Объявление создано');
+  return redirectWithMessage('/my', 'Объявление создано');
 }
 
 async function handleCategoryGet(request: Request, env: Env, slug: string, currentUser: CurrentUser | null = null): Promise<Response> {
