@@ -283,7 +283,6 @@ const BOT_ADS_PAGE_SIZE = 5;
 const USER_BOT_DELETE_PREFIX = 'delete_';
 const USER_BOT_SETTINGS_PREFIX = 'user:settings:';
 const USER_BOT_CHAT_PREFIX = 'user:chat:';
-const USER_BOT_CHAT_REPLY_PREFIX = 'user:chatreply:';
 const USER_BOT_CHAT_START_PREFIX = 'user:chatstart:';
 const USER_BOT_CHAT_LIST = 'user:chats';
 const USER_BOT_DRAFT_PREFIX = 'draft:';
@@ -2925,7 +2924,6 @@ function userBotChatsMarkup(threads: ChatThreadListRow[]): Record<string, unknow
 function userBotChatMarkup(conversationId: number): Record<string, unknown> {
   return {
     inline_keyboard: [
-      [{ text: 'Ответить', callback_data: `${USER_BOT_CHAT_REPLY_PREFIX}${conversationId}` }],
       [{ text: 'Диалоги', callback_data: USER_BOT_CHAT_LIST }],
       [{ text: 'В меню', callback_data: USER_BOT_MENU_HOME }],
     ],
@@ -2936,15 +2934,6 @@ function userBotIncomingChatMarkup(conversationId: number): Record<string, unkno
   return {
     inline_keyboard: [
       [{ text: 'Открыть чат', callback_data: `${USER_BOT_CHAT_PREFIX}${conversationId}` }],
-      [{ text: 'Диалоги', callback_data: USER_BOT_CHAT_LIST }],
-    ],
-  };
-}
-
-function userBotChatPromptMarkup(conversationId: number): Record<string, unknown> {
-  return {
-    inline_keyboard: [
-      [{ text: 'Отмена', callback_data: `${USER_BOT_CHAT_PREFIX}${conversationId}` }],
       [{ text: 'Диалоги', callback_data: USER_BOT_CHAT_LIST }],
     ],
   };
@@ -3132,7 +3121,8 @@ async function sendUserBotChatView(
   telegramUserId: string,
   chatId: number,
   conversationId: number,
-  message: string | null = null
+  message: string | null = null,
+  composeHint = false
 ): Promise<void> {
   const telegramIdentity = await findTelegramIdentity(env, telegramUserId);
   if (!telegramIdentity) {
@@ -3166,41 +3156,10 @@ async function sendUserBotChatView(
           return `${time ? `${time} ` : ''}${senderLogin}: ${row.body}`;
         })
       : ['Пока нет сообщений']),
+    ...(composeHint ? ['', 'Пиши сообщение сразу в чат, кнопка не нужна.'] : []),
   ];
 
   await showUserBotScreen(env, telegramUserId, chatId, lines.join('\n'), userBotChatMarkup(conversation.id));
-}
-
-async function sendUserBotChatPrompt(
-  env: Env,
-  telegramUserId: string,
-  chatId: number,
-  conversationId: number,
-  message: string | null = null
-): Promise<void> {
-  const telegramIdentity = await findTelegramIdentity(env, telegramUserId);
-  if (!telegramIdentity) {
-    await sendUserBotMenu(env, telegramUserId, chatId, 'Пользователь не найден');
-    return;
-  }
-
-  const conversation = await getConversationById(env, conversationId);
-  if (!conversation || (conversation.user_low_id !== telegramIdentity.user_id && conversation.user_high_id !== telegramIdentity.user_id)) {
-    await sendUserBotChats(env, telegramUserId, chatId, 'Диалог не найден');
-    return;
-  }
-
-  const ad = await getPublishedAdCardById(env, conversation.ad_id);
-  const otherUserId = conversation.user_low_id === telegramIdentity.user_id ? conversation.user_high_id : conversation.user_low_id;
-  const otherUser = await findUserById(env, otherUserId);
-  const lines = [
-    ...(message ? [message, ''] : []),
-    buildChatScreenTitle(otherUser?.login || 'пользователь', ad?.title || `#${conversation.ad_id}`),
-    '',
-    'Напиши сообщение',
-  ];
-
-  await showUserBotScreen(env, telegramUserId, chatId, lines.join('\n'), userBotChatPromptMarkup(conversation.id));
 }
 
 async function sendUserBotReplyPrompt(
@@ -6412,7 +6371,7 @@ async function handleUserBotText(
         telegramUsername || null
       );
       await clearBotDraft(env, telegramUserId);
-      await sendUserBotChatView(env, telegramUserId, chatId, conversation.id, 'Сообщение отправлено');
+      await sendUserBotChatView(env, telegramUserId, chatId, conversation.id, 'Сообщение отправлено', true);
     } catch (error) {
       console.error('Failed to send reply message to user', error);
       await clearBotDraft(env, telegramUserId);
@@ -6839,18 +6798,6 @@ async function handleUserBotCallback(
       return json({ ok: true });
     }
 
-    await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
-    await sendUserBotChatView(env, telegramUserId, chatId, conversationId);
-    return json({ ok: true });
-  }
-
-  if (data.startsWith(USER_BOT_CHAT_REPLY_PREFIX)) {
-    const conversationId = Number(data.slice(USER_BOT_CHAT_REPLY_PREFIX.length));
-    if (!Number.isInteger(conversationId) || conversationId <= 0) {
-      await answerUserCallbackQuery(env, callbackQuery.id, 'Invalid chat').catch(() => {});
-      return json({ ok: true });
-    }
-
     const telegramIdentity = await findTelegramIdentity(env, telegramUserId);
     const conversation = await getConversationById(env, conversationId);
     if (!telegramIdentity || !conversation || (conversation.user_low_id !== telegramIdentity.user_id && conversation.user_high_id !== telegramIdentity.user_id)) {
@@ -6879,7 +6826,7 @@ async function handleUserBotCallback(
       null
     );
     await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
-    await sendUserBotChatPrompt(env, telegramUserId, chatId, conversationId);
+    await sendUserBotChatView(env, telegramUserId, chatId, conversationId, null, true);
     return json({ ok: true });
   }
 

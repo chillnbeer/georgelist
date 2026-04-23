@@ -1971,19 +1971,6 @@ describe('User bot replies and passwords', () => {
     expect(String((replyScreen?.body as { text?: string }).text || '')).toContain('По объявлению: Reply chain');
     expect(String((replyScreen?.body as { text?: string }).text || '')).toContain('replywriter: Привет, ещё актуально?');
 
-    const replyPromptResponse = await sendUserTelegramWebhook({
-      callback_query: {
-        id: 'cb-reply-compose',
-        data: `user:chatreply:${conversation?.id}`,
-        message: {
-          chat: { id: 11001 },
-          message_id: 500,
-        },
-      },
-    });
-    expect(replyPromptResponse.status).toBe(200);
-    expect(String((lastTelegramCall('editMessageText')?.body as { text?: string }).text || '')).toContain('Напиши сообщение');
-
     const replySendResponse = await sendUserTelegramWebhook({
       message: {
         chat: { id: 11001 },
