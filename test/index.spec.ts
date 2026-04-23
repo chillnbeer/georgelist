@@ -658,7 +658,7 @@ describe('User bot browsing flow', () => {
     const flatButtons = startMarkup.flat().map((button) => button.text);
     expect(flatButtons).toContain('Создать');
     expect(flatButtons).toContain('Мои объявления');
-    expect(flatButtons).toContain('Разделы');
+    expect(flatButtons).toContain('Объявления');
     expect(flatButtons).toContain('Поиск');
     expect(flatButtons).toContain('Настройки');
     expect(flatButtons).not.toContain('Редактировать');
@@ -680,11 +680,30 @@ describe('User bot browsing flow', () => {
       (call) => call.url.includes('/sendMessage') && typeof call.body === 'object' && call.body !== null
     ).at(-1);
     const sectionsText = String((sectionsMessage?.body as { text?: string }).text || '');
-    expect(sectionsText).toContain('Разделы');
+    expect(sectionsText).toContain('Объявления');
     const sectionsMarkup = (sectionsMessage?.body as { reply_markup?: { inline_keyboard?: Array<Array<{ text: string }>> } }).reply_markup?.inline_keyboard || [];
     const sectionButtons = sectionsMarkup.flat().map((button) => button.text);
-    expect(sectionButtons).toContain('Вещи');
-    expect(sectionButtons).toContain('Разное');
+    [
+      'Продаю',
+      'Куплю',
+      'Отдаю даром',
+      'Авто',
+      'Электроника',
+      'Одежда',
+      'Мебель',
+      'Жильё',
+      'Аренда',
+      'Работа',
+      'Услуги',
+      'Обучение',
+      'Животные',
+      'Хобби',
+      'Творчество',
+      'Вещи',
+      'Разное',
+    ].forEach((label) => {
+      expect(sectionButtons).toContain(label);
+    });
 
     const categoryResponse = await sendUserTelegramWebhook({
       callback_query: {
@@ -698,18 +717,18 @@ describe('User bot browsing flow', () => {
     });
 
     expect(categoryResponse.status).toBe(200);
-    const categoryMessage = telegramFetchCalls.filter(
-      (call) => call.url.includes('/sendMessage') && typeof call.body === 'object' && call.body !== null
-    ).at(-1);
+    const categoryMessage = telegramFetchCalls
+      .filter((call) => call.url.includes('/sendMessage') && typeof call.body === 'object' && call.body !== null)
+      .reverse()
+      .find((call) => String((call.body as { text?: string }).text || '').includes('Вещи'));
     const categoryText = String((categoryMessage?.body as { text?: string }).text || '');
     expect(categoryText).toContain('Вещи');
-    expect(categoryText).toContain('Выбери объявление');
+    expect(categoryText).toContain('Published things');
+    expect(categoryText).not.toContain('Pending things');
 
     const categoryMarkup = (categoryMessage?.body as { reply_markup?: { inline_keyboard?: Array<Array<{ text: string }>> } }).reply_markup?.inline_keyboard || [];
     const categoryButtons = categoryMarkup.flat().map((button) => button.text);
-    expect(categoryButtons).toContain('Published things');
-    expect(categoryButtons).not.toContain('Pending things');
-    expect(categoryButtons).toContain('Назад к разделам');
+    expect(categoryButtons).toContain('Подробнее →');
 
     const adResponse = await sendUserTelegramWebhook({
       callback_query: {
@@ -733,8 +752,8 @@ describe('User bot browsing flow', () => {
     expect(adText).toContain('Автор: browser');
     const adMarkup = (adMessage?.body as { reply_markup?: { inline_keyboard?: Array<Array<{ text: string }>> } }).reply_markup?.inline_keyboard || [];
     const adButtons = adMarkup.flat().map((button) => button.text);
-    expect(adButtons).toContain('Назад к категории');
-    expect(adButtons).toContain('Назад к разделам');
+    expect(adButtons).toContain('Назад к разделу');
+    expect(adButtons).toContain('Назад к объявлениям');
   });
 });
 
@@ -1746,8 +1765,50 @@ describe('Admin web flow', () => {
     expect(adminAdsHtml).toContain('Old title');
     expect(adminAdsHtml).toContain('href="/u/user11"');
     expect(adminAdsHtml).toContain('avatar-mini');
+    expect(adminAdsHtml).toContain('/admin/publish/');
+    expect(adminAdsHtml).toContain('/admin/reject/');
     expect(adminAdsHtml).toContain(`/admin/edit/${adId}`);
     expect(adminAdsHtml).toContain(`/admin/delete/${adId}`);
+
+    const rejectResponse = await runRequest(
+      new Request(`http://example.com/admin/reject/${adId}?section=ads&page=1`, {
+        method: 'POST',
+        headers: { Cookie: adminCookie },
+      })
+    );
+    expect(rejectResponse.status).toBe(303);
+    expect(rejectResponse.headers.get('Location')).toContain('/admin?section=ads&page=1');
+    const rejectedAd = await env.DB.prepare(
+      `
+        SELECT status
+        FROM ads
+        WHERE id = ?
+        LIMIT 1
+      `
+    )
+      .bind(adId)
+      .first<{ status: string }>();
+    expect(rejectedAd?.status).toBe('rejected');
+
+    const publishResponse = await runRequest(
+      new Request(`http://example.com/admin/publish/${adId}?section=ads&page=1`, {
+        method: 'POST',
+        headers: { Cookie: adminCookie },
+      })
+    );
+    expect(publishResponse.status).toBe(303);
+    expect(publishResponse.headers.get('Location')).toContain('/admin?section=ads&page=1');
+    const publishedAd = await env.DB.prepare(
+      `
+        SELECT status
+        FROM ads
+        WHERE id = ?
+        LIMIT 1
+      `
+    )
+      .bind(adId)
+      .first<{ status: string }>();
+    expect(publishedAd?.status).toBe('published');
 
     const editResponse = await runRequest(
       new Request(`http://example.com/admin/edit/${adId}?section=ads&page=1`, {
@@ -1938,6 +1999,22 @@ describe('Admin bot flow', () => {
         (call) => call.url.includes('/sendMessage') && String((call.body as { text?: string }).text || '').includes('Объявления: страница 1/2')
       )
     ).toBe(true);
+
+    const adDetailResponse = await sendTelegramWebhook({
+      callback_query: {
+        id: 'cb-detail',
+        data: `admin:ad:1:${adIds[0]}`,
+        message: {
+          chat: { id: TELEGRAM_ADMIN_CHAT_ID },
+          message_id: 200,
+        },
+      },
+    });
+    expect(adDetailResponse.status).toBe(200);
+    const adDetailMessage = telegramFetchCalls.filter(
+      (call) => call.url.includes('/sendMessage') && typeof call.body === 'object' && call.body !== null
+    ).at(-1);
+    expect(String((adDetailMessage?.body as { text?: string }).text || '')).toContain('Owner: owner (#31)');
 
     const adsPage2Response = await sendTelegramWebhook({
       callback_query: {

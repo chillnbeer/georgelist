@@ -315,6 +315,22 @@ function normalizeCategory(slug: string | null | undefined): CategorySlug {
   return CATEGORIES.some((category) => category.slug === value) ? value : 'misc';
 }
 
+function buildCategoryRows(
+  callbackPrefix: string,
+  categories: typeof CATEGORIES = CATEGORIES
+): Array<Array<{ text: string; callback_data: string }>> {
+  const rows: Array<Array<{ text: string; callback_data: string }>> = [];
+  for (let index = 0; index < categories.length; index += 2) {
+    rows.push(
+      categories.slice(index, index + 2).map((category) => ({
+        text: category.label,
+        callback_data: `${callbackPrefix}${category.slug}`,
+      }))
+    );
+  }
+  return rows;
+}
+
 function escapeLikePattern(value: string): string {
   return value.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_');
 }
@@ -1865,6 +1881,12 @@ function renderAdminAdsSection(
               : `<div class="meta">owner #${ad.owner_user_id}</div>`
             : '<div class="meta">no owner</div>';
           const category = ad.category ? `${htmlEscape(categoryLabel(ad.category))} · ` : '';
+          const publishAction = `<form method="post" action="${htmlEscape(buildAdminActionUrl(`/admin/publish/${ad.id}`, 'ads', pagination.page))}" style="display:inline">
+        <button class="link-button" type="submit">Publish</button>
+      </form>`;
+          const rejectAction = `<form method="post" action="${htmlEscape(buildAdminActionUrl(`/admin/reject/${ad.id}`, 'ads', pagination.page))}" style="display:inline">
+        <button class="link-button" type="submit">Reject</button>
+      </form>`;
           return `<div class="ad">
   ${renderAdImage(env, ad.image_key, ad.title, 'ad-image')}
   <div class="ad-content">
@@ -1876,6 +1898,8 @@ function renderAdminAdsSection(
       <form method="post" action="${htmlEscape(buildAdminActionUrl(`/admin/delete/${ad.id}`, 'ads', pagination.page))}" style="display:inline">
         <button class="link-button" type="submit" onclick="return confirm('Удалить объявление?')">Удалить</button>
       </form>
+      ${publishAction}
+      ${rejectAction}
     </div>
   </div>
 </div>`;
@@ -2290,12 +2314,7 @@ function userBotMenuMarkup(env: Env): Record<string, unknown> {
 function userBotSectionsMarkup(): Record<string, unknown> {
   return {
     inline_keyboard: [
-      [{ text: 'Вещи', callback_data: `${USER_BOT_SECTION_PREFIX}things` }],
-      [{ text: 'Работа', callback_data: `${USER_BOT_SECTION_PREFIX}jobs` }],
-      [{ text: 'Услуги', callback_data: `${USER_BOT_SECTION_PREFIX}services` }],
-      [{ text: 'Аренда', callback_data: `${USER_BOT_SECTION_PREFIX}rent` }],
-      [{ text: 'Творчество', callback_data: `${USER_BOT_SECTION_PREFIX}creative` }],
-      [{ text: 'Разное', callback_data: `${USER_BOT_SECTION_PREFIX}misc` }],
+      ...buildCategoryRows(USER_BOT_SECTION_PREFIX),
       [{ text: 'Назад', callback_data: USER_BOT_MENU_MY }],
     ],
   };
@@ -2379,14 +2398,7 @@ function userBotSettingsMarkup(): Record<string, unknown> {
 
 function userBotCategoryMarkup(): Record<string, unknown> {
   return {
-    inline_keyboard: [
-      [{ text: 'Вещи', callback_data: `${USER_BOT_DRAFT_PREFIX}category:things` }],
-      [{ text: 'Работа', callback_data: `${USER_BOT_DRAFT_PREFIX}category:jobs` }],
-      [{ text: 'Услуги', callback_data: `${USER_BOT_DRAFT_PREFIX}category:services` }],
-      [{ text: 'Аренда', callback_data: `${USER_BOT_DRAFT_PREFIX}category:rent` }],
-      [{ text: 'Творчество', callback_data: `${USER_BOT_DRAFT_PREFIX}category:creative` }],
-      [{ text: 'Разное', callback_data: `${USER_BOT_DRAFT_PREFIX}category:misc` }],
-    ],
+    inline_keyboard: buildCategoryRows(`${USER_BOT_DRAFT_PREFIX}category:`),
   };
 }
 
@@ -2787,16 +2799,18 @@ async function sendAdminBotUsers(env: Env, chatId: number, page = 1): Promise<vo
   );
 }
 
-function buildAdminBotAdText(
+async function buildAdminBotAdText(
+  env: Env,
   ad: Pick<AdRow, 'id' | 'title' | 'body' | 'contact' | 'category' | 'status' | 'owner_user_id' | 'deleted_at' | 'image_key'>,
   bodyLimit = 2800
-): string {
+): Promise<string> {
+  const owner = ad.owner_user_id ? await findUserById(env, ad.owner_user_id) : null;
   return [
     `#${ad.id}`,
     `Заголовок: ${ad.title}`,
     `Категория: ${categoryLabel(ad.category)}`,
     `Статус: ${ad.status}`,
-    `Owner: ${ad.owner_user_id ?? 'none'}`,
+    `Owner: ${owner?.login ? `${owner.login} (#${ad.owner_user_id})` : ad.owner_user_id ?? 'none'}`,
     `Удалено: ${ad.deleted_at ? 'yes' : 'no'}`,
     'Текст:',
     truncateText(ad.body, bodyLimit),
@@ -2806,12 +2820,13 @@ function buildAdminBotAdText(
 
 async function sendAdminBotAdDetail(env: Env, chatId: number, ad: AdRow, page: number): Promise<void> {
   const replyMarkup = adminBotAdMarkup(ad.id, page);
+  const text = await buildAdminBotAdText(env, ad);
 
   if (ad.image_key) {
     const response = await telegramApi(env, 'sendPhoto', {
       chat_id: chatId,
       photo: buildMediaUrl(env, ad.image_key),
-      caption: buildAdminBotAdText(ad, 700),
+      caption: await buildAdminBotAdText(env, ad, 700),
       reply_markup: replyMarkup,
     });
 
@@ -2821,7 +2836,7 @@ async function sendAdminBotAdDetail(env: Env, chatId: number, ad: AdRow, page: n
     return;
   }
 
-  await sendAdminBotMessage(env, chatId, buildAdminBotAdText(ad), replyMarkup);
+  await sendAdminBotMessage(env, chatId, text, replyMarkup);
 }
 
 async function sendAdminBotUserDetail(env: Env, chatId: number, user: AdminUserRow, page: number): Promise<void> {
@@ -5792,6 +5807,43 @@ async function handleAdminDeleteRoute(request: Request, env: Env, id: string): P
   return redirectWithHeaders(buildAdminUrl('ads', page, 'Объявление удалено'));
 }
 
+async function handleAdminAdStatusRoute(
+  request: Request,
+  env: Env,
+  id: string,
+  status: 'published' | 'rejected'
+): Promise<Response> {
+  const currentUser = await getCurrentUser(request, env);
+  if (!currentUser) {
+    return redirect('/login?next=/admin');
+  }
+
+  if (currentUser.role !== 'admin') {
+    return text('Forbidden', 403);
+  }
+
+  if (request.method !== 'POST') {
+    return text('Method Not Allowed', 405);
+  }
+
+  const numericId = Number(id);
+  if (!Number.isInteger(numericId) || numericId <= 0) {
+    return text('Not Found', 404);
+  }
+
+  const url = new URL(request.url);
+  const page = parseAdminPage(url.searchParams.get('page'));
+
+  const response = await updateAdStatus(env, String(numericId), status);
+  if (response.status === 404) {
+    return text('Not Found', 404);
+  }
+
+  return redirectWithHeaders(
+    buildAdminUrl('ads', page, status === 'published' ? 'Объявление опубликовано' : 'Объявление отклонено')
+  );
+}
+
 async function handleAdminUserActionRoute(request: Request, env: Env, id: string, action: 'promote' | 'demote' | 'delete'): Promise<Response> {
   const currentUser = await getCurrentUser(request, env);
   if (!currentUser) {
@@ -6585,6 +6637,14 @@ export default {
     if (path === '/admin') {
       if (request.method === 'GET') return handleAdminGet(request, env);
       return text('Method Not Allowed', 405);
+    }
+
+    if (path.startsWith('/admin/publish/')) {
+      return handleAdminAdStatusRoute(request, env, path.slice('/admin/publish/'.length), 'published');
+    }
+
+    if (path.startsWith('/admin/reject/')) {
+      return handleAdminAdStatusRoute(request, env, path.slice('/admin/reject/'.length), 'rejected');
     }
 
     if (path === '/settings/link-telegram') {
