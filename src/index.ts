@@ -323,6 +323,7 @@ let cachedEnsureUserCityColumnPromise: Promise<void> | null = null;
 let cachedEnsureAdTypeColumnPromise: Promise<void> | null = null;
 let cachedEnsureBotDraftColumnsPromise: Promise<void> | null = null;
 let cachedEnsureChatTablesPromise: Promise<void> | null = null;
+let cachedEnsureChatMessageReadColumnPromise: Promise<void> | null = null;
 const NOOP_EXECUTION_CONTEXT = {
   waitUntil(): void {},
   passThroughOnException(): void {},
@@ -5396,6 +5397,24 @@ async function ensureChatTables(env: Env): Promise<void> {
   return cachedEnsureChatTablesPromise;
 }
 
+async function ensureChatMessageReadColumn(env: Env): Promise<void> {
+  if (cachedEnsureChatMessageReadColumnPromise) {
+    return cachedEnsureChatMessageReadColumnPromise;
+  }
+
+  cachedEnsureChatMessageReadColumnPromise = (async () => {
+    const tableInfo = await env.DB.prepare(`PRAGMA table_info(bot_chat_messages)`).all<{ name: string }>();
+    const columnNames = new Set((tableInfo.results || []).map((row) => row.name));
+    if (!columnNames.has('is_read')) {
+      await env.DB.prepare(`ALTER TABLE bot_chat_messages ADD COLUMN is_read INTEGER NOT NULL DEFAULT 0`).run();
+    }
+  })().finally(() => {
+    cachedEnsureChatMessageReadColumnPromise = null;
+  });
+
+  return cachedEnsureChatMessageReadColumnPromise;
+}
+
 async function storeConversationMessage(
   env: Env,
   conversationId: number,
@@ -8684,6 +8703,7 @@ export default {
     await ensureAdTypeColumn(env);
     await ensureBotDraftColumns(env);
     await ensureChatTables(env);
+    await ensureChatMessageReadColumn(env);
     const url = new URL(request.url);
     const path = url.pathname;
 
