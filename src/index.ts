@@ -2603,6 +2603,60 @@ async function editUserBotMessage(
   }
 }
 
+async function sendUserBotPhotoMessageWithId(
+  env: Env,
+  chatId: number,
+  photo: string,
+  caption: string,
+  replyMarkup?: Record<string, unknown>
+): Promise<number | null> {
+  const payload: Record<string, unknown> = {
+    chat_id: chatId,
+    photo,
+    caption,
+  };
+
+  if (replyMarkup) {
+    payload.reply_markup = replyMarkup;
+  }
+
+  const response = await userBotApi(env, 'sendPhoto', payload);
+  if (!response.ok) {
+    throw new Error(`Telegram sendPhoto failed with status ${response.status}`);
+  }
+
+  const body = (await response.json().catch(() => null)) as { ok?: boolean; result?: { message_id?: number } } | null;
+  return typeof body?.result?.message_id === 'number' ? body.result.message_id : null;
+}
+
+async function editUserBotMediaMessage(
+  env: Env,
+  chatId: number,
+  messageId: number,
+  photo: string,
+  caption: string,
+  replyMarkup?: Record<string, unknown>
+): Promise<void> {
+  const payload: Record<string, unknown> = {
+    chat_id: chatId,
+    message_id: messageId,
+    media: {
+      type: 'photo',
+      media: photo,
+      caption,
+    },
+  };
+
+  if (replyMarkup) {
+    payload.reply_markup = replyMarkup;
+  }
+
+  const response = await userBotApi(env, 'editMessageMedia', payload);
+  if (!response.ok) {
+    throw new Error(`Telegram editMessageMedia failed with status ${response.status}`);
+  }
+}
+
 type UserBotScreenRef = {
   chatId: number;
   messageId: number;
@@ -2674,6 +2728,32 @@ async function showUserBotScreen(
   }
 
   const messageId = await sendUserBotMessageWithId(env, chatId, text, replyMarkup);
+  if (messageId !== null) {
+    await rememberUserBotScreen(env, telegramUserId, chatId, messageId);
+  }
+}
+
+async function showUserBotPhotoScreen(
+  env: Env,
+  telegramUserId: string,
+  chatId: number,
+  photo: string,
+  caption: string,
+  replyMarkup?: Record<string, unknown>
+): Promise<void> {
+  const draft = await getBotDraft(env, telegramUserId);
+  const uiRef = readBotDraftUiRef(draft);
+
+  if (uiRef && uiRef.chatId === chatId) {
+    try {
+      await editUserBotMediaMessage(env, chatId, uiRef.messageId, photo, caption, replyMarkup);
+      return;
+    } catch (error) {
+      console.error('Failed to edit user bot photo screen', error);
+    }
+  }
+
+  const messageId = await sendUserBotPhotoMessageWithId(env, chatId, photo, caption, replyMarkup);
   if (messageId !== null) {
     await rememberUserBotScreen(env, telegramUserId, chatId, messageId);
   }
@@ -3033,6 +3113,28 @@ async function sendUserBotPublicAdCard(
   ad: PublicAdCardRow,
   replyMarkup: Record<string, unknown>
 ): Promise<void> {
+  if (ad.image_key) {
+    await showUserBotPhotoScreen(
+      env,
+      telegramUserId,
+      chatId,
+      buildMediaUrl(env, ad.image_key),
+      [
+        `Тип: ${typeLabel(ad.type)}`,
+        `Заголовок: ${ad.title}`,
+        `Категория: ${categoryLabel(ad.category)}`,
+        ad.author_login ? `Автор: ${ad.author_login}` : null,
+        truncateText(ad.body, 700),
+        ad.contact ? `Контакты: ${ad.contact}` : null,
+        `Дата: ${ad.created_at}`,
+      ]
+        .filter((line): line is string => line !== null)
+        .join('\n'),
+      replyMarkup
+    );
+    return;
+  }
+
   const text = buildUserBotPublicAdText(ad);
   await showUserBotScreen(env, telegramUserId, chatId, text, replyMarkup);
 }
@@ -3816,8 +3918,28 @@ function buildUserBotOwnedAdText(
 }
 
 async function sendUserBotSingleAd(env: Env, telegramUserId: string, chatId: number, ad: AdRow): Promise<void> {
+  const replyMarkup = userBotSingleAdMarkup(ad.id);
+  if (ad.image_key) {
+    await showUserBotPhotoScreen(
+      env,
+      telegramUserId,
+      chatId,
+      buildMediaUrl(env, ad.image_key),
+      [
+        `Тип: ${typeLabel(ad.type)}`,
+        `Заголовок: ${ad.title}`,
+        `Категория: ${categoryLabel(ad.category)}`,
+        `Статус: ${ad.status}`,
+        `Дата: ${ad.created_at}`,
+        truncateText(ad.body, 700),
+      ].join('\n'),
+      replyMarkup
+    );
+    return;
+  }
+
   const text = buildUserBotOwnedAdText(ad);
-  await showUserBotScreen(env, telegramUserId, chatId, text, userBotSingleAdMarkup(ad.id));
+  await showUserBotScreen(env, telegramUserId, chatId, text, replyMarkup);
 }
 
 function buildTelegramAdText(
