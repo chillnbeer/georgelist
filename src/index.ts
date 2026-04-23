@@ -4363,7 +4363,7 @@ async function sendTelegramMessage(
 }
 
 async function deleteTelegramMessage(env: Env, chatId: number, messageId: number): Promise<void> {
-  const response = await telegramApi(env, 'deleteMessage', {
+  const response = await userBotApi(env, 'deleteMessage', {
     chat_id: chatId,
     message_id: messageId,
   });
