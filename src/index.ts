@@ -4695,6 +4695,10 @@ async function ensureBotDraftColumns(env: Env): Promise<void> {
     if (!columnNames.has('ui_message_id')) {
       await env.DB.prepare(`ALTER TABLE bot_drafts ADD COLUMN ui_message_id INTEGER`).run();
     }
+
+    if (!columnNames.has('ad_type')) {
+      await env.DB.prepare(`ALTER TABLE bot_drafts ADD COLUMN ad_type TEXT`).run();
+    }
   })().finally(() => {
     cachedEnsureBotDraftColumnsPromise = null;
   });
