@@ -1000,6 +1000,15 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
     .ad-content {
       min-width: 0;
     }
+    .admin-user-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .admin-user-title a {
+      color: inherit;
+    }
     .ad-grid {
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
@@ -1615,6 +1624,7 @@ ${nav(currentUser)}
 type AdminUserRow = {
   id: number;
   login: string;
+  avatar_key: string | null;
   email: string | null;
   role: string;
   created_at: string;
@@ -1678,6 +1688,7 @@ async function listAdminUsersPage(env: Env, page: number): Promise<AdminUserRow[
     `
       SELECT users.id,
              users.login,
+             users.avatar_key,
              (SELECT email FROM user_identities WHERE user_id = users.id AND provider = 'email' LIMIT 1) AS email,
              users.role,
              users.created_at
@@ -1745,6 +1756,7 @@ function renderAdminTabs(section: AdminSection): string {
 }
 
 function renderAdminUsersSection(
+  env: Env,
   currentUser: CurrentUser,
   users: AdminUserRow[],
   pagination: AdminPagination,
@@ -1752,28 +1764,29 @@ function renderAdminUsersSection(
 ): Response {
   const items = users.length
     ? users
-        .map((user) => {
-          const email = user.email ? ` · ${htmlEscape(user.email)}` : '';
-          const isSelf = user.id === currentUser.id;
-          const promoteAction = user.role === 'admin'
-            ? '<span class="empty">admin</span>'
-            : `<form method="post" action="${htmlEscape(buildAdminActionUrl(`/admin/users/${user.id}/promote`, 'users', pagination.page))}" style="display:inline">
+      .map((user) => {
+        const email = user.email ? ` · ${htmlEscape(user.email)}` : '';
+        const profileUrl = `/u/${encodeURIComponent(user.login)}`;
+        const isSelf = user.id === currentUser.id;
+        const promoteAction = user.role === 'admin'
+          ? '<span class="empty">admin</span>'
+          : `<form method="post" action="${htmlEscape(buildAdminActionUrl(`/admin/users/${user.id}/promote`, 'users', pagination.page))}" style="display:inline">
   <button class="link-button" type="submit">Сделать admin</button>
 </form>`;
-          const demoteAction = isSelf
-            ? '<span class="empty">Это ваш аккаунт</span>'
-            : user.role === 'admin'
-            ? `<form method="post" action="${htmlEscape(buildAdminActionUrl(`/admin/users/${user.id}/demote`, 'users', pagination.page))}" style="display:inline">
+        const demoteAction = isSelf
+          ? '<span class="empty">Это ваш аккаунт</span>'
+          : user.role === 'admin'
+          ? `<form method="post" action="${htmlEscape(buildAdminActionUrl(`/admin/users/${user.id}/demote`, 'users', pagination.page))}" style="display:inline">
   <button class="link-button" type="submit">Сделать user</button>
 </form>`
-            : '<span class="empty">user</span>';
-          const deleteAction = isSelf
-            ? '<span class="empty">Нельзя удалить себя</span>'
-            : `<form method="post" action="${htmlEscape(buildAdminActionUrl(`/admin/users/${user.id}/delete`, 'users', pagination.page))}" style="display:inline">
+          : '<span class="empty">user</span>';
+        const deleteAction = isSelf
+          ? '<span class="empty">Нельзя удалить себя</span>'
+          : `<form method="post" action="${htmlEscape(buildAdminActionUrl(`/admin/users/${user.id}/delete`, 'users', pagination.page))}" style="display:inline">
   <button class="link-button" type="submit" onclick="return confirm('Удалить пользователя?')">Удалить</button>
 </form>`;
-          return `<div class="ad">
-  <div class="title">#${user.id} · ${htmlEscape(user.login)}${email}</div>
+        return `<div class="ad">
+  <div class="title admin-user-title">${renderAvatar(env, user.avatar_key, user.login, 'avatar-mini')}<a href="${htmlEscape(profileUrl)}">${htmlEscape(user.login)}</a>${email}</div>
   <div class="meta">${htmlEscape(user.role)} · ${htmlEscape(user.created_at)}</div>
   <div>
     ${promoteAction}
@@ -1781,7 +1794,7 @@ function renderAdminUsersSection(
     ${deleteAction}
   </div>
 </div>`;
-        })
+      })
         .join('')
     : '<div class="empty">Пользователей на этой странице нет.</div>';
 
@@ -1853,6 +1866,7 @@ async function listAllUsers(env: Env): Promise<AdminUserRow[]> {
     `
       SELECT users.id,
              users.login,
+             users.avatar_key,
              (SELECT email FROM user_identities WHERE user_id = users.id AND provider = 'email' LIMIT 1) AS email,
              users.role,
              users.created_at
@@ -5661,6 +5675,7 @@ async function handleAdminGet(request: Request, env: Env): Promise<Response> {
     const totalPages = Math.max(1, Math.ceil(totalUsers / ADMIN_PAGE_SIZE));
     const page = Math.min(requestedPage, totalPages);
     return renderAdminUsersSection(
+      env,
       currentUser,
       await listAdminUsersPage(env, page),
       { page, totalPages },

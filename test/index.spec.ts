@@ -1650,6 +1650,8 @@ describe('Admin web flow', () => {
     const adminHtml = await adminPage.text();
     expect(adminHtml).toContain('Пользователи');
     expect(adminHtml).toContain('Страница 1 из 2');
+    expect(adminHtml).toContain('href="/u/admin"');
+    expect(adminHtml).toContain('avatar-mini');
     expect(adminHtml).toContain('Сделать admin');
     expect(adminHtml).not.toContain('user16');
 
