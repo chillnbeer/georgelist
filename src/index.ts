@@ -69,6 +69,8 @@ type Env = {
   MEDIA_BUCKET?: R2Bucket;
   TELEGRAM_BOT_TOKEN: string;
   TELEGRAM_ADMIN_ID: string;
+  TELEGRAM_WEBHOOK_SECRET?: string;
+  TELEGRAM_USER_WEBHOOK_SECRET?: string;
   USER_TELEGRAM_BOT_TOKEN?: string;
   TELEGRAM_USER_BOT_TOKEN?: string;
   USER_TELEGRAM_BOT_USERNAME?: string;
@@ -812,6 +814,12 @@ function formatSqliteTimestamp(date: Date): string {
     ':',
     pad(date.getUTCSeconds()),
   ].join('');
+}
+
+function verifyTelegramWebhookSecret(request: Request, secret: string | undefined): boolean {
+  if (!secret) return true;
+  const header = request.headers.get('X-Telegram-Bot-Api-Secret-Token');
+  return header === secret;
 }
 
 function generateSessionToken(): string {
@@ -6788,6 +6796,10 @@ async function updateAdStatus(env: Env, id: string, status: 'published' | 'rejec
 }
 
 async function handleTelegramWebhook(request: Request, env: Env): Promise<Response> {
+  if (!verifyTelegramWebhookSecret(request, env.TELEGRAM_WEBHOOK_SECRET)) {
+    return text('Unauthorized', 401);
+  }
+
   let update: TelegramUpdate;
 
   try {
@@ -8431,6 +8443,10 @@ async function handleUserBotCallback(
 }
 
 async function handleUserWebhook(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  if (!verifyTelegramWebhookSecret(request, env.TELEGRAM_USER_WEBHOOK_SECRET)) {
+    return text('Unauthorized', 401);
+  }
+
   let update: TelegramUpdate;
 
   try {
