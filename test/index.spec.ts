@@ -109,6 +109,10 @@ const SCHEMA_STATEMENTS = [
       email TEXT,
       category TEXT,
       ad_type TEXT,
+      reply_user_id INTEGER,
+      reply_ad_id INTEGER,
+      password_current TEXT,
+      password_new TEXT,
       title TEXT,
       body TEXT,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -911,6 +915,44 @@ describe('Ad messages', () => {
     expect(ownerHtml).toContain('Продаю');
     expect(ownerHtml).toContain('Это ваше объявление.');
     expect(ownerHtml).not.toContain('name="message"');
+  });
+
+  it('hides the message form when the author has no Telegram identity', async () => {
+    await seedUser({
+      id: 62,
+      login: 'plainowner',
+      email: 'plainowner@example.com',
+      sessionToken: 'plainowner-session',
+    });
+
+    await seedUser({
+      id: 63,
+      login: 'plainwriter',
+      email: 'plainwriter@example.com',
+      sessionToken: 'plainwriter-session',
+    });
+
+    const adId = await insertAd({
+      title: 'No telegram author',
+      body: 'Message body',
+      category: 'services',
+      ownerUserId: 62,
+      status: 'published',
+    });
+
+    const response = await runRequest(
+      new Request(`http://example.com/ad/${adId}`, {
+        headers: {
+          Cookie: 'session=plainwriter-session',
+        },
+      })
+    );
+
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain('У автора не привязан Telegram.');
+    expect(html).not.toContain('name="message"');
+    expect(html).not.toContain('Отправить');
   });
 });
 
@@ -1815,6 +1857,266 @@ describe('User bot settings', () => {
     expect(newProfileResponse.status).toBe(200);
     const oldProfileResponse = await runRequest(new Request('http://example.com/u/botsettings'));
     expect(oldProfileResponse.status).toBe(404);
+  });
+});
+
+describe('User bot replies and passwords', () => {
+  it('sends a reply back to the original user from the bot', async () => {
+    await seedUser({
+      id: 110,
+      login: 'replyowner',
+      email: 'replyowner@example.com',
+      sessionToken: 'replyowner-session',
+    });
+    await insertTelegramIdentity({
+      userId: 110,
+      telegramUserId: '11001',
+      telegramUsername: 'replyowner_tg',
+    });
+
+    await seedUser({
+      id: 111,
+      login: 'replywriter',
+      email: 'replywriter@example.com',
+      sessionToken: 'replywriter-session',
+    });
+    await insertTelegramIdentity({
+      userId: 111,
+      telegramUserId: '11101',
+      telegramUsername: 'replywriter_tg',
+    });
+
+    const adId = await insertAd({
+      title: 'Reply chain',
+      body: 'Message body',
+      category: 'services',
+      ownerUserId: 110,
+      status: 'published',
+    });
+
+    const messageForm = new FormData();
+    messageForm.set('message', 'Привет, ещё актуально?');
+
+    const messageResponse = await runRequest(
+      new Request(`http://example.com/ad/${adId}/message`, {
+        method: 'POST',
+        headers: {
+          Cookie: 'session=replywriter-session',
+        },
+        body: messageForm,
+      })
+    );
+
+    expect(messageResponse.status).toBe(303);
+
+    const initialNotification = lastTelegramCall('sendMessage');
+    expect(String((initialNotification?.body as { text?: string }).text || '')).toContain('Тебе написал пользователь replywriter');
+    const initialReplyMarkup = (initialNotification?.body as { reply_markup?: { inline_keyboard?: Array<Array<{ text?: string; callback_data?: string }>> } }).reply_markup;
+    const replyButton = initialReplyMarkup?.inline_keyboard?.[0]?.[0];
+    expect(replyButton?.text).toBe('Ответить');
+    expect(replyButton?.callback_data).toContain(`user:reply:111:`);
+    expect(replyButton?.callback_data).toContain(String(adId));
+
+    const replyCallbackResponse = await sendUserTelegramWebhook({
+      callback_query: {
+        id: 'cb-reply-start',
+        data: replyButton?.callback_data || '',
+        message: {
+          chat: { id: 11001 },
+          message_id: 500,
+        },
+      },
+    });
+    expect(replyCallbackResponse.status).toBe(200);
+
+    const replyPrompt = lastTelegramCall('editMessageText');
+    expect(String((replyPrompt?.body as { text?: string }).text || '')).toContain('Ответ пользователю');
+    expect(String((replyPrompt?.body as { text?: string }).text || '')).toContain('replywriter');
+    expect(String((replyPrompt?.body as { text?: string }).text || '')).toContain('Напиши сообщение');
+
+    const replySendResponse = await sendUserTelegramWebhook({
+      message: {
+        chat: { id: 11001 },
+        from: { id: 11001, username: 'replyowner_tg' },
+        text: 'Да, актуально',
+      },
+    });
+    expect(replySendResponse.status).toBe(200);
+
+    const replySent = lastTelegramCall('sendMessage');
+    expect(String((replySent?.body as { text?: string }).text || '')).toContain('Тебе ответил пользователь replyowner');
+    expect(String((replySent?.body as { text?: string }).text || '')).toContain('по объявлению: Reply chain');
+    expect(String((replySent?.body as { text?: string }).text || '')).toContain('Да, актуально');
+    const replyReplyMarkup = (replySent?.body as { reply_markup?: { inline_keyboard?: Array<Array<{ text?: string; callback_data?: string }>> } }).reply_markup;
+    expect(replyReplyMarkup?.inline_keyboard?.[0]?.[0]?.text).toBe('Ответить');
+    expect(replyReplyMarkup?.inline_keyboard?.[0]?.[0]?.callback_data).toContain(`user:reply:110:`);
+    expect(replyReplyMarkup?.inline_keyboard?.[0]?.[0]?.callback_data).toContain(String(adId));
+  });
+
+  it('lets Telegram users set and change their password from settings', async () => {
+    await seedUser({
+      id: 120,
+      login: 'botnewpass',
+      email: 'botnewpass@example.com',
+      sessionToken: 'botnewpass-session',
+    });
+    await insertTelegramIdentity({
+      userId: 120,
+      telegramUserId: '12001',
+      telegramUsername: 'botnewpass_tg',
+    });
+
+    const setPasswordSettings = await sendUserTelegramWebhook({
+      callback_query: {
+        id: 'cb-set-password',
+        data: 'user:settings:password',
+        message: {
+          chat: { id: 12001 },
+          message_id: 510,
+        },
+      },
+    });
+    expect(setPasswordSettings.status).toBe(200);
+    expect(String((lastTelegramCall('editMessageText')?.body as { text?: string }).text || '')).toContain('Введи новый пароль');
+    expect(String((lastTelegramCall('editMessageText')?.body as { text?: string }).text || '')).toContain('Пароль ещё не задан');
+
+    await sendUserTelegramWebhook({
+      message: {
+        chat: { id: 12001 },
+        from: { id: 12001, username: 'botnewpass_tg' },
+        text: 'botnewpass123',
+      },
+    });
+    expect(String((lastTelegramCall('editMessageText')?.body as { text?: string }).text || '')).toContain('Повтори новый пароль');
+
+    await sendUserTelegramWebhook({
+      message: {
+        chat: { id: 12001 },
+        from: { id: 12001, username: 'botnewpass_tg' },
+        text: 'botnewpass123',
+      },
+    });
+
+    const settingsAfterSet = lastTelegramCall('editMessageText');
+    expect(String((settingsAfterSet?.body as { text?: string }).text || '')).toContain('Пароль изменён');
+    expect(String((settingsAfterSet?.body as { text?: string }).text || '')).toContain('Пароль: задан');
+    expect(JSON.stringify(settingsAfterSet?.body || {})).toContain('Сменить пароль');
+
+    const setLoginForm = new FormData();
+    setLoginForm.set('email', 'botnewpass@example.com');
+    setLoginForm.set('password', 'botnewpass123');
+    const loginResponse = await runRequest(
+      new Request('http://example.com/login', {
+        method: 'POST',
+        body: setLoginForm,
+      })
+    );
+    expect(loginResponse.status).toBe(303);
+
+    const registerForm = new FormData();
+    registerForm.set('login', 'botchangepass');
+    registerForm.set('email', 'botchangepass@example.com');
+    registerForm.set('password', 'oldpass123');
+    const registerResponse = await runRequest(
+      new Request('http://example.com/register', {
+        method: 'POST',
+        body: registerForm,
+      })
+    );
+    expect(registerResponse.status).toBe(303);
+
+    const registeredUser = await env.DB.prepare(
+      `
+        SELECT id
+        FROM users
+        WHERE login = ?
+        LIMIT 1
+      `
+    )
+      .bind('botchangepass')
+      .first<{ id: number }>();
+    expect(registeredUser?.id).toBeTruthy();
+
+    await insertTelegramIdentity({
+      userId: registeredUser?.id || 0,
+      telegramUserId: '12101',
+      telegramUsername: 'botchangepass_tg',
+    });
+
+    const changePasswordSettings = await sendUserTelegramWebhook({
+      callback_query: {
+        id: 'cb-change-password',
+        data: 'user:settings:password',
+        message: {
+          chat: { id: 12101 },
+          message_id: 520,
+        },
+      },
+    });
+    expect(changePasswordSettings.status).toBe(200);
+    expect(String((lastTelegramCall('editMessageText')?.body as { text?: string }).text || '')).toContain('Введи текущий пароль');
+    expect(String((lastTelegramCall('editMessageText')?.body as { text?: string }).text || '')).toContain('Пароль уже задан');
+
+    await sendUserTelegramWebhook({
+      message: {
+        chat: { id: 12101 },
+        from: { id: 12101, username: 'botchangepass_tg' },
+        text: 'wrong-pass',
+      },
+    });
+    expect(String((lastTelegramCall('editMessageText')?.body as { text?: string }).text || '')).toContain('Неверный текущий пароль');
+
+    await sendUserTelegramWebhook({
+      message: {
+        chat: { id: 12101 },
+        from: { id: 12101, username: 'botchangepass_tg' },
+        text: 'oldpass123',
+      },
+    });
+    expect(String((lastTelegramCall('editMessageText')?.body as { text?: string }).text || '')).toContain('Введи новый пароль');
+
+    await sendUserTelegramWebhook({
+      message: {
+        chat: { id: 12101 },
+        from: { id: 12101, username: 'botchangepass_tg' },
+        text: 'newpass123',
+      },
+    });
+    expect(String((lastTelegramCall('editMessageText')?.body as { text?: string }).text || '')).toContain('Повтори новый пароль');
+
+    await sendUserTelegramWebhook({
+      message: {
+        chat: { id: 12101 },
+        from: { id: 12101, username: 'botchangepass_tg' },
+        text: 'newpass123',
+      },
+    });
+
+    const changedSettings = lastTelegramCall('editMessageText');
+    expect(String((changedSettings?.body as { text?: string }).text || '')).toContain('Пароль изменён');
+
+    const oldLoginForm = new FormData();
+    oldLoginForm.set('email', 'botchangepass@example.com');
+    oldLoginForm.set('password', 'oldpass123');
+    const oldLoginResponse = await runRequest(
+      new Request('http://example.com/login', {
+        method: 'POST',
+        body: oldLoginForm,
+      })
+    );
+    expect(oldLoginResponse.status).toBe(200);
+    expect(await oldLoginResponse.text()).toContain('Неверный email или пароль');
+
+    const newLoginForm = new FormData();
+    newLoginForm.set('email', 'botchangepass@example.com');
+    newLoginForm.set('password', 'newpass123');
+    const newLoginResponse = await runRequest(
+      new Request('http://example.com/login', {
+        method: 'POST',
+        body: newLoginForm,
+      })
+    );
+    expect(newLoginResponse.status).toBe(303);
   });
 });
 

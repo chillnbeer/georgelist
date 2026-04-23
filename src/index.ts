@@ -213,6 +213,10 @@ type BotDraftRow = {
   email: string | null;
   category: string | null;
   ad_type: string | null;
+  reply_user_id: number | null;
+  reply_ad_id: number | null;
+  password_current: string | null;
+  password_new: string | null;
   title: string | null;
   body: string | null;
   created_at: string;
@@ -246,6 +250,7 @@ const USER_BOT_SEARCH_MORE_PREFIX = 'user:searchmore:';
 const BOT_ADS_PAGE_SIZE = 5;
 const USER_BOT_DELETE_PREFIX = 'delete_';
 const USER_BOT_SETTINGS_PREFIX = 'user:settings:';
+const USER_BOT_REPLY_PREFIX = 'user:reply:';
 const USER_BOT_DRAFT_PREFIX = 'draft:';
 const USER_BOT_DRAFT_TYPE_PREFIX = 'draft:type:';
 const USER_BOT_DRAFT_CANCEL = 'draft:confirm:cancel';
@@ -1650,7 +1655,12 @@ ${renderSearchForm()}`
   );
 }
 
-function renderAdMessageSection(ad: PublicAdCardRow, currentUser: CurrentUser | null, message: string | null = null): string {
+function renderAdMessageSection(
+  ad: PublicAdCardRow,
+  currentUser: CurrentUser | null,
+  canMessageAuthor: boolean,
+  message: string | null = null
+): string {
   const title = '<h2>Написать автору</h2>';
 
   if (!ad.owner_user_id) {
@@ -1660,17 +1670,24 @@ function renderAdMessageSection(ad: PublicAdCardRow, currentUser: CurrentUser | 
 </div>`;
   }
 
+  if (currentUser && currentUser.id === ad.owner_user_id) {
+    return `<div class="section ad-message-section">
+  ${title}
+  <p class="empty">Это ваше объявление.</p>
+</div>`;
+  }
+
+  if (!canMessageAuthor) {
+    return `<div class="section ad-message-section">
+  ${title}
+  <p class="empty">У автора не привязан Telegram.</p>
+</div>`;
+  }
+
   if (!currentUser) {
     return `<div class="section ad-message-section">
   ${title}
   <p class="empty">Чтобы написать автору, войди в аккаунт.</p>
-</div>`;
-  }
-
-  if (currentUser.id === ad.owner_user_id) {
-    return `<div class="section ad-message-section">
-  ${title}
-  <p class="empty">Это ваше объявление.</p>
 </div>`;
   }
 
@@ -1688,6 +1705,7 @@ function renderPublicAdPage(
   env: Env,
   ad: PublicAdCardRow,
   currentUser: CurrentUser | null = null,
+  canMessageAuthor = false,
   message: string | null = null
 ): Response {
   const media = ad.image_key
@@ -1718,7 +1736,7 @@ ${nav(currentUser)}
     </div>
   </div>
 </div>
-${renderAdMessageSection(ad, currentUser, message)}
+${renderAdMessageSection(ad, currentUser, canMessageAuthor, message)}
 ${renderSearchForm()}`,
     currentUser
   );
@@ -2852,11 +2870,18 @@ function userBotSingleAdMarkup(adId: number): Record<string, unknown> {
   };
 }
 
-function userBotSettingsMarkup(): Record<string, unknown> {
+function userBotReplyMarkup(replyUserId: number, adId: number): Record<string, unknown> {
+  return {
+    inline_keyboard: [[{ text: 'Ответить', callback_data: `${USER_BOT_REPLY_PREFIX}${replyUserId}:${adId}` }]],
+  };
+}
+
+function userBotSettingsMarkup(hasPassword: boolean): Record<string, unknown> {
   return {
     inline_keyboard: [
       [{ text: 'Изменить логин', callback_data: `${USER_BOT_SETTINGS_PREFIX}login` }],
       [{ text: 'Изменить email', callback_data: `${USER_BOT_SETTINGS_PREFIX}email` }],
+      [{ text: hasPassword ? 'Сменить пароль' : 'Задать пароль', callback_data: `${USER_BOT_SETTINGS_PREFIX}password` }],
       [{ text: 'Изменить аватар', callback_data: `${USER_BOT_SETTINGS_PREFIX}avatar` }],
       [{ text: 'Удалить аватар', callback_data: `${USER_BOT_SETTINGS_PREFIX}avatar-delete` }],
       [{ text: 'Назад', callback_data: USER_BOT_MENU_HOME }],
@@ -2950,6 +2975,7 @@ async function sendUserBotSettings(
   }
 
   const emailIdentity = await findEmailIdentityByUserId(env, user.id);
+  const hasPassword = Boolean(emailIdentity?.password_hash);
   const telegramLine = telegramIdentity.telegram_username
     ? `@${telegramIdentity.telegram_username}`
     : telegramIdentity.provider_user_id || 'привязан';
@@ -2958,11 +2984,12 @@ async function sendUserBotSettings(
     'Настройки',
     `Login: ${user.login}`,
     `Email: ${emailIdentity?.email || user.email || 'не задан'}`,
+    `Пароль: ${hasPassword ? 'задан' : 'не задан'}`,
     `Telegram: ${telegramLine}`,
     `Аватар: ${user.avatar_key ? 'есть' : 'нет'}`,
   ];
 
-  await showUserBotScreen(env, telegramUserId, chatId, lines.join('\n'), userBotSettingsMarkup());
+  await showUserBotScreen(env, telegramUserId, chatId, lines.join('\n'), userBotSettingsMarkup(hasPassword));
 }
 
 async function sendUserBotSettingsLoginPrompt(env: Env, telegramUserId: string, chatId: number, message: string | null = null): Promise<void> {
@@ -2978,6 +3005,44 @@ async function sendUserBotSettingsEmailPrompt(env: Env, telegramUserId: string, 
 async function sendUserBotSettingsAvatarPrompt(env: Env, telegramUserId: string, chatId: number, message: string | null = null): Promise<void> {
   const lines = [...(message ? [message, ''] : []), 'Пришли изображение для аватара'];
   await showUserBotScreen(env, telegramUserId, chatId, lines.join('\n'), userBotCancelSettingsMarkup());
+}
+
+async function sendUserBotSettingsPasswordPrompt(
+  env: Env,
+  telegramUserId: string,
+  chatId: number,
+  hasPassword: boolean,
+  step: 'current' | 'new' | 'confirm',
+  message: string | null = null
+): Promise<void> {
+  const stepLabel =
+    step === 'current'
+      ? 'Введи текущий пароль'
+      : step === 'new'
+        ? 'Введи новый пароль'
+        : 'Повтори новый пароль';
+  const statusLine = hasPassword ? 'Пароль уже задан.' : 'Пароль ещё не задан.';
+  const lines = [...(message ? [message, ''] : []), 'Смена пароля', statusLine, stepLabel];
+  await showUserBotScreen(env, telegramUserId, chatId, lines.join('\n'), userBotCancelSettingsMarkup());
+}
+
+async function sendUserBotReplyPrompt(
+  env: Env,
+  telegramUserId: string,
+  chatId: number,
+  senderLogin: string | null,
+  adTitle: string | null,
+  message: string | null = null
+): Promise<void> {
+  const lines = [
+    ...(message ? [message, ''] : []),
+    'Ответ пользователю',
+    senderLogin ? `Пользователь: ${senderLogin}` : 'Пользователь: неизвестен',
+    adTitle ? `По объявлению: ${adTitle}` : '',
+    '',
+    'Напиши сообщение',
+  ].filter((line) => line !== '');
+  await showUserBotScreen(env, telegramUserId, chatId, lines.join('\n'), userBotCancelHomeMarkup());
 }
 
 async function sendUserBotSearchPrompt(env: Env, telegramUserId: string, chatId: number, message: string | null = null): Promise<void> {
@@ -4821,6 +4886,22 @@ async function ensureBotDraftColumns(env: Env): Promise<void> {
     if (!columnNames.has('ad_type')) {
       await env.DB.prepare(`ALTER TABLE bot_drafts ADD COLUMN ad_type TEXT`).run();
     }
+
+    if (!columnNames.has('reply_user_id')) {
+      await env.DB.prepare(`ALTER TABLE bot_drafts ADD COLUMN reply_user_id INTEGER`).run();
+    }
+
+    if (!columnNames.has('reply_ad_id')) {
+      await env.DB.prepare(`ALTER TABLE bot_drafts ADD COLUMN reply_ad_id INTEGER`).run();
+    }
+
+    if (!columnNames.has('password_current')) {
+      await env.DB.prepare(`ALTER TABLE bot_drafts ADD COLUMN password_current TEXT`).run();
+    }
+
+    if (!columnNames.has('password_new')) {
+      await env.DB.prepare(`ALTER TABLE bot_drafts ADD COLUMN password_new TEXT`).run();
+    }
   })().finally(() => {
     cachedEnsureBotDraftColumnsPromise = null;
   });
@@ -5446,7 +5527,7 @@ async function findTelegramIdentityByUserId(env: Env, userId: number): Promise<U
 async function getBotDraft(env: Env, telegramUserId: string): Promise<BotDraftRow | null> {
   const result = await env.DB.prepare(
     `
-      SELECT id, telegram_user_id, action, step, ui_chat_id, ui_message_id, ad_id, login, email, category, ad_type, title, body, created_at, updated_at
+      SELECT id, telegram_user_id, action, step, ui_chat_id, ui_message_id, ad_id, login, email, category, ad_type, reply_user_id, reply_ad_id, password_current, password_new, title, body, created_at, updated_at
       FROM bot_drafts
       WHERE telegram_user_id = ?
       LIMIT 1
@@ -5471,7 +5552,11 @@ async function upsertBotDraft(
   email: string | null = null,
   uiChatId: number | null = null,
   uiMessageId: number | null = null,
-  adType: string | null = null
+  adType: string | null = null,
+  replyUserId: number | null = null,
+  replyAdId: number | null = null,
+  passwordCurrent: string | null = null,
+  passwordNew: string | null = null
 ): Promise<void> {
   await env.DB.prepare(
     `
@@ -5486,12 +5571,16 @@ async function upsertBotDraft(
         email,
         category,
         ad_type,
+        reply_user_id,
+        reply_ad_id,
+        password_current,
+        password_new,
         title,
         body,
         created_at,
         updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
       ON CONFLICT(telegram_user_id) DO UPDATE SET
         action = excluded.action,
         step = excluded.step,
@@ -5508,12 +5597,33 @@ async function upsertBotDraft(
         email = excluded.email,
         category = excluded.category,
         ad_type = excluded.ad_type,
+        reply_user_id = excluded.reply_user_id,
+        reply_ad_id = excluded.reply_ad_id,
+        password_current = excluded.password_current,
+        password_new = excluded.password_new,
         title = excluded.title,
         body = excluded.body,
         updated_at = CURRENT_TIMESTAMP
     `
   )
-    .bind(telegramUserId, action, step, uiChatId, uiMessageId, adId, login, email, category, adType, title, body)
+    .bind(
+      telegramUserId,
+      action,
+      step,
+      uiChatId,
+      uiMessageId,
+      adId,
+      login,
+      email,
+      category,
+      adType,
+      replyUserId,
+      replyAdId,
+      passwordCurrent,
+      passwordNew,
+      title,
+      body
+    )
     .run();
 }
 
@@ -5528,6 +5638,10 @@ async function clearBotDraft(env: Env, telegramUserId: string): Promise<void> {
           email = NULL,
           category = NULL,
           ad_type = NULL,
+          reply_user_id = NULL,
+          reply_ad_id = NULL,
+          password_current = NULL,
+          password_new = NULL,
           title = NULL,
           body = NULL,
           updated_at = CURRENT_TIMESTAMP
@@ -5761,7 +5875,96 @@ async function handleUserBotText(
 
   const draft = await getBotDraft(env, telegramUserId);
 
-  if (!draft || (draft.action !== 'create' && draft.action !== 'edit' && draft.action !== 'register' && draft.action !== 'search' && draft.action !== 'settings')) {
+  if (
+    !draft ||
+    (draft.action !== 'create' &&
+      draft.action !== 'edit' &&
+      draft.action !== 'register' &&
+      draft.action !== 'search' &&
+      draft.action !== 'settings' &&
+      draft.action !== 'reply')
+  ) {
+    return;
+  }
+
+  if (draft.action === 'reply') {
+    if (draft.step !== 'message') {
+      return;
+    }
+
+    const replyText = text.trim();
+    if (!replyText) {
+      const senderIdentity = await findTelegramIdentity(env, telegramUserId);
+      const senderUser = senderIdentity ? await findUserById(env, senderIdentity.user_id) : null;
+      const ad = draft.reply_ad_id ? await getPublishedAdCardById(env, draft.reply_ad_id) : null;
+      await sendUserBotReplyPrompt(
+        env,
+        telegramUserId,
+        chatId,
+        senderUser?.login || telegramUsername,
+        ad?.title || (draft.reply_ad_id ? `#${draft.reply_ad_id}` : null),
+        'Введи текст сообщения'
+      );
+      return;
+    }
+
+    if (replyText.length > 1000) {
+      const senderIdentity = await findTelegramIdentity(env, telegramUserId);
+      const senderUser = senderIdentity ? await findUserById(env, senderIdentity.user_id) : null;
+      const ad = draft.reply_ad_id ? await getPublishedAdCardById(env, draft.reply_ad_id) : null;
+      await sendUserBotReplyPrompt(
+        env,
+        telegramUserId,
+        chatId,
+        senderUser?.login || telegramUsername,
+        ad?.title || (draft.reply_ad_id ? `#${draft.reply_ad_id}` : null),
+        'Сообщение слишком длинное'
+      );
+      return;
+    }
+
+    if (!draft.reply_user_id || !draft.reply_ad_id) {
+      await clearBotDraft(env, telegramUserId);
+      await sendUserBotMenu(env, telegramUserId, chatId, 'Не удалось определить адресата');
+      return;
+    }
+
+    const senderIdentity = await findTelegramIdentity(env, telegramUserId);
+    const senderUser = senderIdentity ? await findUserById(env, senderIdentity.user_id) : null;
+    const recipientIdentity = await findTelegramIdentityByUserId(env, draft.reply_user_id);
+    const recipientChatId = Number(recipientIdentity?.provider_user_id || '');
+    if (!recipientIdentity?.provider_user_id || !Number.isInteger(recipientChatId) || recipientChatId <= 0) {
+      await clearBotDraft(env, telegramUserId);
+      await sendUserBotMenu(env, telegramUserId, chatId, 'У пользователя не привязан Telegram');
+      return;
+    }
+
+    const ad = await getPublishedAdCardById(env, draft.reply_ad_id);
+    const adTitle = ad?.title || `#${draft.reply_ad_id}`;
+    const senderReplyMarkup = senderIdentity?.user_id ? userBotReplyMarkup(senderIdentity.user_id, draft.reply_ad_id) : undefined;
+
+    try {
+      await sendUserBotMessage(
+        env,
+        recipientChatId,
+        [
+          `Тебе ответил пользователь ${senderUser?.login || telegramUsername || 'пользователь'}`,
+          `по объявлению: ${adTitle}`,
+          '',
+          'Сообщение:',
+          replyText,
+        ].join('\n'),
+        senderReplyMarkup
+      );
+    } catch (error) {
+      console.error('Failed to send reply message to user', error);
+      await clearBotDraft(env, telegramUserId);
+      await sendUserBotMenu(env, telegramUserId, chatId, 'Не удалось отправить сообщение');
+      return;
+    }
+
+    await clearBotDraft(env, telegramUserId);
+    await sendUserBotMenu(env, telegramUserId, chatId, 'Ответ отправлен');
     return;
   }
 
@@ -5778,6 +5981,111 @@ async function handleUserBotText(
   }
 
   if (draft.action === 'settings') {
+    if (draft.step === 'password-current' || draft.step === 'password-new' || draft.step === 'password-confirm') {
+      const emailIdentity = await findEmailIdentityByUserId(env, (await findTelegramIdentity(env, telegramUserId))?.user_id || 0);
+      if (!emailIdentity) {
+        await clearBotDraft(env, telegramUserId);
+        await sendUserBotSettings(env, telegramUserId, chatId, 'Сначала добавь email на сайте');
+        return;
+      }
+
+      const hasPassword = Boolean(emailIdentity.password_hash);
+
+      if (draft.step === 'password-current') {
+        const currentPassword = text.trim();
+        if (!currentPassword) {
+          await sendUserBotSettingsPasswordPrompt(env, telegramUserId, chatId, hasPassword, 'current', 'Введи текущий пароль');
+          return;
+        }
+
+        const isPasswordValid = await verifyPassword(currentPassword, emailIdentity.password_hash || '');
+        if (!isPasswordValid) {
+          await sendUserBotSettingsPasswordPrompt(env, telegramUserId, chatId, hasPassword, 'current', 'Неверный текущий пароль');
+          return;
+        }
+
+        await upsertBotDraft(
+          env,
+          telegramUserId,
+          'settings',
+          'password-new',
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          currentPassword,
+          null
+        );
+        await sendUserBotSettingsPasswordPrompt(env, telegramUserId, chatId, hasPassword, 'new');
+        return;
+      }
+
+      if (draft.step === 'password-new') {
+        const newPassword = text.trim();
+        if (newPassword.length < 8) {
+          await sendUserBotSettingsPasswordPrompt(env, telegramUserId, chatId, hasPassword, 'new', 'Новый пароль должен быть не короче 8 символов');
+          return;
+        }
+
+        await upsertBotDraft(
+          env,
+          telegramUserId,
+          'settings',
+          'password-confirm',
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          draft.password_current,
+          newPassword
+        );
+        await sendUserBotSettingsPasswordPrompt(env, telegramUserId, chatId, hasPassword, 'confirm');
+        return;
+      }
+
+      if (draft.step === 'password-confirm') {
+        const confirmPassword = text.trim();
+        if (!confirmPassword) {
+          await sendUserBotSettingsPasswordPrompt(env, telegramUserId, chatId, hasPassword, 'confirm', 'Повтори новый пароль');
+          return;
+        }
+
+        if (!draft.password_new || draft.password_new !== confirmPassword) {
+          await sendUserBotSettingsPasswordPrompt(env, telegramUserId, chatId, hasPassword, 'confirm', 'Подтверждение нового пароля не совпадает');
+          return;
+        }
+
+        const passwordHash = await hashPassword(confirmPassword);
+        await env.DB.prepare(
+          `
+            UPDATE user_identities
+            SET password_hash = ?
+            WHERE id = ?
+          `
+        )
+          .bind(passwordHash, emailIdentity.id)
+          .run();
+
+        await clearBotDraft(env, telegramUserId);
+        await sendUserBotSettings(env, telegramUserId, chatId, 'Пароль изменён');
+        return;
+      }
+    }
+
     if (draft.step === 'login') {
       await handleUserBotSettingsLoginUpdate(env, telegramUserId, chatId, text.trim());
       return;
@@ -6064,6 +6372,32 @@ async function handleUserBotCallback(
     return json({ ok: true });
   }
 
+  if (data.startsWith(USER_BOT_REPLY_PREFIX)) {
+    const payload = data.slice(USER_BOT_REPLY_PREFIX.length);
+    const [replyUserIdText, adIdText] = payload.split(':', 2);
+    const replyUserId = Number(replyUserIdText);
+    const adId = Number(adIdText);
+
+    if (!Number.isInteger(replyUserId) || replyUserId <= 0 || !Number.isInteger(adId) || adId <= 0) {
+      await answerUserCallbackQuery(env, callbackQuery.id, 'Invalid reply').catch(() => {});
+      return json({ ok: true });
+    }
+
+    const senderUser = await findUserById(env, replyUserId);
+    const ad = await getPublishedAdCardById(env, adId);
+
+    await upsertBotDraft(env, telegramUserId, 'reply', 'message', null, null, null, null, null, null, null, null, null, replyUserId, adId);
+    await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
+    await sendUserBotReplyPrompt(
+      env,
+      telegramUserId,
+      chatId,
+      senderUser?.login || null,
+      ad?.title || `#${adId}`
+    );
+    return json({ ok: true });
+  }
+
   if (data.startsWith(USER_BOT_DELETE_PREFIX)) {
     const adId = Number(data.slice(USER_BOT_DELETE_PREFIX.length));
     if (!Number.isInteger(adId) || adId <= 0) {
@@ -6112,6 +6446,22 @@ async function handleUserBotCallback(
       await upsertBotDraft(env, telegramUserId, 'settings', 'email');
       await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
       await sendUserBotSettingsEmailPrompt(env, telegramUserId, chatId);
+      return json({ ok: true });
+    }
+
+    if (action === 'password') {
+      const telegramIdentity = await findTelegramIdentity(env, telegramUserId);
+      const emailIdentity = telegramIdentity ? await findEmailIdentityByUserId(env, telegramIdentity.user_id) : null;
+      if (!emailIdentity) {
+        await answerUserCallbackQuery(env, callbackQuery.id, 'Email not found').catch(() => {});
+        await clearBotDraft(env, telegramUserId);
+        await sendUserBotSettings(env, telegramUserId, chatId, 'Сначала добавь email на сайте');
+        return json({ ok: true });
+      }
+      const hasPassword = Boolean(emailIdentity?.password_hash);
+      await upsertBotDraft(env, telegramUserId, 'settings', hasPassword ? 'password-current' : 'password-new');
+      await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
+      await sendUserBotSettingsPasswordPrompt(env, telegramUserId, chatId, hasPassword, hasPassword ? 'current' : 'new');
       return json({ ok: true });
     }
 
@@ -7332,7 +7682,8 @@ async function handleAdGet(
     return renderNotFoundPage(currentUser);
   }
 
-  return renderPublicAdPage(env, ad, currentUser, message);
+  const canMessageAuthor = Boolean(ad.owner_user_id && (await findTelegramIdentityByUserId(env, ad.owner_user_id)));
+  return renderPublicAdPage(env, ad, currentUser, canMessageAuthor, message);
 }
 
 async function handleAdMessagePost(
@@ -7355,29 +7706,34 @@ async function handleAdMessagePost(
     return renderNotFoundPage(currentUser);
   }
 
+  const canMessageAuthor = Boolean(ad.owner_user_id && (await findTelegramIdentityByUserId(env, ad.owner_user_id)));
+
   if (!ad.owner_user_id) {
-    return renderPublicAdPage(env, ad, currentUser, 'У объявления не указан автор');
+    return renderPublicAdPage(env, ad, currentUser, canMessageAuthor, 'У объявления не указан автор');
   }
 
   if (ad.owner_user_id === currentUser.id) {
-    return renderPublicAdPage(env, ad, currentUser, 'Нельзя написать самому себе');
+    return renderPublicAdPage(env, ad, currentUser, canMessageAuthor, 'Нельзя написать самому себе');
   }
 
   const form = await request.formData();
   const message = String(form.get('message') || '').trim();
   if (!message) {
-    return renderPublicAdPage(env, ad, currentUser, 'Введите текст сообщения');
+    return renderPublicAdPage(env, ad, currentUser, canMessageAuthor, 'Введите текст сообщения');
   }
 
   if (message.length > 1000) {
-    return renderPublicAdPage(env, ad, currentUser, 'Сообщение слишком длинное');
+    return renderPublicAdPage(env, ad, currentUser, canMessageAuthor, 'Сообщение слишком длинное');
   }
 
   const telegramIdentity = await findTelegramIdentityByUserId(env, ad.owner_user_id);
   const chatId = Number(telegramIdentity?.provider_user_id || '');
   if (!telegramIdentity?.provider_user_id || !Number.isInteger(chatId) || chatId <= 0) {
-    return renderPublicAdPage(env, ad, currentUser, 'У автора не привязан Telegram');
+    return renderPublicAdPage(env, ad, currentUser, false, 'У автора не привязан Telegram');
   }
+
+  const senderTelegramIdentity = await findTelegramIdentityByUserId(env, currentUser.id);
+  const senderReplyMarkup = senderTelegramIdentity?.provider_user_id ? userBotReplyMarkup(currentUser.id, ad.id) : undefined;
 
   try {
     await sendUserBotMessage(
@@ -7389,11 +7745,12 @@ async function handleAdMessagePost(
         '',
         'Сообщение:',
         message,
-      ].join('\n')
+      ].join('\n'),
+      senderReplyMarkup
     );
   } catch (error) {
     console.error('Failed to send ad message to author', error);
-    return renderPublicAdPage(env, ad, currentUser, 'Не удалось отправить сообщение');
+    return renderPublicAdPage(env, ad, currentUser, canMessageAuthor, 'Не удалось отправить сообщение');
   }
 
   return redirectWithMessage(`/ad/${ad.id}`, 'Сообщение отправлено');
