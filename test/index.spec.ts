@@ -108,6 +108,7 @@ const SCHEMA_STATEMENTS = [
       login TEXT,
       email TEXT,
       category TEXT,
+      ad_type TEXT,
       title TEXT,
       body TEXT,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -120,6 +121,7 @@ const SCHEMA_STATEMENTS = [
       title TEXT NOT NULL,
       body TEXT NOT NULL,
       category TEXT,
+      type TEXT,
       status TEXT NOT NULL DEFAULT 'pending',
       owner_user_id INTEGER,
       image_key TEXT,
@@ -303,14 +305,15 @@ async function insertAd(params: {
   category: string;
   ownerUserId: number | null;
   status?: string;
+  type?: string;
 }): Promise<number> {
   const result = await env.DB.prepare(
     `
-      INSERT INTO ads (title, body, category, status, owner_user_id, deleted_at, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      INSERT INTO ads (title, body, category, type, status, owner_user_id, deleted_at, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
     `
   )
-    .bind(params.title, params.body, params.category, params.status || 'pending', params.ownerUserId)
+    .bind(params.title, params.body, params.category, params.type || 'sell', params.status || 'pending', params.ownerUserId)
     .run();
 
   return Number(result.meta.last_row_id);
@@ -693,9 +696,6 @@ describe('User bot browsing flow', () => {
     const sectionsMarkup = (sectionsMessage?.body as { reply_markup?: { inline_keyboard?: Array<Array<{ text: string }>> } }).reply_markup?.inline_keyboard || [];
     const sectionButtons = sectionsMarkup.flat().map((button) => button.text);
     [
-      'Продаю',
-      'Куплю',
-      'Отдаю даром',
       'Авто',
       'Электроника',
       'Одежда',
@@ -801,6 +801,7 @@ describe('Public ad page', () => {
     expect(adHtml).toContain('poster');
     expect(adHtml).toContain('/u/poster');
     expect(adHtml).toContain('Public body');
+    expect(adHtml).toContain('Продаю');
     expect(adHtml).toContain('Написать автору');
     expect(adHtml).toContain('Чтобы написать автору, войди в аккаунт.');
     expect(adHtml).toContain('/search');
@@ -868,6 +869,7 @@ describe('Ad messages', () => {
     expect(writerResponse.status).toBe(200);
     const writerHtml = await writerResponse.text();
     expect(writerHtml).toContain('Написать автору');
+    expect(writerHtml).toContain('Продаю');
     expect(writerHtml).toContain('name="message"');
     expect(writerHtml).toContain('Отправить');
 
@@ -906,8 +908,197 @@ describe('Ad messages', () => {
     );
     expect(ownerResponse.status).toBe(200);
     const ownerHtml = await ownerResponse.text();
+    expect(ownerHtml).toContain('Продаю');
     expect(ownerHtml).toContain('Это ваше объявление.');
     expect(ownerHtml).not.toContain('name="message"');
+  });
+});
+
+describe('User bot create flow', () => {
+  it('collects category, type, title and body in separate steps', async () => {
+    await seedUser({
+      id: 62,
+      login: 'creator',
+      email: 'creator@example.com',
+      sessionToken: 'creator-session',
+    });
+    await insertTelegramIdentity({
+      userId: 62,
+      telegramUserId: '62001',
+      telegramUsername: 'creator_tg',
+    });
+
+    const startResponse = await sendUserTelegramWebhook({
+      message: {
+        chat: { id: 62001 },
+        from: { id: 62001, username: 'creator_tg' },
+        text: '/start',
+      },
+    });
+    expect(startResponse.status).toBe(200);
+
+    await sendUserTelegramWebhook({
+      callback_query: {
+        id: 'cb-create',
+        data: 'user:create',
+        message: {
+          chat: { id: 62001 },
+          message_id: 500,
+        },
+      },
+    });
+
+    expect(String((lastTelegramCall('editMessageText')?.body as { text?: string }).text || '')).toContain('Выбери категорию');
+
+    await sendUserTelegramWebhook({
+      callback_query: {
+        id: 'cb-create-category',
+        data: 'draft:category:jobs',
+        message: {
+          chat: { id: 62001 },
+          message_id: 501,
+        },
+      },
+    });
+    expect(String((lastTelegramCall('editMessageText')?.body as { text?: string }).text || '')).toContain('Выбери тип объявления');
+
+    await sendUserTelegramWebhook({
+      callback_query: {
+        id: 'cb-create-type',
+        data: 'draft:type:buy',
+        message: {
+          chat: { id: 62001 },
+          message_id: 502,
+        },
+      },
+    });
+    expect(String((lastTelegramCall('editMessageText')?.body as { text?: string }).text || '')).toContain('Теперь напиши заголовок');
+
+    await sendUserTelegramWebhook({
+      message: {
+        chat: { id: 62001 },
+        from: { id: 62001, username: 'creator_tg' },
+        text: 'Need this',
+      },
+    });
+    expect(String((lastTelegramCall('editMessageText')?.body as { text?: string }).text || '')).toContain('Теперь напиши текст объявления');
+
+    await sendUserTelegramWebhook({
+      message: {
+        chat: { id: 62001 },
+        from: { id: 62001, username: 'creator_tg' },
+        text: 'Body text',
+      },
+    });
+    const confirmText = String((lastTelegramCall('editMessageText')?.body as { text?: string }).text || '');
+    expect(confirmText).toContain('Проверь объявление:');
+    expect(confirmText).toContain('Категория: Работа');
+    expect(confirmText).toContain('Тип: Куплю');
+    expect(confirmText).toContain('Need this');
+    expect(confirmText).toContain('Body text');
+
+    const confirmResponse = await sendUserTelegramWebhook({
+      callback_query: {
+        id: 'cb-create-send',
+        data: 'draft:confirm:send',
+        message: {
+          chat: { id: 62001 },
+          message_id: 503,
+        },
+      },
+    });
+    expect(confirmResponse.status).toBe(200);
+
+    const createdAd = await env.DB.prepare(
+      `
+        SELECT title, body, category, type, status, owner_user_id
+        FROM ads
+        WHERE title = ?
+        LIMIT 1
+      `
+    )
+      .bind('Need this')
+      .first<{ title: string; body: string; category: string | null; type: string | null; status: string; owner_user_id: number | null }>();
+
+    expect(createdAd?.title).toBe('Need this');
+    expect(createdAd?.body).toBe('Body text');
+    expect(createdAd?.category).toBe('jobs');
+    expect(createdAd?.type).toBe('buy');
+    expect(createdAd?.status).toBe('pending');
+    expect(createdAd?.owner_user_id).toBe(62);
+  });
+});
+
+describe('Site create flow', () => {
+  it('shows type selection on the create form and stores it on submit', async () => {
+    await seedUser({
+      id: 63,
+      login: 'sitecreator',
+      email: 'sitecreator@example.com',
+      sessionToken: 'sitecreator-session',
+    });
+
+    const createPageResponse = await runRequest(
+      new Request('http://example.com/new', {
+        headers: {
+          Cookie: 'session=sitecreator-session',
+        },
+      })
+    );
+
+    expect(createPageResponse.status).toBe(200);
+    const createPageHtml = await createPageResponse.text();
+    expect(createPageHtml).toContain('Тип объявления');
+    expect(createPageHtml).toContain('name="type"');
+
+    const createForm = new FormData();
+    createForm.set('title', 'Site buy request');
+    createForm.set('category', 'jobs');
+    createForm.set('type', 'buy');
+    createForm.set('body', 'Looking for help');
+
+    const createResponse = await runRequest(
+      new Request('http://example.com/new', {
+        method: 'POST',
+        headers: {
+          Cookie: 'session=sitecreator-session',
+        },
+        body: createForm,
+      })
+    );
+
+    expect(createResponse.status).toBe(303);
+
+    const createdAd = await env.DB.prepare(
+      `
+        SELECT title, category, type, status, owner_user_id
+        FROM ads
+        WHERE title = ?
+        LIMIT 1
+      `
+    )
+      .bind('Site buy request')
+      .first<{ title: string; category: string | null; type: string | null; status: string; owner_user_id: number | null }>();
+
+    expect(createdAd?.title).toBe('Site buy request');
+    expect(createdAd?.category).toBe('jobs');
+    expect(createdAd?.type).toBe('buy');
+    expect(createdAd?.status).toBe('pending');
+    expect(createdAd?.owner_user_id).toBe(63);
+
+    await env.DB.prepare(
+      `
+        UPDATE ads
+        SET status = 'published'
+        WHERE title = ?
+      `
+    )
+      .bind('Site buy request')
+      .run();
+
+    const filteredCategoryResponse = await runRequest(new Request('http://example.com/category/jobs?type=buy'));
+    expect(filteredCategoryResponse.status).toBe(200);
+    expect(await filteredCategoryResponse.text()).toContain('Site buy request');
   });
 });
 
@@ -951,6 +1142,7 @@ describe('Ad images', () => {
     const createForm = new FormData();
     createForm.set('title', 'Image ad');
     createForm.set('category', 'things');
+    createForm.set('type', 'buy');
     createForm.set('body', 'Image body');
     createForm.set('image', firstImage);
 
@@ -969,18 +1161,20 @@ describe('Ad images', () => {
     const adminCreatePhotoCall = telegramFetchCalls.filter((call) => call.url.includes('/sendPhoto')).at(-1);
     expect(adminCreatePhotoCall).toBeTruthy();
     expect(String((adminCreatePhotoCall?.body as { caption?: string }).caption || '')).toContain('Type: New');
+    expect(String((adminCreatePhotoCall?.body as { caption?: string }).caption || '')).toContain('Ad type: Куплю');
 
     const createdAd = await env.DB.prepare(
       `
-        SELECT id, image_key, image_mime_type, image_updated_at
+        SELECT id, type, image_key, image_mime_type, image_updated_at
         FROM ads
         WHERE title = ?
         LIMIT 1
       `
     )
       .bind('Image ad')
-      .first<{ id: number; image_key: string | null; image_mime_type: string | null; image_updated_at: string | null }>();
+      .first<{ id: number; type: string | null; image_key: string | null; image_mime_type: string | null; image_updated_at: string | null }>();
 
+    expect(createdAd?.type).toBe('buy');
     expect(createdAd?.image_key).toBeTruthy();
     expect(createdAd?.image_key).toMatch(/\.jpg$/);
     expect(createdAd?.image_mime_type).toBe('image/jpeg');
@@ -995,6 +1189,7 @@ describe('Ad images', () => {
     const editForm = new FormData();
     editForm.set('title', 'Image ad updated');
     editForm.set('category', 'things');
+    editForm.set('type', 'free');
     editForm.set('body', 'Image body updated');
     editForm.set('image', secondImage);
 
@@ -1012,16 +1207,17 @@ describe('Ad images', () => {
 
     const editedAd = await env.DB.prepare(
       `
-        SELECT id, title, image_key, image_mime_type, image_updated_at
+        SELECT id, title, type, image_key, image_mime_type, image_updated_at
         FROM ads
         WHERE id = ?
         LIMIT 1
       `
     )
       .bind(createdAd?.id)
-      .first<{ id: number; title: string; image_key: string | null; image_mime_type: string | null; image_updated_at: string | null }>();
+      .first<{ id: number; title: string; type: string | null; image_key: string | null; image_mime_type: string | null; image_updated_at: string | null }>();
 
     expect(editedAd?.title).toBe('Image ad updated');
+    expect(editedAd?.type).toBe('free');
     expect(editedAd?.image_key).not.toBe(firstKey);
     expect(editedAd?.image_key).toMatch(/\.jpg$/);
     expect(editedAd?.image_mime_type).toBe('image/jpeg');
@@ -1096,6 +1292,7 @@ describe('Ad images', () => {
     const publishedAdPageHtml = await publishedAdPageResponse.text();
     expect(publishedAdPageHtml).toContain(`/media/${encodeURIComponent(editedAd?.image_key || '')}`);
     expect(publishedAdPageHtml).toContain('Image ad updated');
+    expect(publishedAdPageHtml).toContain('Отдаю');
 
     const userAdResponse = await sendUserTelegramWebhook({
       callback_query: {
@@ -1115,6 +1312,7 @@ describe('Ad images', () => {
     expect(photoCall).toBeTruthy();
     expect(String((photoCall?.body as { photo?: string }).photo || '')).toContain('/media/');
     expect(String((photoCall?.body as { caption?: string }).caption || '')).toContain('Image ad updated');
+    expect(String((photoCall?.body as { caption?: string }).caption || '')).toContain('Тип: Отдаю');
   }, 15000);
 });
 

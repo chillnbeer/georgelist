@@ -2,9 +2,6 @@ import { decode as decodePng } from 'fast-png';
 import * as jpeg from 'jpeg-js';
 
 const CATEGORIES = [
-  { slug: 'sale', label: 'Продаю' },
-  { slug: 'wanted', label: 'Куплю' },
-  { slug: 'free', label: 'Отдаю даром' },
   { slug: 'auto', label: 'Авто' },
   { slug: 'electronics', label: 'Электроника' },
   { slug: 'clothes', label: 'Одежда' },
@@ -23,9 +20,19 @@ const CATEGORIES = [
 
 type CategorySlug = (typeof CATEGORIES)[number]['slug'];
 
+const AD_TYPES = [
+  { slug: 'sell', label: 'Продаю' },
+  { slug: 'buy', label: 'Куплю' },
+  { slug: 'free', label: 'Отдаю' },
+] as const;
+
+type AdTypeSlug = (typeof AD_TYPES)[number]['slug'];
+
 const CATEGORY_LABELS = Object.fromEntries(
   CATEGORIES.map((category) => [category.slug, category.label])
 ) as Record<CategorySlug, string>;
+
+const AD_TYPE_LABELS = Object.fromEntries(AD_TYPES.map((type) => [type.slug, type.label])) as Record<AdTypeSlug, string>;
 
 type Env = {
   DB: D1Database;
@@ -59,6 +66,7 @@ type AdRow = {
   body: string;
   contact: string | null;
   category: string | null;
+  type: string | null;
   owner_user_id: number | null;
   owner_login: string | null;
   owner_avatar_key: string | null;
@@ -77,6 +85,7 @@ type PublicAdCardRow = {
   body: string;
   contact: string | null;
   category: string | null;
+  type: string | null;
   owner_user_id: number | null;
   image_key: string | null;
   image_mime_type: string | null;
@@ -90,6 +99,7 @@ type AdCardRow = {
   id: number;
   title: string;
   category: string | null;
+  type: string | null;
   image_key: string | null;
   created_at: string;
   author_login: string | null;
@@ -111,6 +121,7 @@ type AdForm = {
   body: string;
   contact: string;
   category: string;
+  type: string;
   image: File | null;
 };
 
@@ -201,6 +212,7 @@ type BotDraftRow = {
   login: string | null;
   email: string | null;
   category: string | null;
+  ad_type: string | null;
   title: string | null;
   body: string | null;
   created_at: string;
@@ -235,6 +247,7 @@ const BOT_ADS_PAGE_SIZE = 5;
 const USER_BOT_DELETE_PREFIX = 'delete_';
 const USER_BOT_SETTINGS_PREFIX = 'user:settings:';
 const USER_BOT_DRAFT_PREFIX = 'draft:';
+const USER_BOT_DRAFT_TYPE_PREFIX = 'draft:type:';
 const USER_BOT_DRAFT_CANCEL = 'draft:confirm:cancel';
 const USER_BOT_DRAFT_SEND = 'draft:confirm:send';
 const USER_BOT_EDIT_DRAFT_CANCEL = 'draft:edit:cancel';
@@ -246,6 +259,7 @@ const AD_SELECT_COLUMNS = `
   body,
   contact,
   category,
+  type,
   owner_user_id,
   status,
   image_key,
@@ -263,6 +277,7 @@ let cachedTelegramUserBotUsernamePromise: Promise<string | null> | null = null;
 let cachedEnsureAdImageColumnsPromise: Promise<void> | null = null;
 let cachedEnsureUserAvatarColumnsPromise: Promise<void> | null = null;
 let cachedEnsureAdContactColumnPromise: Promise<void> | null = null;
+let cachedEnsureAdTypeColumnPromise: Promise<void> | null = null;
 let cachedEnsureBotDraftColumnsPromise: Promise<void> | null = null;
 const NOOP_EXECUTION_CONTEXT = {
   waitUntil(): void {},
@@ -332,6 +347,19 @@ function normalizeCategory(slug: string | null | undefined): CategorySlug {
   return CATEGORIES.some((category) => category.slug === value) ? value : 'misc';
 }
 
+function typeLabel(slug: string | null): string {
+  if (!slug) {
+    return 'Продаю';
+  }
+
+  return AD_TYPE_LABELS[slug as AdTypeSlug] || 'Продаю';
+}
+
+function normalizeAdType(slug: string | null | undefined): AdTypeSlug {
+  const value = (slug || '').trim() as AdTypeSlug;
+  return AD_TYPES.some((type) => type.slug === value) ? value : 'sell';
+}
+
 function buildCategoryRows(
   callbackPrefix: string,
   categories: typeof CATEGORIES = CATEGORIES
@@ -346,6 +374,15 @@ function buildCategoryRows(
     );
   }
   return rows;
+}
+
+function buildTypeRows(callbackPrefix: string): Array<Array<{ text: string; callback_data: string }>> {
+  return AD_TYPES.map((type) => [
+    {
+      text: type.label,
+      callback_data: `${callbackPrefix}${type.slug}`,
+    },
+  ]);
 }
 
 function escapeLikePattern(value: string): string {
@@ -1409,13 +1446,14 @@ function renderAdList(env: Env, ads: AdCardRow[]): string {
   return `<div class="ad-grid">${ads
     .map((ad) => {
       const category = ad.category ? `${htmlEscape(categoryLabel(ad.category))} · ` : '';
+      const type = renderTypeBadge(ad.type);
       const author = ad.author_login
         ? `<div class="ad-author">${renderAvatar(env, ad.author_avatar_key, ad.author_login, 'avatar-mini')}<a href="/u/${encodeURIComponent(ad.author_login)}">${htmlEscape(ad.author_login)}</a></div>`
         : '';
       return `<div class="ad">
   ${renderAdImage(env, ad.image_key, ad.title, 'ad-image')}
   <div class="ad-content">
-    <div class="title"><a href="/ad/${ad.id}">${htmlEscape(ad.title)}</a></div>
+    <div class="title">${type}<a href="/ad/${ad.id}">${htmlEscape(ad.title)}</a></div>
     <div class="meta">${category}${htmlEscape(ad.created_at)}</div>
     ${author}
   </div>
@@ -1432,6 +1470,40 @@ function renderSearchForm(query = ''): string {
     <button type="submit">Найти</button>
   </form>
 </div>`;
+}
+
+function renderTypeFilter(
+  currentType: string | null,
+  categoryPath: string | null = null
+): string {
+  const paramsFor = (type: string | null): string => {
+    const params = new URLSearchParams();
+    if (type) {
+      params.set('type', type);
+    }
+    const query = params.toString();
+    if (categoryPath) {
+      return `${categoryPath}${query ? `?${query}` : ''}`;
+    }
+    return query ? `/?${query}` : '/';
+  };
+
+  const allLink = currentType ? `<a href="${htmlEscape(paramsFor(null))}">Все</a>` : '<strong>Все</strong>';
+  const sellLink = currentType === 'sell' ? '<strong>Продаю</strong>' : `<a href="${htmlEscape(paramsFor('sell'))}">Продаю</a>`;
+  const buyLink = currentType === 'buy' ? '<strong>Куплю</strong>' : `<a href="${htmlEscape(paramsFor('buy'))}">Куплю</a>`;
+  const freeLink = currentType === 'free' ? '<strong>Отдаю</strong>' : `<a href="${htmlEscape(paramsFor('free'))}">Отдаю</a>`;
+
+  return `<div class="type-filter">${allLink}<span>·</span>${sellLink}<span>·</span>${buyLink}<span>·</span>${freeLink}</div>`;
+}
+
+function renderTypeSelect(selected = 'sell'): string {
+  return `<select id="type" name="type">
+    ${AD_TYPES.map((type) => `<option value="${type.slug}"${type.slug === selected ? ' selected' : ''}>${htmlEscape(type.label)}</option>`).join('')}
+  </select>`;
+}
+
+function renderTypeBadge(type: string | null): string {
+  return `<span class="badge">${htmlEscape(typeLabel(type))}</span>`;
 }
 
 function renderAdImage(env: Env, key: string | null, alt: string, className: string): string {
@@ -1535,6 +1607,9 @@ ${nav(currentUser)}
       ${options}
     </select>
 
+    <label for="type">Тип объявления</label>
+    ${renderTypeSelect('sell')}
+
     <label for="image">Картинка</label>
     <input id="image" name="image" type="file" accept="image/*" />
 
@@ -1550,7 +1625,13 @@ ${nav(currentUser)}
   );
 }
 
-function renderCategoryPage(env: Env, slug: string, ads: AdCardRow[], currentUser: CurrentUser | null = null): Response {
+function renderCategoryPage(
+  env: Env,
+  slug: string,
+  ads: AdCardRow[],
+  currentUser: CurrentUser | null = null,
+  typeFilter: string | null = null
+): Response {
   const category = CATEGORIES.find((item) => item.slug === slug);
   if (!category) {
     return renderNotFoundPage(currentUser);
@@ -1562,7 +1643,8 @@ function renderCategoryPage(env: Env, slug: string, ads: AdCardRow[], currentUse
 ${nav(currentUser)}
 <div class="section">
   <h2>${htmlEscape(category.label)}</h2>
-      ${renderAdList(env, ads)}
+  ${renderTypeFilter(typeFilter, `/category/${encodeURIComponent(category.slug)}`)}
+  ${renderAdList(env, ads)}
 </div>
 ${renderSearchForm()}`
   );
@@ -1627,7 +1709,7 @@ ${nav(currentUser)}
   <div class="ad-page">
     ${media}
     <div>
-      <h2 class="ad-page-title">${htmlEscape(ad.title)}</h2>
+      <h2 class="ad-page-title">${renderTypeBadge(ad.type)}${htmlEscape(ad.title)}</h2>
       ${author}
       <div class="ad-page-badges"><span class="badge">${htmlEscape(categoryLabel(ad.category))}</span></div>
       <div class="ad-page-body">${htmlEscape(ad.body)}</div>
@@ -1648,6 +1730,7 @@ function renderPublicUserPage(env: Env, user: PublicUserRow, ads: AdCardRow[], c
     ? `<div class="ad-grid">${ads
         .map((ad) => {
           const category = ad.category ? `${htmlEscape(categoryLabel(ad.category))} · ` : '';
+          const type = renderTypeBadge(ad.type);
           const actions = isOwner
             ? `<div class="ad-actions">
       <a href="/my/edit/${ad.id}">Редактировать</a>
@@ -1659,7 +1742,7 @@ function renderPublicUserPage(env: Env, user: PublicUserRow, ads: AdCardRow[], c
           return `<div class="ad">
   ${renderAdImage(env, ad.image_key, ad.title, 'ad-image')}
   <div class="ad-content">
-    <div class="title"><a href="/ad/${ad.id}">${htmlEscape(ad.title)}</a></div>
+    <div class="title">${type}<a href="/ad/${ad.id}">${htmlEscape(ad.title)}</a></div>
     <div class="meta">${category}${htmlEscape(ad.created_at)}</div>
     ${actions}
   </div>
@@ -1753,10 +1836,11 @@ function renderMyPage(env: Env, currentUser: CurrentUser, ads: AdRow[], message:
     ? ads
         .map((ad) => {
           const category = ad.category ? `${htmlEscape(categoryLabel(ad.category))} · ` : '';
+          const type = renderTypeBadge(ad.type);
           return `<div class="ad">
   ${renderAdImage(env, ad.image_key, ad.title, 'ad-image')}
   <div class="ad-content">
-    <div class="title"><a href="/ad/${ad.id}">${htmlEscape(ad.title)}</a></div>
+    <div class="title">${type}<a href="/ad/${ad.id}">${htmlEscape(ad.title)}</a></div>
     <div class="meta">${htmlEscape(ad.status)} · ${category}${htmlEscape(ad.created_at)}</div>
     <div class="ad-actions">
       <a href="/my/edit/${ad.id}">Редактировать</a>
@@ -1812,6 +1896,9 @@ ${nav(currentUser)}
     <select id="category" name="category">
       ${options}
     </select>
+
+    <label for="type">Тип объявления</label>
+    ${renderTypeSelect(normalizeAdType(ad.type).toString())}
 
     <label>Текущая картинка</label>
     ${currentImagePreview}
@@ -1937,6 +2024,7 @@ async function listAdminAdsPage(env: Env, page: number): Promise<AdRow[]> {
              ads.body,
              ads.contact,
              ads.category,
+             COALESCE(ads.type, 'sell') AS type,
              ads.owner_user_id,
              ads.status,
              ads.image_key,
@@ -2698,7 +2786,13 @@ function userBotSettingsMarkup(): Record<string, unknown> {
 
 function userBotCategoryMarkup(): Record<string, unknown> {
   return {
-    inline_keyboard: [...buildCategoryRows(`${USER_BOT_DRAFT_PREFIX}category:`), [{ text: 'Отмена', callback_data: USER_BOT_MENU_HOME }]],
+    inline_keyboard: [...buildCategoryRows(`${USER_BOT_DRAFT_PREFIX}category:`), [{ text: 'Отмена', callback_data: USER_BOT_CANCEL_FLOW }]],
+  };
+}
+
+function userBotTypeMarkup(): Record<string, unknown> {
+  return {
+    inline_keyboard: [...buildTypeRows(USER_BOT_DRAFT_TYPE_PREFIX), [{ text: 'Отмена', callback_data: USER_BOT_CANCEL_FLOW }]],
   };
 }
 
@@ -2817,6 +2911,7 @@ function buildUserBotAdListText(
     id: number;
     title: string;
     category: string | null;
+    type: string | null;
     author_login?: string | null;
     status?: string | null;
   }>,
@@ -2833,7 +2928,7 @@ function buildUserBotAdListText(
 
   for (const [index, ad] of ads.entries()) {
     const number = offset + index + 1;
-    const meta = [ad.category ? categoryLabel(ad.category) : null, ad.author_login ? `Автор: ${ad.author_login}` : null, ad.status ? `Статус: ${ad.status}` : null]
+    const meta = [ad.type ? `Тип: ${typeLabel(ad.type)}` : null, ad.category ? categoryLabel(ad.category) : null, ad.author_login ? `Автор: ${ad.author_login}` : null, ad.status ? `Статус: ${ad.status}` : null]
       .filter((value): value is string => value !== null)
       .join(' · ');
     lines.push('', `${number}. ${ad.title}`);
@@ -2915,9 +3010,10 @@ async function sendUserBotSearchResults(env: Env, telegramUserId: string, chatId
 }
 
 function buildUserBotPublicAdText(
-  ad: Pick<PublicAdCardRow, 'title' | 'body' | 'contact' | 'category' | 'author_login' | 'created_at'>
+  ad: Pick<PublicAdCardRow, 'title' | 'body' | 'contact' | 'category' | 'type' | 'author_login' | 'created_at'>
 ): string {
   return [
+    `Тип: ${typeLabel(ad.type)}`,
     `Заголовок: ${ad.title}`,
     `Категория: ${categoryLabel(ad.category)}`,
     ad.author_login ? `Автор: ${ad.author_login}` : null,
@@ -3159,13 +3255,14 @@ async function sendAdminBotUsers(env: Env, chatId: number, page = 1): Promise<vo
 
 async function buildAdminBotAdText(
   env: Env,
-  ad: Pick<AdRow, 'id' | 'title' | 'body' | 'contact' | 'category' | 'status' | 'owner_user_id' | 'deleted_at' | 'image_key'>,
+  ad: Pick<AdRow, 'id' | 'title' | 'body' | 'contact' | 'category' | 'type' | 'status' | 'owner_user_id' | 'deleted_at' | 'image_key'>,
   bodyLimit = 2800
 ): Promise<string> {
   const owner = ad.owner_user_id ? await findUserById(env, ad.owner_user_id) : null;
   return [
     `#${ad.id}`,
     `Заголовок: ${ad.title}`,
+    `Тип: ${typeLabel(ad.type)}`,
     `Категория: ${categoryLabel(ad.category)}`,
     `Статус: ${ad.status}`,
     `Owner: ${owner?.login ? `${owner.login} (#${ad.owner_user_id})` : ad.owner_user_id ?? 'none'}`,
@@ -3335,6 +3432,10 @@ async function deleteAdminUser(env: Env, userId: number): Promise<'deleted' | 's
 
 async function sendUserBotCategoryPrompt(env: Env, telegramUserId: string, chatId: number): Promise<void> {
   await showUserBotScreen(env, telegramUserId, chatId, 'Выбери категорию', userBotCategoryMarkup());
+}
+
+async function sendUserBotTypePrompt(env: Env, telegramUserId: string, chatId: number): Promise<void> {
+  await showUserBotScreen(env, telegramUserId, chatId, 'Выбери тип объявления', userBotTypeMarkup());
 }
 
 async function sendUserBotLoginPrompt(env: Env, telegramUserId: string, chatId: number, message: string | null = null): Promise<void> {
@@ -3570,6 +3671,7 @@ async function sendUserBotConfirmation(env: Env, chatId: number, draft: BotDraft
   const text = [
     'Проверь объявление:',
     `Категория: ${categoryLabel(draft.category)}`,
+    `Тип: ${typeLabel(draft.ad_type)}`,
     `Заголовок: ${draft.title || ''}`,
     'Текст:',
     draft.body || '',
@@ -3582,6 +3684,7 @@ async function sendUserBotEditConfirmation(env: Env, chatId: number, draft: BotD
   const text = [
     'Проверь изменения:',
     `Категория: ${categoryLabel(draft.category)}`,
+    `Тип: ${typeLabel(draft.ad_type)}`,
     `Заголовок: ${draft.title || ''}`,
     'Текст:',
     draft.body || '',
@@ -3599,7 +3702,7 @@ async function sendUserBotMyAds(env: Env, telegramUserId: string, chatId: number
 
   const result = await env.DB.prepare(
     `
-      SELECT id, title, category, status, image_key, image_mime_type, image_updated_at, created_at
+      SELECT id, title, category, type, status, image_key, image_mime_type, image_updated_at, created_at
       FROM ads
       WHERE owner_user_id = ?
         AND deleted_at IS NULL
@@ -3607,7 +3710,7 @@ async function sendUserBotMyAds(env: Env, telegramUserId: string, chatId: number
     `
   )
   .bind(identity.user_id)
-  .all<{ id: number; title: string; category: string | null; status: string; created_at: string }>();
+  .all<{ id: number; title: string; category: string | null; type: string | null; status: string; created_at: string }>();
 
   if (!result.results.length) {
     await showUserBotScreen(
@@ -3625,7 +3728,8 @@ async function sendUserBotMyAds(env: Env, telegramUserId: string, chatId: number
     result.results.map((ad) => ({
       id: ad.id,
       title: ad.title,
-      category: ad.category || 'misc',
+      category: ad.category,
+      type: ad.type,
       status: ad.status,
     })),
     0,
@@ -3643,7 +3747,7 @@ async function getOwnedAdForTelegramUser(env: Env, telegramUserId: string, adId:
 
   const result = await env.DB.prepare(
     `
-      SELECT id, title, category, status, image_key, image_mime_type, image_updated_at, created_at, body
+      SELECT id, title, category, type, status, image_key, image_mime_type, image_updated_at, created_at, body
       FROM ads
       WHERE id = ?
         AND owner_user_id = ?
@@ -3691,16 +3795,17 @@ async function startUserBotEditFlow(
     return false;
   }
 
-  await upsertBotDraft(env, telegramUserId, 'edit', 'title', ad.category, ad.title, ad.body, ad.id);
+  await upsertBotDraft(env, telegramUserId, 'edit', 'title', ad.category, ad.title, ad.body, ad.id, null, null, null, null, ad.type);
   await sendUserBotEditTitlePrompt(env, telegramUserId, chatId);
   return true;
 }
 
 function buildUserBotOwnedAdText(
-  ad: Pick<AdRow, 'id' | 'title' | 'body' | 'category' | 'status' | 'created_at'>
+  ad: Pick<AdRow, 'id' | 'title' | 'body' | 'category' | 'type' | 'status' | 'created_at'>
 ): string {
   return [
     `#${ad.id}`,
+    `Тип: ${typeLabel(ad.type)}`,
     `Заголовок: ${ad.title}`,
     `Категория: ${categoryLabel(ad.category)}`,
     `Статус: ${ad.status}`,
@@ -3716,7 +3821,7 @@ async function sendUserBotSingleAd(env: Env, telegramUserId: string, chatId: num
 }
 
 function buildTelegramAdText(
-  ad: Pick<AdRow, 'id' | 'title' | 'body' | 'category'>,
+  ad: Pick<AdRow, 'id' | 'title' | 'body' | 'category' | 'type'>,
   statusLabel: string,
   itemKind: 'New' | 'Edited',
   bodyLimit = 2800
@@ -3726,6 +3831,7 @@ function buildTelegramAdText(
     statusLabel,
     `ID: ${ad.id}`,
     `Title: ${ad.title}`,
+    `Ad type: ${typeLabel(ad.type)}`,
     `Category: ${categoryLabel(ad.category)}`,
     'Text:',
     truncateText(ad.body, bodyLimit),
@@ -3734,7 +3840,7 @@ function buildTelegramAdText(
 
 async function sendTelegramMessage(
   env: Env,
-  ad: Pick<AdRow, 'id' | 'title' | 'body' | 'category' | 'image_key'>,
+  ad: Pick<AdRow, 'id' | 'title' | 'body' | 'category' | 'type' | 'image_key'>,
   itemKind: 'New' | 'Edited' = 'New'
 ): Promise<void> {
   const replyMarkup = {
@@ -3775,7 +3881,7 @@ async function editTelegramMessage(
   env: Env,
   chatId: number,
   messageId: number,
-  ad: Pick<AdRow, 'id' | 'title' | 'body' | 'category' | 'image_key'>,
+  ad: Pick<AdRow, 'id' | 'title' | 'body' | 'category' | 'type' | 'image_key'>,
   statusLabel: string,
   itemKind: 'New' | 'Edited' = 'New'
 ): Promise<void> {
@@ -3905,7 +4011,7 @@ async function handleAdminBotText(
     }
 
     await upsertBotDraft(env, String(chatId), draft.action, 'category', draft.category, draft.title, body, draft.ad_id);
-    await sendAdminBotMessage(env, chatId, 'Введи новую категорию: things, jobs, services, rent, creative, misc');
+    await sendAdminBotMessage(env, chatId, `Введи новую категорию: ${CATEGORIES.map((category) => category.slug).join(', ')}`);
     return;
   }
 
@@ -3943,6 +4049,7 @@ async function handleAdminBotText(
         title: draft.title || '',
         body: draft.body || '',
         category,
+        type: originalAd?.type ?? 'sell',
         image_key: originalAd?.image_key ?? null,
       }, 'Edited').catch((error: unknown) => {
         console.error('Telegram notification failed after admin edit', error);
@@ -4180,6 +4287,7 @@ async function getPublishedAdCardById(env: Env, id: number, category: string | n
              ads.body,
              ads.contact,
              ads.category,
+             COALESCE(ads.type, 'sell') AS type,
              ads.owner_user_id,
              ads.image_key,
              ads.image_mime_type,
@@ -4236,6 +4344,7 @@ async function listPublishedAdsByUser(env: Env, userId: number): Promise<AdCardR
       SELECT ads.id,
              ads.title,
              ads.category,
+             COALESCE(ads.type, 'sell') AS type,
              ads.image_key,
              ads.created_at,
              users.login AS author_login,
@@ -4287,6 +4396,7 @@ async function listPublishedAdsByCategory(env: Env, category: string): Promise<A
       SELECT ads.id,
              ads.title,
              ads.category,
+             COALESCE(ads.type, 'sell') AS type,
              ads.image_key,
              ads.created_at,
              users.login AS author_login,
@@ -4305,12 +4415,58 @@ async function listPublishedAdsByCategory(env: Env, category: string): Promise<A
   return result.results;
 }
 
+async function listPublishedAdsByCategoryAndType(env: Env, category: string, type: string | null): Promise<AdCardRow[]> {
+  const normalizedType = type ? normalizeAdType(type) : null;
+  const query = normalizedType
+    ? `
+      SELECT ads.id,
+             ads.title,
+             ads.category,
+             COALESCE(ads.type, 'sell') AS type,
+             ads.image_key,
+             ads.created_at,
+             users.login AS author_login,
+             users.avatar_key AS author_avatar_key
+      FROM ads
+      LEFT JOIN users ON users.id = ads.owner_user_id
+      WHERE ads.status = 'published'
+        AND ads.deleted_at IS NULL
+        AND ads.category = ?
+        AND COALESCE(ads.type, 'sell') = ?
+      ORDER BY ads.created_at DESC, ads.id DESC
+    `
+    : `
+      SELECT ads.id,
+             ads.title,
+             ads.category,
+             COALESCE(ads.type, 'sell') AS type,
+             ads.image_key,
+             ads.created_at,
+             users.login AS author_login,
+             users.avatar_key AS author_avatar_key
+      FROM ads
+      LEFT JOIN users ON users.id = ads.owner_user_id
+      WHERE ads.status = 'published'
+        AND ads.deleted_at IS NULL
+        AND ads.category = ?
+      ORDER BY ads.created_at DESC, ads.id DESC
+    `;
+
+  const statement = await env.DB.prepare(query);
+  const result = normalizedType
+    ? await statement.bind(category, normalizedType).all<AdCardRow>()
+    : await statement.bind(category).all<AdCardRow>();
+
+  return result.results;
+}
+
 async function listPublishedAdsByCategoryPage(env: Env, category: string, limit: number, offset: number): Promise<AdCardRow[]> {
   const result = await env.DB.prepare(
     `
       SELECT ads.id,
              ads.title,
              ads.category,
+             COALESCE(ads.type, 'sell') AS type,
              ads.image_key,
              ads.created_at,
              users.login AS author_login,
@@ -4342,6 +4498,7 @@ async function searchPublishedAds(env: Env, query: string): Promise<AdCardRow[]>
       SELECT ads.id,
              ads.title,
              ads.category,
+             COALESCE(ads.type, 'sell') AS type,
              ads.image_key,
              ads.created_at,
              users.login AS author_login,
@@ -4373,6 +4530,7 @@ async function searchPublishedAdsPage(env: Env, query: string, limit: number, of
       SELECT ads.id,
              ads.title,
              ads.category,
+             COALESCE(ads.type, 'sell') AS type,
              ads.image_key,
              ads.created_at,
              users.login AS author_login,
@@ -4481,6 +4639,46 @@ async function ensureAdContactColumn(env: Env): Promise<void> {
   return cachedEnsureAdContactColumnPromise;
 }
 
+async function ensureAdTypeColumn(env: Env): Promise<void> {
+  if (cachedEnsureAdTypeColumnPromise) {
+    return cachedEnsureAdTypeColumnPromise;
+  }
+
+  cachedEnsureAdTypeColumnPromise = (async () => {
+    const tableInfo = await env.DB.prepare(`PRAGMA table_info(ads)`).all<{ name: string }>();
+    const columnNames = new Set((tableInfo.results || []).map((row) => row.name));
+    const hasTypeColumn = columnNames.has('type');
+
+    if (!hasTypeColumn) {
+      await env.DB.prepare(`ALTER TABLE ads ADD COLUMN type TEXT`).run();
+    }
+
+    await env.DB.prepare(
+      `
+        UPDATE ads
+        SET
+          category = CASE
+            WHEN category = 'sale' OR category = 'wanted' OR category = 'free' THEN 'misc'
+            ELSE category
+          END,
+          type = CASE
+            WHEN category = 'sale' THEN 'sell'
+            WHEN category = 'wanted' THEN 'buy'
+            WHEN category = 'free' THEN 'free'
+            WHEN type IS NULL THEN 'sell'
+            ELSE type
+          END
+        WHERE type IS NULL
+           OR category IN ('sale', 'wanted', 'free')
+      `
+    ).run();
+  })().finally(() => {
+    cachedEnsureAdTypeColumnPromise = null;
+  });
+
+  return cachedEnsureAdTypeColumnPromise;
+}
+
 async function ensureBotDraftColumns(env: Env): Promise<void> {
   if (cachedEnsureBotDraftColumnsPromise) {
     return cachedEnsureBotDraftColumnsPromise;
@@ -4511,10 +4709,12 @@ async function createAd(
   body: string,
   contact: string | null | undefined,
   categoryInput: string | null | undefined,
+  typeInput: string | null | undefined,
   ownerUserId: number | null = null,
   image: File | null = null
 ): Promise<{ id: number; category: CategorySlug }> {
   const category = normalizeCategory(categoryInput);
+  const type = normalizeAdType(typeInput);
   let imageUpload: CompressedAdImageUpload | null = null;
 
   if (image) {
@@ -4533,6 +4733,7 @@ async function createAd(
           body,
           contact,
           category,
+          type,
           status,
           owner_user_id,
           image_key,
@@ -4542,10 +4743,10 @@ async function createAd(
           created_at,
           updated_at
         )
-        VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, CASE WHEN ? IS NOT NULL THEN CURRENT_TIMESTAMP ELSE NULL END, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, CASE WHEN ? IS NOT NULL THEN CURRENT_TIMESTAMP ELSE NULL END, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
       `
     )
-      .bind(title, body, contact || null, category, ownerUserId, imageUpload?.key || null, imageUpload?.mimeType || null, imageUpload?.key || null)
+      .bind(title, body, contact || null, category, type, ownerUserId, imageUpload?.key || null, imageUpload?.mimeType || null, imageUpload?.key || null)
       .run();
   } catch (error) {
     if (imageUpload) {
@@ -4559,6 +4760,7 @@ async function createAd(
       id: Number(result.meta.last_row_id),
       title,
       body,
+      type,
       category,
       image_key: imageUpload?.key ?? null,
     }, 'New').catch((error: unknown) => {
@@ -4597,6 +4799,7 @@ async function parseAdForm(request: Request): Promise<AdForm> {
     body: String(form.get('body') || '').trim(),
     contact: String(form.get('contact') || '').trim(),
     category: String(form.get('category') || '').trim(),
+    type: String(form.get('type') || '').trim(),
     image: isFileLike(imageValue) && imageValue.size > 0 ? imageValue : null,
   };
 }
@@ -4659,7 +4862,7 @@ async function handleMyEditPost(
     return text('Not Found', 404);
   }
 
-  const { title, body, contact, category, image } = await parseAdForm(request);
+  const { title, body, contact, category, type, image } = await parseAdForm(request);
 
   if (!title || !body) {
     return renderEditPage(env, currentUser, ad, 'Заполни заголовок и текст');
@@ -4667,6 +4870,7 @@ async function handleMyEditPost(
 
   const nextStatus = ad.status === 'published' || ad.status === 'rejected' ? 'pending' : ad.status;
   const normalizedCategory = normalizeCategory(category);
+  const normalizedType = normalizeAdType(type);
   let newImage: CompressedAdImageUpload | null = null;
   try {
     if (image) {
@@ -4684,6 +4888,7 @@ async function handleMyEditPost(
             body = ?,
             contact = ?,
             category = ?,
+            type = ?,
             status = ?,
             image_key = ?,
             image_mime_type = ?,
@@ -4702,6 +4907,7 @@ async function handleMyEditPost(
         body,
         contact || null,
         normalizedCategory,
+        normalizedType,
         nextStatus,
         newImage?.key ?? ad.image_key,
         newImage?.mimeType ?? ad.image_mime_type,
@@ -4728,6 +4934,7 @@ async function handleMyEditPost(
       title,
       body,
       category: normalizedCategory,
+      type: normalizedType,
       image_key: newImage?.key ?? ad.image_key,
     }, 'Edited').catch((error: unknown) => {
       console.error('Telegram notification failed after edit', error);
@@ -5113,7 +5320,7 @@ async function findTelegramIdentityByUserId(env: Env, userId: number): Promise<U
 async function getBotDraft(env: Env, telegramUserId: string): Promise<BotDraftRow | null> {
   const result = await env.DB.prepare(
     `
-      SELECT id, telegram_user_id, action, step, ui_chat_id, ui_message_id, ad_id, login, email, category, title, body, created_at, updated_at
+      SELECT id, telegram_user_id, action, step, ui_chat_id, ui_message_id, ad_id, login, email, category, ad_type, title, body, created_at, updated_at
       FROM bot_drafts
       WHERE telegram_user_id = ?
       LIMIT 1
@@ -5137,7 +5344,8 @@ async function upsertBotDraft(
   login: string | null = null,
   email: string | null = null,
   uiChatId: number | null = null,
-  uiMessageId: number | null = null
+  uiMessageId: number | null = null,
+  adType: string | null = null
 ): Promise<void> {
   await env.DB.prepare(
     `
@@ -5151,12 +5359,13 @@ async function upsertBotDraft(
         login,
         email,
         category,
+        ad_type,
         title,
         body,
         created_at,
         updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
       ON CONFLICT(telegram_user_id) DO UPDATE SET
         action = excluded.action,
         step = excluded.step,
@@ -5172,12 +5381,13 @@ async function upsertBotDraft(
         login = excluded.login,
         email = excluded.email,
         category = excluded.category,
+        ad_type = excluded.ad_type,
         title = excluded.title,
         body = excluded.body,
         updated_at = CURRENT_TIMESTAMP
     `
   )
-    .bind(telegramUserId, action, step, uiChatId, uiMessageId, adId, login, email, category, title, body)
+    .bind(telegramUserId, action, step, uiChatId, uiMessageId, adId, login, email, category, adType, title, body)
     .run();
 }
 
@@ -5191,6 +5401,7 @@ async function clearBotDraft(env: Env, telegramUserId: string): Promise<void> {
           login = NULL,
           email = NULL,
           category = NULL,
+          ad_type = NULL,
           title = NULL,
           body = NULL,
           updated_at = CURRENT_TIMESTAMP
@@ -5284,14 +5495,21 @@ async function handleUserBotDraftAction(
 
   if (draft.action === 'create' && action === 'category') {
     const category = normalizeCategory(value);
-    await upsertBotDraft(env, telegramUserId, 'create', 'title', category, null, null, draft.ad_id);
+    await upsertBotDraft(env, telegramUserId, 'create', 'type', category, null, null, draft.ad_id);
+    await sendUserBotTypePrompt(env, telegramUserId, chatId);
+    return;
+  }
+
+  if (draft.action === 'create' && action === 'type') {
+    const adType = normalizeAdType(value);
+    await upsertBotDraft(env, telegramUserId, 'create', 'title', draft.category, null, null, draft.ad_id, null, null, null, null, adType);
     await sendUserBotTitlePrompt(env, telegramUserId, chatId);
     return;
   }
 
   if (draft.action === 'edit' && action === 'category') {
     const category = normalizeCategory(value);
-    await upsertBotDraft(env, telegramUserId, 'edit', 'body', category, draft.title, draft.body, draft.ad_id);
+    await upsertBotDraft(env, telegramUserId, 'edit', 'body', category, draft.title, draft.body, draft.ad_id, null, null, null, null, draft.ad_type);
     await sendUserBotEditBodyPrompt(env, telegramUserId, chatId);
     return;
   }
@@ -5323,7 +5541,7 @@ async function handleUserBotDraftAction(
       }
 
       try {
-        await createAd(env, ctx, draft.title, draft.body, null, draft.category, identity.user_id);
+        await createAd(env, ctx, draft.title, draft.body, null, draft.category, draft.ad_type, identity.user_id);
         await clearBotDraft(env, telegramUserId);
         await sendUserBotMenu(env, telegramUserId, chatId, 'Объявление отправлено на модерацию');
       } catch (error) {
@@ -5353,6 +5571,7 @@ async function handleUserBotDraftAction(
       }
 
       const category = normalizeCategory(draft.category);
+      const adType = normalizeAdType(draft.ad_type);
       const ad = await getOwnedAdForTelegramUser(env, telegramUserId, draft.ad_id);
       if (!ad) {
         await clearBotDraft(env, telegramUserId);
@@ -5367,6 +5586,7 @@ async function handleUserBotDraftAction(
             SET title = ?,
                 body = ?,
                 category = ?,
+                type = ?,
                 status = 'pending',
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
@@ -5374,7 +5594,7 @@ async function handleUserBotDraftAction(
               AND deleted_at IS NULL
           `
         )
-          .bind(draft.title, draft.body, category, ad.id, identity.user_id)
+          .bind(draft.title, draft.body, category, adType, ad.id, identity.user_id)
           .run();
 
         ctx.waitUntil(
@@ -5383,6 +5603,7 @@ async function handleUserBotDraftAction(
             title: draft.title,
             body: draft.body,
             category,
+            type: adType,
             image_key: ad.image_key,
           }, 'Edited').catch((error: unknown) => {
             console.error('Telegram notification failed', error);
@@ -5505,13 +5726,13 @@ async function handleUserBotText(
 
   if (draft.step === 'title') {
     if (draft.action === 'create') {
-      await upsertBotDraft(env, telegramUserId, 'create', 'body', draft.category, text, null, draft.ad_id);
+      await upsertBotDraft(env, telegramUserId, 'create', 'body', draft.category, text, null, draft.ad_id, null, null, null, null, draft.ad_type);
       await sendUserBotBodyPrompt(env, telegramUserId, chatId);
       return;
     }
 
     if (draft.action === 'edit') {
-      await upsertBotDraft(env, telegramUserId, 'edit', 'category', draft.category, text, draft.body, draft.ad_id);
+      await upsertBotDraft(env, telegramUserId, 'edit', 'category', draft.category, text, draft.body, draft.ad_id, null, null, null, null, draft.ad_type);
       await sendUserBotEditCategoryPrompt(env, telegramUserId, chatId);
       return;
     }
@@ -5524,6 +5745,11 @@ async function handleUserBotText(
     return;
   }
 
+  if (draft.action === 'create' && draft.step === 'type') {
+    await sendUserBotTypePrompt(env, telegramUserId, chatId);
+    return;
+  }
+
   if (draft.step === 'body') {
     if (draft.action === 'create') {
       if (!draft.title) {
@@ -5532,7 +5758,7 @@ async function handleUserBotText(
         return;
       }
 
-      await upsertBotDraft(env, telegramUserId, 'create', 'confirm', draft.category, draft.title, text, draft.ad_id);
+      await upsertBotDraft(env, telegramUserId, 'create', 'confirm', draft.category, draft.title, text, draft.ad_id, null, null, null, null, draft.ad_type);
       const nextDraft = await getBotDraft(env, telegramUserId);
       if (nextDraft) {
         await sendUserBotConfirmation(env, chatId, nextDraft);
@@ -5547,7 +5773,7 @@ async function handleUserBotText(
         return;
       }
 
-      await upsertBotDraft(env, telegramUserId, 'edit', 'confirm', draft.category, draft.title, text, draft.ad_id);
+      await upsertBotDraft(env, telegramUserId, 'edit', 'confirm', draft.category, draft.title, text, draft.ad_id, null, null, null, null, draft.ad_type);
       const nextDraft = await getBotDraft(env, telegramUserId);
       if (nextDraft) {
         await sendUserBotEditConfirmation(env, chatId, nextDraft);
@@ -5825,6 +6051,13 @@ async function handleUserBotCallback(
     const category = data.slice(`${USER_BOT_DRAFT_PREFIX}category:`.length);
     await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
     await handleUserBotDraftAction(env, telegramUserId, chatId, 'category', category, ctx);
+    return json({ ok: true });
+  }
+
+  if (data.startsWith(USER_BOT_DRAFT_TYPE_PREFIX)) {
+    const adType = data.slice(USER_BOT_DRAFT_TYPE_PREFIX.length);
+    await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
+    await handleUserBotDraftAction(env, telegramUserId, chatId, 'type', adType, ctx);
     return json({ ok: true });
   }
 
@@ -6363,7 +6596,7 @@ async function handleAdminEditRoute(request: Request, env: Env, ctx: ExecutionCo
     return text('Method Not Allowed', 405);
   }
 
-  const { title, body, contact, category, image } = await parseAdForm(request);
+  const { title, body, contact, category, type, image } = await parseAdForm(request);
 
   if (!title || !body) {
     return renderEditPage(env, currentUser, ad, 'Заполни заголовок и текст', buildAdminActionUrl(`/admin/edit/${ad.id}`, 'ads', page));
@@ -6372,6 +6605,7 @@ async function handleAdminEditRoute(request: Request, env: Env, ctx: ExecutionCo
   let newImage: CompressedAdImageUpload | null = null;
   try {
     const normalizedCategory = normalizeCategory(category);
+    const normalizedType = normalizeAdType(type);
     if (image) {
       newImage = await readImageUpload(image);
       if (newImage) {
@@ -6387,6 +6621,7 @@ async function handleAdminEditRoute(request: Request, env: Env, ctx: ExecutionCo
             body = ?,
             contact = ?,
             category = ?,
+            type = ?,
             image_key = ?,
             image_mime_type = ?,
             image_updated_at = CASE
@@ -6403,6 +6638,7 @@ async function handleAdminEditRoute(request: Request, env: Env, ctx: ExecutionCo
         body,
         contact || null,
         normalizedCategory,
+        normalizedType,
         newImage?.key ?? ad.image_key,
         newImage?.mimeType ?? ad.image_mime_type,
         newImage?.key ?? null,
@@ -6881,7 +7117,7 @@ async function handleApiAdsGet(env: Env): Promise<Response> {
 }
 
 async function handleApiAdsPost(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-  let payload: { title?: string; body?: string; category?: string };
+  let payload: { title?: string; body?: string; category?: string; type?: string };
 
   try {
     payload = await request.json();
@@ -6892,12 +7128,13 @@ async function handleApiAdsPost(request: Request, env: Env, ctx: ExecutionContex
   const title = String(payload.title || '').trim();
   const body = String(payload.body || '').trim();
   const category = String(payload.category || '').trim();
+  const type = String(payload.type || '').trim();
 
   if (!title || !body) {
     return json({ error: 'title and body are required' }, { status: 400 });
   }
 
-  const ad = await createAd(env, ctx, title, body, null, category, null);
+  const ad = await createAd(env, ctx, title, body, null, category, type, null);
   return json(
     {
       ok: true,
@@ -6924,14 +7161,14 @@ async function handleNewPost(request: Request, env: Env, ctx: ExecutionContext):
     return redirect('/login?next=/new');
   }
 
-  const { title, body, contact, category, image } = await parseAdForm(request);
+  const { title, body, contact, category, type, image } = await parseAdForm(request);
 
   if (!title || !body) {
     return renderNewPage(currentUser, 'Заполни заголовок и текст');
   }
 
   try {
-    await createAd(env, ctx, title, body, contact, category, currentUser.id, image);
+    await createAd(env, ctx, title, body, contact, category, type, currentUser.id, image);
   } catch (error) {
     console.error('Failed to create ad with image', error);
     return renderNewPage(currentUser, 'Не удалось загрузить картинку');
@@ -6939,13 +7176,18 @@ async function handleNewPost(request: Request, env: Env, ctx: ExecutionContext):
   return redirect('/my?message=Объявление создано');
 }
 
-async function handleCategoryGet(env: Env, slug: string, currentUser: CurrentUser | null = null): Promise<Response> {
+async function handleCategoryGet(request: Request, env: Env, slug: string, currentUser: CurrentUser | null = null): Promise<Response> {
   const category = CATEGORIES.find((item) => item.slug === slug);
   if (!category) {
     return renderNotFoundPage(currentUser);
   }
 
-  return renderCategoryPage(env, slug, await listPublishedAdsByCategory(env, slug), currentUser);
+  const typeFilter = new URL(request.url).searchParams.get('type');
+  const normalizedTypeFilter = typeFilter ? normalizeAdType(typeFilter) : null;
+  const ads = normalizedTypeFilter
+    ? await listPublishedAdsByCategoryAndType(env, slug, normalizedTypeFilter)
+    : await listPublishedAdsByCategory(env, slug);
+  return renderCategoryPage(env, slug, ads, currentUser, normalizedTypeFilter);
 }
 
 async function handleAdGet(
@@ -7073,6 +7315,7 @@ export default {
     await ensureAdImageColumns(env);
     await ensureUserAvatarColumns(env);
     await ensureAdContactColumn(env);
+    await ensureAdTypeColumn(env);
     await ensureBotDraftColumns(env);
     const url = new URL(request.url);
     const path = url.pathname;
@@ -7192,7 +7435,7 @@ export default {
     }
 
     if (path.startsWith('/category/') && request.method === 'GET') {
-      return handleCategoryGet(env, path.slice('/category/'.length), await getCurrentUser(request, env));
+      return handleCategoryGet(request, env, path.slice('/category/'.length), await getCurrentUser(request, env));
     }
 
     if (path.startsWith('/ad/') && path.endsWith('/message')) {
