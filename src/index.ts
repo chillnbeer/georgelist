@@ -6690,13 +6690,6 @@ async function handleUserBotText(
       );
       await sendUserBotChatView(env, telegramUserId, chatId, conversation.id, 'Сообщение отправлено', true);
 
-      if (messageId !== null) {
-        ctx.waitUntil(
-          deleteTelegramMessage(env, chatId, messageId).catch((error: unknown) => {
-            console.error('Failed to delete sent chat message from Telegram', error);
-          })
-        );
-      }
     } catch (error) {
       console.error('Failed to send reply message to user', error);
       await sendUserBotMenu(env, telegramUserId, chatId, 'Не удалось отправить сообщение');
@@ -7467,11 +7460,11 @@ async function handleUserWebhook(request: Request, env: Env, ctx: ExecutionConte
   await handleUserBotText(env, telegramUserId, chatId, telegramUsername, message.text, ctx, message.message_id);
 
   if (message.message_id) {
-    ctx.waitUntil(
-      deleteTelegramMessage(env, chatId, message.message_id).catch((error: unknown) => {
-        console.error('Failed to delete user message from Telegram', error);
-      })
-    );
+    try {
+      await deleteTelegramMessage(env, chatId, message.message_id);
+    } catch (error) {
+      console.error('Failed to delete user message from Telegram', error);
+    }
   }
 
   return json({ ok: true });
