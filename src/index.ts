@@ -9831,6 +9831,51 @@ async function handleMediaGet(env: Env, key: string): Promise<Response> {
   return new Response(object.body, { status: 200, headers });
 }
 
+async function handlePublicGetRoute(
+  request: Request,
+  env: Env,
+  path: string,
+  url: URL,
+  getCurrentUserCached: () => Promise<CurrentUser | null>
+): Promise<Response | null> {
+  if (path === '/') {
+    const currentUser = await getCurrentUserCached();
+    const currentUrl = new URL(request.url);
+    return renderHome(currentUser, getCurrentCityFromRequest(request, currentUser), `${currentUrl.pathname}${currentUrl.search}`);
+  }
+
+  if (path === '/about') {
+    return handleAboutGet(request, env);
+  }
+
+  if (path.startsWith('/category/') && request.method === 'GET') {
+    return handleCategoryGet(request, env, path.slice('/category/'.length), await getCurrentUserCached());
+  }
+
+  if (path.startsWith('/u/') && request.method === 'GET') {
+    return handlePublicUserGet(request, env, path.slice('/u/'.length), await getCurrentUserCached());
+  }
+
+  if (path.startsWith('/media/') && request.method === 'GET') {
+    return handleMediaGet(env, path.slice('/media/'.length));
+  }
+
+  if (path === '/search' && request.method === 'GET') {
+    const query = url.searchParams.get('q') || '';
+    const currentUser = await getCurrentUserCached();
+    return renderSearchPage(
+      env,
+      query,
+      await searchPublishedAds(env, query, getCurrentCityFromRequest(request, currentUser)),
+      currentUser,
+      getCurrentCityFromRequest(request, currentUser),
+      `${url.pathname}${url.search}`
+    );
+  }
+
+  return null;
+}
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     await ensureAdImageColumns(env);
