@@ -5,8 +5,10 @@ import {
   CITY_COOKIE_NAME,
   CITY_DEFAULT_SLUG,
   CITY_LABELS,
+  CITY_MAP_CENTERS,
   buildCityCookie,
   buildCityLocation,
+  cityMapCenter,
   cityLabel,
   normalizeCity,
   type CitySlug,
@@ -96,6 +98,10 @@ type AdRow = {
   city: string | null;
   category: string | null;
   type: string | null;
+  location_lat: number | null;
+  location_lng: number | null;
+  location_radius_meters: number | null;
+  location_label: string | null;
   owner_user_id: number | null;
   owner_login: string | null;
   owner_avatar_key: string | null;
@@ -116,6 +122,10 @@ type PublicAdCardRow = {
   city: string | null;
   category: string | null;
   type: string | null;
+  location_lat: number | null;
+  location_lng: number | null;
+  location_radius_meters: number | null;
+  location_label: string | null;
   owner_user_id: number | null;
   image_key: string | null;
   image_mime_type: string | null;
@@ -131,6 +141,10 @@ type AdCardRow = {
   city: string | null;
   category: string | null;
   type: string | null;
+  location_lat: number | null;
+  location_lng: number | null;
+  location_radius_meters: number | null;
+  location_label: string | null;
   image_key: string | null;
   created_at: string;
   author_login: string | null;
@@ -155,7 +169,18 @@ type AdForm = {
   city: string;
   category: string;
   type: string;
+  location_lat: number | null;
+  location_lng: number | null;
+  location_radius_meters: number | null;
+  location_label: string;
   image: File | null;
+};
+
+type AdLocationInput = {
+  location_lat: number | null;
+  location_lng: number | null;
+  location_radius_meters: number | null;
+  location_label: string;
 };
 
 type AdImageUpload = {
@@ -303,6 +328,10 @@ const AD_SELECT_COLUMNS = `
   city,
   category,
   type,
+  location_lat,
+  location_lng,
+  location_radius_meters,
+  location_label,
   owner_user_id,
   status,
   image_key,
@@ -315,12 +344,16 @@ const AD_SELECT_COLUMNS = `
 const USER_AVATAR_MAX_BYTES = 5 * 1024 * 1024;
 const AD_IMAGE_MAX_DIMENSION = 1600;
 const AD_IMAGE_JPEG_QUALITY = 82;
+const AD_LOCATION_RADIUS_OPTIONS = [500, 1000, 3000, 5000] as const;
+const AD_LOCATION_DEFAULT_RADIUS = 1000;
+const AD_LOCATION_LABEL_MAX_LENGTH = 120;
 let cachedTelegramUserBotUsername: string | null = null;
 let cachedTelegramUserBotUsernamePromise: Promise<string | null> | null = null;
 let cachedEnsureAdImageColumnsPromise: Promise<void> | null = null;
 let cachedEnsureUserAvatarColumnsPromise: Promise<void> | null = null;
 let cachedEnsureAdContactColumnPromise: Promise<void> | null = null;
 let cachedEnsureAdCityColumnPromise: Promise<void> | null = null;
+let cachedEnsureAdLocationColumnsPromise: Promise<void> | null = null;
 let cachedEnsureUserCityColumnPromise: Promise<void> | null = null;
 let cachedEnsureAdTypeColumnPromise: Promise<void> | null = null;
 let cachedEnsureBotDraftColumnsPromise: Promise<void> | null = null;
@@ -1160,6 +1193,344 @@ function renderCityPicker(currentCity: string | null = null, nextPath = '/'): st
 </details>`;
 }
 
+function normalizeLocationRadius(radius: number | null | undefined): number | null {
+  if (radius === null || radius === undefined || !Number.isFinite(radius)) {
+    return null;
+  }
+
+  const normalized = Math.trunc(radius);
+  return AD_LOCATION_RADIUS_OPTIONS.includes(normalized as (typeof AD_LOCATION_RADIUS_OPTIONS)[number])
+    ? normalized
+    : AD_LOCATION_DEFAULT_RADIUS;
+}
+
+function parseOptionalNumberField(value: string | File | null): number | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parseOptionalTextField(value: string | File | null): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function hasAdLocation(
+  ad: Pick<AdRow, 'location_lat' | 'location_lng' | 'location_radius_meters'>
+): boolean {
+  return typeof ad.location_lat === 'number' && Number.isFinite(ad.location_lat)
+    && typeof ad.location_lng === 'number' && Number.isFinite(ad.location_lng)
+    && typeof ad.location_radius_meters === 'number' && Number.isFinite(ad.location_radius_meters);
+}
+
+function formatLocationRadius(radius: number | null | undefined): string {
+  const normalized = normalizeLocationRadius(radius);
+  if (normalized === 500) return '500 м';
+  if (normalized === 1000) return '1 км';
+  if (normalized === 3000) return '3 км';
+  if (normalized === 5000) return '5 км';
+  return 'зона встречи';
+}
+
+function buildAdLocationSummary(
+  ad: Pick<AdRow, 'location_lat' | 'location_lng' | 'location_radius_meters' | 'location_label'>
+): string | null {
+  if (!hasAdLocation(ad)) {
+    return null;
+  }
+
+  const parts = [ad.location_label?.trim() || '', formatLocationRadius(ad.location_radius_meters)].filter(Boolean);
+  return parts.length ? parts.join(' · ') : 'Есть зона встречи';
+}
+
+function renderLocationBadge(
+  ad: Pick<AdRow | AdCardRow | PublicAdCardRow, 'location_lat' | 'location_lng' | 'location_radius_meters' | 'location_label'>
+): string {
+  if (!hasAdLocation(ad)) {
+    return '';
+  }
+
+  const summary = buildAdLocationSummary(ad as Pick<AdRow, 'location_lat' | 'location_lng' | 'location_radius_meters' | 'location_label'>);
+  return `<span class="badge badge-location">${htmlEscape(summary ? `Зона встречи · ${summary}` : 'Есть зона встречи')}</span>`;
+}
+
+function renderLocationRadiusOptions(selectedRadius: number | null | undefined): string {
+  const normalized = normalizeLocationRadius(selectedRadius) ?? AD_LOCATION_DEFAULT_RADIUS;
+  return AD_LOCATION_RADIUS_OPTIONS.map((radius) => {
+    const selected = radius === normalized ? ' selected' : '';
+    return `<option value="${radius}"${selected}>${htmlEscape(formatLocationRadius(radius))}</option>`;
+  }).join('');
+}
+
+function renderLocationEditor(location: {
+  location_lat: number | null;
+  location_lng: number | null;
+  location_radius_meters: number | null;
+  location_label: string | null;
+}, currentCity: string | null, prefix: string): string {
+  const center = cityMapCenter(currentCity);
+  const hasLocation = typeof location.location_lat === 'number'
+    && Number.isFinite(location.location_lat)
+    && typeof location.location_lng === 'number'
+    && Number.isFinite(location.location_lng);
+  const latValue = hasLocation ? String(location.location_lat) : '';
+  const lngValue = hasLocation ? String(location.location_lng) : '';
+  const statusText = hasLocation
+    ? `Выбрана зона: ${location.location_label?.trim() || 'без подписи'} · ${formatLocationRadius(location.location_radius_meters)}`
+    : 'Кликни по карте, чтобы выбрать примерную зону встречи';
+  const summary = buildAdLocationSummary(location as Pick<AdRow, 'location_lat' | 'location_lng' | 'location_radius_meters' | 'location_label'>);
+
+  return `<div class="location-picker" data-location-picker data-default-lat="${center.lat}" data-default-lng="${center.lng}">
+  <div class="location-picker-header">
+    <div>
+      <strong>Зона встречи</strong>
+      <div class="location-picker-help">Поставь примерный центр и радиус, без точного адреса.</div>
+    </div>
+    ${summary ? `<div class="location-picker-summary">${htmlEscape(summary)}</div>` : '<div class="location-picker-summary">Зона не задана</div>'}
+  </div>
+  <div class="location-picker-fields">
+    <div>
+      <label for="${htmlEscape(prefix)}-label">Подпись зоны</label>
+      <input id="${htmlEscape(prefix)}-label" name="location_label" type="text" maxlength="${AD_LOCATION_LABEL_MAX_LENGTH}" value="${htmlEscape(location.location_label || '')}" placeholder="Район, место встречи, ориентир" />
+    </div>
+    <div>
+      <label for="${htmlEscape(prefix)}-radius">Радиус</label>
+      <select id="${htmlEscape(prefix)}-radius" name="location_radius_meters">
+        ${renderLocationRadiusOptions(location.location_radius_meters)}
+      </select>
+    </div>
+  </div>
+  <input type="hidden" name="location_lat" value="${htmlEscape(latValue)}" />
+  <input type="hidden" name="location_lng" value="${htmlEscape(lngValue)}" />
+  <div class="location-picker-status" data-location-status>${htmlEscape(statusText)}</div>
+  <div class="location-picker-map" data-location-map></div>
+  <div class="location-picker-actions">
+    <button type="button" data-location-clear>Очистить зону</button>
+  </div>
+</div>
+${renderLocationPickerScript()}`;
+}
+
+function renderLocationViewer(location: {
+  location_lat: number | null;
+  location_lng: number | null;
+  location_radius_meters: number | null;
+  location_label: string | null;
+}, currentCity: string | null): string {
+  if (!hasAdLocation(location)) {
+    return '';
+  }
+
+  const center = cityMapCenter(currentCity);
+  const summary = buildAdLocationSummary(location as Pick<AdRow, 'location_lat' | 'location_lng' | 'location_radius_meters' | 'location_label'>);
+
+  return `<div class="ad-page-location">
+  <div class="ad-page-location-header">
+    <strong>Зона встречи</strong>
+    <div class="ad-page-location-summary">${htmlEscape(summary || 'Есть зона встречи')}</div>
+    <div class="ad-page-location-note">Показываем примерную зону, а не точный адрес.</div>
+  </div>
+  <div class="location-picker location-picker-view" data-location-picker data-location-mode="view" data-default-lat="${center.lat}" data-default-lng="${center.lng}" data-location-radius="${htmlEscape(String(location.location_radius_meters || AD_LOCATION_DEFAULT_RADIUS))}">
+    <input type="hidden" name="location_lat" value="${htmlEscape(String(location.location_lat))}" />
+    <input type="hidden" name="location_lng" value="${htmlEscape(String(location.location_lng))}" />
+    <input type="hidden" name="location_radius_meters" value="${htmlEscape(String(location.location_radius_meters || AD_LOCATION_DEFAULT_RADIUS))}" />
+    <div class="location-picker-status" data-location-status>Зона встречи показана на карте</div>
+    <div class="location-picker-map" data-location-map></div>
+  </div>
+</div>
+${renderLocationPickerScript()}`;
+}
+
+function renderLocationPickerScript(): string {
+  return `<script>
+(function () {
+  var radiusLabels = {
+    500: '500 м',
+    1000: '1 км',
+    3000: '3 км',
+    5000: '5 км'
+  };
+  var cityCenters = ${JSON.stringify(CITY_MAP_CENTERS)};
+
+  function formatRadius(value) {
+    return radiusLabels[value] || 'зона встречи';
+  }
+
+  function parseNumber(value) {
+    var parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  function initPicker(root) {
+    if (!window.L) {
+      return;
+    }
+
+    var mapEl = root.querySelector('[data-location-map]');
+    var latInput = root.querySelector('input[name="location_lat"]');
+    var lngInput = root.querySelector('input[name="location_lng"]');
+    var radiusSelect = root.querySelector('select[name="location_radius_meters"]');
+    var labelInput = root.querySelector('input[name="location_label"]');
+    var statusEl = root.querySelector('[data-location-status]');
+    var clearButton = root.querySelector('[data-location-clear]');
+    var citySelect = root.querySelector('select[name="city"]');
+    var defaultLat = parseNumber(root.getAttribute('data-default-lat')) || 56.8389;
+    var defaultLng = parseNumber(root.getAttribute('data-default-lng')) || 60.6057;
+    var currentRadius = parseNumber(radiusSelect && radiusSelect.value) || parseNumber(root.getAttribute('data-location-radius')) || 1000;
+    var marker = null;
+    var circle = null;
+    var map = window.L.map(mapEl, { scrollWheelZoom: false, zoomControl: true });
+
+    window.L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+
+    function hasLocation() {
+      return parseNumber(latInput.value) !== null && parseNumber(lngInput.value) !== null;
+    }
+
+    function readCenter() {
+      if (!citySelect || !cityCenters[citySelect.value]) {
+        return { lat: defaultLat, lng: defaultLng };
+      }
+      return cityCenters[citySelect.value];
+    }
+
+    function updateStatus() {
+      if (hasLocation()) {
+        var label = labelInput ? labelInput.value.trim() : '';
+        statusEl.textContent = 'Выбрана зона: ' + (label || 'без подписи') + ' · ' + formatRadius(currentRadius);
+      } else {
+        statusEl.textContent = 'Кликни по карте, чтобы выбрать примерную зону встречи';
+      }
+    }
+
+    function syncOverlay(lat, lng) {
+      var latLng = [lat, lng];
+      if (!marker) {
+        marker = window.L.marker(latLng).addTo(map);
+      } else {
+        marker.setLatLng(latLng);
+      }
+
+      if (!circle) {
+        circle = window.L.circle(latLng, {
+          radius: currentRadius,
+          color: '#2563eb',
+          weight: 2,
+          fillColor: '#60a5fa',
+          fillOpacity: 0.18
+        }).addTo(map);
+      } else {
+        circle.setLatLng(latLng);
+        circle.setRadius(currentRadius);
+      }
+    }
+
+    function setLocation(lat, lng, focus) {
+      latInput.value = String(lat);
+      lngInput.value = String(lng);
+      syncOverlay(lat, lng);
+      if (focus) {
+        map.setView([lat, lng], 13);
+      }
+      updateStatus();
+    }
+
+    function clearLocation() {
+      latInput.value = '';
+      lngInput.value = '';
+      if (marker) {
+        map.removeLayer(marker);
+        marker = null;
+      }
+      if (circle) {
+        map.removeLayer(circle);
+        circle = null;
+      }
+      var center = readCenter();
+      map.setView([center.lat, center.lng], 11);
+      updateStatus();
+    }
+
+    var existingLat = parseNumber(latInput.value);
+    var existingLng = parseNumber(lngInput.value);
+    if (radiusSelect) {
+      currentRadius = parseNumber(radiusSelect.value) || 1000;
+    }
+
+    map.setView(
+      existingLat !== null && existingLng !== null ? [existingLat, existingLng] : [defaultLat, defaultLng],
+      existingLat !== null && existingLng !== null ? 13 : 11
+    );
+
+    if (existingLat !== null && existingLng !== null) {
+      syncOverlay(existingLat, existingLng);
+    }
+
+    map.on('click', function (event) {
+      setLocation(event.latlng.lat, event.latlng.lng, true);
+    });
+
+    if (radiusSelect) {
+      radiusSelect.addEventListener('change', function () {
+        currentRadius = parseNumber(radiusSelect.value) || 1000;
+        if (circle) {
+          circle.setRadius(currentRadius);
+        }
+        updateStatus();
+      });
+    }
+
+    if (clearButton) {
+      clearButton.addEventListener('click', clearLocation);
+    }
+
+    if (citySelect) {
+      citySelect.addEventListener('change', function () {
+        if (hasLocation()) {
+          return;
+        }
+        var center = readCenter();
+        map.setView([center.lat, center.lng], 11);
+      });
+    }
+
+    updateStatus();
+  }
+
+  function init() {
+    document.querySelectorAll('[data-location-picker]').forEach(function (root) {
+      if (!root.querySelector('[data-location-map]')) {
+        return;
+      }
+      initPicker(root);
+    });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+})();
+</script>`;
+}
+
+function renderLeafletAssets(): string {
+  return `
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script defer src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>`;
+}
+
 function nav(currentUser: CurrentUser | null = null, city: string | null = null, nextPath = '/'): string {
   const cityPicker = renderCityPicker(city, nextPath);
   const adminLink = currentUser && currentUser.role === 'admin' ? ' <a href="/admin">админка</a>' : '';
@@ -1170,13 +1541,14 @@ function nav(currentUser: CurrentUser | null = null, city: string | null = null,
   return `<div class="nav"><div class="nav-links"><a href="/">главная</a> <a href="/new">создать объявление</a> <a href="/about">о проекте</a></div>${cityPicker}<div class="nav-auth">${authLinks}</div></div>`;
 }
 
-function shell(title: string, body: string, currentUser: CurrentUser | null = null, status = 200): Response {
+function shell(title: string, body: string, currentUser: CurrentUser | null = null, status = 200, extraHead = ''): Response {
   return html(`<!doctype html>
 <html lang="ru">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>${htmlEscape(title)}</title>
+  ${extraHead}
   <style>
     body {
       margin: 0;
@@ -1287,6 +1659,10 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
     .city-picker-foot {
       margin-top: 8px;
       font-size: 12px;
+    }
+    .badge-location {
+      background: #e8f0ff;
+      color: #234;
     }
     .reading-column {
       max-width: 620px;
@@ -1575,6 +1951,90 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       border-radius: 4px;
       font-size: 14px;
     }
+    .ad-page-location {
+      margin: 0 0 16px;
+      padding: 12px;
+      border: 1px solid #d9e2f2;
+      border-radius: 12px;
+      background: #f8fbff;
+    }
+    .ad-page-location-header {
+      display: grid;
+      gap: 4px;
+      margin-bottom: 10px;
+    }
+    .ad-page-location-summary {
+      font-size: 14px;
+      color: #222;
+    }
+    .ad-page-location-note {
+      font-size: 12px;
+      color: #667;
+    }
+    .location-picker {
+      display: grid;
+      gap: 10px;
+      margin: 14px 0;
+      padding: 12px;
+      border: 1px solid #d8d8d8;
+      border-radius: 12px;
+      background: #fafafa;
+    }
+    .location-picker-header {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      gap: 8px 12px;
+      align-items: flex-start;
+    }
+    .location-picker-help {
+      color: #667;
+      font-size: 12px;
+      margin-top: 3px;
+    }
+    .location-picker-summary {
+      color: #234;
+      font-size: 13px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: #e8f0ff;
+      display: inline-flex;
+      align-items: center;
+      max-width: 100%;
+    }
+    .location-picker-fields {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 10px;
+    }
+    .location-picker-fields input,
+    .location-picker-fields select {
+      max-width: none;
+      margin-bottom: 0;
+    }
+    .location-picker-status {
+      font-size: 13px;
+      color: #444;
+    }
+    .location-picker-map {
+      width: 100%;
+      min-height: 320px;
+      border-radius: 10px;
+      overflow: hidden;
+      border: 1px solid #cfd8e3;
+      background: #eef3f8;
+    }
+    .location-picker-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .location-picker-view {
+      padding: 0;
+      border: 0;
+      background: transparent;
+      margin: 0;
+    }
     .ad-page-footer {
       color: #999;
       font-size: 12px;
@@ -1594,6 +2054,9 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       .ad-page-image,
       .image-preview {
         max-width: 100%;
+      }
+      .location-picker-map {
+        min-height: 260px;
       }
     }
   </style>
@@ -1622,6 +2085,7 @@ function renderAdList(env: Env, ads: AdCardRow[]): string {
   <div class="ad-content">
     <div class="title">${type}<a href="/ad/${ad.id}">${htmlEscape(ad.title)}</a></div>
     <div class="meta">${city}${category}${htmlEscape(ad.created_at)}</div>
+    ${renderLocationBadge(ad)}
     ${author}
   </div>
 </div>`;
@@ -1809,6 +2273,8 @@ function renderNewPage(currentUser: CurrentUser | null = null, currentCity: stri
   const options = CATEGORIES.map(
     (category) => `<option value="${category.slug}"${category.slug === 'misc' ? ' selected' : ''}>${htmlEscape(category.label)}</option>`
   ).join('');
+  const city = currentCity || currentUser?.city || CITY_DEFAULT_SLUG;
+  const extraHead = renderLeafletAssets();
 
   return shell(
     'создать объявление - жоржлист',
@@ -1819,7 +2285,14 @@ ${nav(currentUser, currentCity, currentPath)}
   ${error ? `<p class="empty">${htmlEscape(error)}</p>` : ''}
   <form method="post" action="/new" enctype="multipart/form-data">
     <label for="city">Город</label>
-    ${renderCitySelect(currentCity || currentUser?.city || CITY_DEFAULT_SLUG)}
+    ${renderCitySelect(city)}
+
+    ${renderLocationEditor({
+      location_lat: null,
+      location_lng: null,
+      location_radius_meters: AD_LOCATION_DEFAULT_RADIUS,
+      location_label: '',
+    }, city, 'new')}
 
     <label for="title">Заголовок</label>
     <input id="title" name="title" type="text" required maxlength="200" />
@@ -1843,7 +2316,10 @@ ${nav(currentUser, currentCity, currentPath)}
 
     <button type="submit">Опубликовать</button>
   </form>
-</div>`
+</div>`,
+    currentUser,
+    200,
+    extraHead
   );
 }
 
@@ -1939,6 +2415,7 @@ function renderPublicAdPage(
   currentCity: string | null = null,
   currentPath = '/'
 ): Response {
+  const hasLocation = hasAdLocation(ad);
   const media = ad.image_key
     ? `<div class="ad-page-media"><img src="${htmlEscape(buildMediaUrl(env, ad.image_key))}" alt="${htmlEscape(ad.title)}" /></div>`
     : `<div class="ad-page-media"><div class="ad-page-media-placeholder">без фото</div></div>`;
@@ -1960,9 +2437,10 @@ ${nav(currentUser, currentCity, currentPath)}
     <div>
       <h2 class="ad-page-title">${renderTypeBadge(ad.type)}${htmlEscape(ad.title)}</h2>
       ${author}
-      <div class="ad-page-badges">${renderCityBadge(ad.city)}<span class="badge">${htmlEscape(categoryLabel(ad.category))}</span></div>
+      <div class="ad-page-badges">${renderCityBadge(ad.city)}<span class="badge">${htmlEscape(categoryLabel(ad.category))}</span>${renderLocationBadge(ad)}</div>
       <div class="ad-page-body">${htmlEscape(ad.body)}</div>
       ${ad.city ? `<div class="ad-page-contact"><strong>Город:</strong> ${htmlEscape(cityLabel(ad.city))}</div>` : ''}
+      ${hasLocation ? renderLocationViewer(ad, currentCity) : ''}
       ${ad.contact ? `<div class="ad-page-contact"><strong>Контакты:</strong> ${htmlEscape(ad.contact)}</div>` : ''}
       <div class="ad-page-footer">${htmlEscape(ad.created_at)}</div>
     </div>
@@ -1970,7 +2448,9 @@ ${nav(currentUser, currentCity, currentPath)}
 </div>
 ${renderAdMessageSection(ad, currentUser, canMessageAuthor, currentUserHasTelegram, message)}
 ${renderSearchForm()}`,
-    currentUser
+    currentUser,
+    200,
+    hasLocation ? renderLeafletAssets() : ''
   );
 }
 
@@ -1995,6 +2475,7 @@ function renderPublicUserPage(env: Env, user: PublicUserRow, ads: AdCardRow[], c
   <div class="ad-content">
     <div class="title">${type}<a href="/ad/${ad.id}">${htmlEscape(ad.title)}</a></div>
     <div class="meta">${city}${category}${htmlEscape(ad.created_at)}</div>
+    ${renderLocationBadge(ad)}
     ${actions}
   </div>
 </div>`;
@@ -2136,6 +2617,8 @@ function renderEditPage(
   const currentImagePreview = ad.image_key
     ? `<div class="image-preview"><img src="${htmlEscape(buildMediaUrl(env, ad.image_key))}" alt="${htmlEscape(ad.title)}" /></div>`
     : '<div class="image-preview image-preview-placeholder"><span>Без фото</span></div>';
+  const city = ad.city || currentCity || currentUser.city || CITY_DEFAULT_SLUG;
+  const extraHead = renderLeafletAssets();
 
   return shell(
     'редактировать объявление - жоржлист',
@@ -2146,7 +2629,14 @@ ${nav(currentUser, currentCity, currentPath)}
   ${error ? `<p class="empty">${htmlEscape(error)}</p>` : ''}
   <form method="post" action="${htmlEscape(formAction)}" enctype="multipart/form-data">
     <label for="city">Город</label>
-    ${renderCitySelect(ad.city || currentCity || currentUser.city || CITY_DEFAULT_SLUG)}
+    ${renderCitySelect(city)}
+
+    ${renderLocationEditor({
+      location_lat: ad.location_lat,
+      location_lng: ad.location_lng,
+      location_radius_meters: ad.location_radius_meters,
+      location_label: ad.location_label,
+    }, city, 'edit')}
 
     <label for="title">Заголовок</label>
     <input id="title" name="title" type="text" required maxlength="200" value="${htmlEscape(ad.title)}" />
@@ -2174,7 +2664,9 @@ ${nav(currentUser, currentCity, currentPath)}
     <button type="submit">Сохранить</button>
   </form>
 </div>`,
-    currentUser
+    currentUser,
+    200,
+    extraHead
   );
 }
 
@@ -3164,16 +3656,20 @@ function userBotMyAdsMarkup(ads: Array<{ id: number; title: string }>): Record<s
   };
 }
 
-function userBotSingleAdMarkup(adId: number): Record<string, unknown> {
-  return {
-    inline_keyboard: [
-      [
-        { text: 'Редактировать', callback_data: `${USER_BOT_MENU_MY_AD}${adId}:edit` },
-        { text: 'Удалить', callback_data: `${USER_BOT_DELETE_PREFIX}${adId}` },
-      ],
-      [{ text: 'Назад', callback_data: USER_BOT_MENU_MY }],
+function userBotSingleAdMarkup(adId: number, adUrl: string | null = null): Record<string, unknown> {
+  const rows: Array<Array<{ text: string; callback_data?: string; url?: string }>> = [
+    [
+      { text: 'Редактировать', callback_data: `${USER_BOT_MENU_MY_AD}${adId}:edit` },
+      { text: 'Удалить', callback_data: `${USER_BOT_DELETE_PREFIX}${adId}` },
     ],
-  };
+  ];
+
+  if (adUrl) {
+    rows.unshift([{ text: 'Открыть карту', url: adUrl }]);
+  }
+
+  rows.push([{ text: 'Назад', callback_data: USER_BOT_MENU_MY }]);
+  return { inline_keyboard: rows };
 }
 
 function userBotChatsMarkup(threads: ChatThreadListRow[]): Record<string, unknown> {
@@ -3547,6 +4043,10 @@ function buildUserBotAdListText(
     city: string | null;
     category: string | null;
     type: string | null;
+    location_lat: number | null;
+    location_lng: number | null;
+    location_radius_meters: number | null;
+    location_label: string | null;
     author_login?: string | null;
     status?: string | null;
   }>,
@@ -3569,6 +4069,10 @@ function buildUserBotAdListText(
     lines.push('', `${number}. ${ad.title}`);
     if (meta) {
       lines.push(meta);
+    }
+    const location = buildAdLocationSummary(ad as Pick<AdRow, 'location_lat' | 'location_lng' | 'location_radius_meters' | 'location_label'>);
+    if (location) {
+      lines.push(`Зона встречи: ${location}`);
     }
   }
 
@@ -3646,13 +4150,15 @@ async function sendUserBotSearchResults(env: Env, telegramUserId: string, chatId
 }
 
 function buildUserBotPublicAdText(
-  ad: Pick<PublicAdCardRow, 'title' | 'body' | 'contact' | 'category' | 'type' | 'author_login' | 'created_at' | 'city'>
+  ad: Pick<PublicAdCardRow, 'title' | 'body' | 'contact' | 'category' | 'type' | 'author_login' | 'created_at' | 'city' | 'location_lat' | 'location_lng' | 'location_radius_meters' | 'location_label'>
 ): string {
+  const location = buildAdLocationSummary(ad as Pick<AdRow, 'location_lat' | 'location_lng' | 'location_radius_meters' | 'location_label'>);
   return [
     `Город: ${cityLabel(ad.city)}`,
     `Тип: ${typeLabel(ad.type)}`,
     `Заголовок: ${ad.title}`,
     `Категория: ${categoryLabel(ad.category)}`,
+    location ? `Зона встречи: ${location}` : null,
     ad.author_login ? `Автор: ${ad.author_login}` : null,
     'Текст:',
     truncateText(ad.body, 700),
@@ -3676,9 +4182,14 @@ async function sendUserBotPublicAdCard(
     ad.owner_user_id !== null &&
     ad.owner_user_id !== telegramIdentity.user_id &&
     Boolean(await findTelegramIdentityByUserId(env, ad.owner_user_id));
+  const locationSummary = buildAdLocationSummary(ad as Pick<AdRow, 'location_lat' | 'location_lng' | 'location_radius_meters' | 'location_label'>);
   const inlineKeyboard = Array.isArray((replyMarkup as { inline_keyboard?: unknown }).inline_keyboard)
-    ? ((replyMarkup as { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> }).inline_keyboard || []).map((row) => [...row])
+    ? ((replyMarkup as { inline_keyboard: Array<Array<{ text: string; callback_data?: string; url?: string }>> }).inline_keyboard || []).map((row) => [...row])
     : [];
+
+  if (locationSummary) {
+    inlineKeyboard.unshift([{ text: 'Открыть карту', url: buildPublicSiteUrl(env, `/ad/${ad.id}`) }]);
+  }
 
   if (canStartChat) {
     inlineKeyboard.unshift([{ text: 'Написать автору', callback_data: `${USER_BOT_CHAT_START_PREFIX}${ad.id}` }]);
@@ -3697,6 +4208,7 @@ async function sendUserBotPublicAdCard(
         `Тип: ${typeLabel(ad.type)}`,
         `Заголовок: ${ad.title}`,
         `Категория: ${categoryLabel(ad.category)}`,
+        locationSummary ? `Зона встречи: ${locationSummary}` : null,
         ad.author_login ? `Автор: ${ad.author_login}` : null,
         truncateText(ad.body, 700),
         ad.contact ? `Контакты: ${ad.contact}` : null,
@@ -3934,10 +4446,11 @@ async function sendAdminBotUsers(env: Env, chatId: number, page = 1): Promise<vo
 
 async function buildAdminBotAdText(
   env: Env,
-  ad: Pick<AdRow, 'id' | 'title' | 'body' | 'contact' | 'category' | 'type' | 'status' | 'owner_user_id' | 'deleted_at' | 'image_key'>,
+  ad: Pick<AdRow, 'id' | 'title' | 'body' | 'contact' | 'category' | 'type' | 'status' | 'owner_user_id' | 'deleted_at' | 'image_key' | 'location_lat' | 'location_lng' | 'location_radius_meters' | 'location_label'>,
   bodyLimit = 2800
 ): Promise<string> {
   const owner = ad.owner_user_id ? await findUserById(env, ad.owner_user_id) : null;
+  const location = buildAdLocationSummary(ad);
   return [
     `#${ad.id}`,
     `Заголовок: ${ad.title}`,
@@ -3946,6 +4459,7 @@ async function buildAdminBotAdText(
     `Статус: ${ad.status}`,
     `Owner: ${owner?.login ? `${owner.login} (#${ad.owner_user_id})` : ad.owner_user_id ?? 'none'}`,
     `Удалено: ${ad.deleted_at ? 'yes' : 'no'}`,
+    location ? `Зона встречи: ${location}` : null,
     'Текст:',
     truncateText(ad.body, bodyLimit),
     ad.contact ? `Контакты: ${ad.contact}` : null,
@@ -4381,7 +4895,7 @@ async function sendUserBotMyAds(env: Env, telegramUserId: string, chatId: number
 
   const result = await env.DB.prepare(
     `
-      SELECT id, title, city, category, type, status, image_key, image_mime_type, image_updated_at, created_at
+      SELECT id, title, city, category, type, status, location_lat, location_lng, location_radius_meters, location_label, image_key, image_mime_type, image_updated_at, created_at
       FROM ads
       WHERE owner_user_id = ?
         AND deleted_at IS NULL
@@ -4389,7 +4903,19 @@ async function sendUserBotMyAds(env: Env, telegramUserId: string, chatId: number
     `
   )
   .bind(identity.user_id)
-  .all<{ id: number; title: string; city: string | null; category: string | null; type: string | null; status: string; created_at: string }>();
+  .all<{
+    id: number;
+    title: string;
+    city: string | null;
+    category: string | null;
+    type: string | null;
+    status: string;
+    location_lat: number | null;
+    location_lng: number | null;
+    location_radius_meters: number | null;
+    location_label: string | null;
+    created_at: string;
+  }>();
 
   if (!result.results.length) {
     await showUserBotScreen(
@@ -4410,6 +4936,10 @@ async function sendUserBotMyAds(env: Env, telegramUserId: string, chatId: number
       city: ad.city,
       category: ad.category,
       type: ad.type,
+      location_lat: ad.location_lat,
+      location_lng: ad.location_lng,
+      location_radius_meters: ad.location_radius_meters,
+      location_label: ad.location_label,
       status: ad.status,
     })),
     0,
@@ -4427,7 +4957,7 @@ async function getOwnedAdForTelegramUser(env: Env, telegramUserId: string, adId:
 
   const result = await env.DB.prepare(
     `
-      SELECT id, title, category, type, status, image_key, image_mime_type, image_updated_at, created_at, body
+      SELECT id, title, category, type, status, location_lat, location_lng, location_radius_meters, location_label, image_key, image_mime_type, image_updated_at, created_at, body, city
       FROM ads
       WHERE id = ?
         AND owner_user_id = ?
@@ -4481,8 +5011,9 @@ async function startUserBotEditFlow(
 }
 
 function buildUserBotOwnedAdText(
-  ad: Pick<AdRow, 'id' | 'title' | 'body' | 'category' | 'type' | 'status' | 'created_at' | 'city'>
+  ad: Pick<AdRow, 'id' | 'title' | 'body' | 'category' | 'type' | 'status' | 'created_at' | 'city' | 'location_lat' | 'location_lng' | 'location_radius_meters' | 'location_label'>
 ): string {
+  const location = buildAdLocationSummary(ad as Pick<AdRow, 'location_lat' | 'location_lng' | 'location_radius_meters' | 'location_label'>);
   return [
     `#${ad.id}`,
     `Город: ${cityLabel(ad.city)}`,
@@ -4490,6 +5021,7 @@ function buildUserBotOwnedAdText(
     `Заголовок: ${ad.title}`,
     `Категория: ${categoryLabel(ad.category)}`,
     `Статус: ${ad.status}`,
+    location ? `Зона встречи: ${location}` : null,
     `Дата: ${ad.created_at}`,
     'Текст:',
     truncateText(ad.body, 700),
@@ -4497,7 +5029,8 @@ function buildUserBotOwnedAdText(
 }
 
 async function sendUserBotSingleAd(env: Env, telegramUserId: string, chatId: number, ad: AdRow): Promise<void> {
-  const replyMarkup = userBotSingleAdMarkup(ad.id);
+  const locationSummary = buildAdLocationSummary(ad);
+  const replyMarkup = userBotSingleAdMarkup(ad.id, locationSummary ? buildPublicSiteUrl(env, `/ad/${ad.id}`) : null);
   if (ad.image_key) {
     await showUserBotPhotoScreen(
       env,
@@ -4510,6 +5043,7 @@ async function sendUserBotSingleAd(env: Env, telegramUserId: string, chatId: num
         `Заголовок: ${ad.title}`,
         `Категория: ${categoryLabel(ad.category)}`,
         `Статус: ${ad.status}`,
+        locationSummary ? `Зона встречи: ${locationSummary}` : null,
         `Дата: ${ad.created_at}`,
         truncateText(ad.body, 700),
       ].join('\n'),
@@ -4523,11 +5057,12 @@ async function sendUserBotSingleAd(env: Env, telegramUserId: string, chatId: num
 }
 
 function buildTelegramAdText(
-  ad: Pick<AdRow, 'id' | 'title' | 'body' | 'category' | 'type' | 'city'>,
+  ad: Pick<AdRow, 'id' | 'title' | 'body' | 'category' | 'type' | 'city' | 'location_lat' | 'location_lng' | 'location_radius_meters' | 'location_label'>,
   statusLabel: string,
   itemKind: 'New' | 'Edited',
   bodyLimit = 2800
 ): string {
+  const location = buildAdLocationSummary(ad as Pick<AdRow, 'location_lat' | 'location_lng' | 'location_radius_meters' | 'location_label'>);
   return [
     `Type: ${itemKind}`,
     statusLabel,
@@ -4536,6 +5071,7 @@ function buildTelegramAdText(
     `Title: ${ad.title}`,
     `Ad type: ${typeLabel(ad.type)}`,
     `Category: ${categoryLabel(ad.category)}`,
+    location ? `Location: ${location}` : null,
     'Text:',
     truncateText(ad.body, bodyLimit),
   ].join('\n');
@@ -4543,7 +5079,7 @@ function buildTelegramAdText(
 
 async function sendTelegramMessage(
   env: Env,
-  ad: Pick<AdRow, 'id' | 'title' | 'body' | 'category' | 'type' | 'city' | 'image_key'>,
+  ad: Pick<AdRow, 'id' | 'title' | 'body' | 'category' | 'type' | 'city' | 'location_lat' | 'location_lng' | 'location_radius_meters' | 'location_label' | 'image_key'>,
   itemKind: 'New' | 'Edited' = 'New'
 ): Promise<void> {
   const replyMarkup = {
@@ -4595,7 +5131,7 @@ async function editTelegramMessage(
   env: Env,
   chatId: number,
   messageId: number,
-  ad: Pick<AdRow, 'id' | 'title' | 'body' | 'category' | 'type' | 'city' | 'image_key'>,
+  ad: Pick<AdRow, 'id' | 'title' | 'body' | 'category' | 'type' | 'city' | 'location_lat' | 'location_lng' | 'location_radius_meters' | 'location_label' | 'image_key'>,
   statusLabel: string,
   itemKind: 'New' | 'Edited' = 'New'
 ): Promise<void> {
@@ -4765,6 +5301,10 @@ async function handleAdminBotText(
         city: originalAd?.city || CITY_DEFAULT_SLUG,
         category,
         type: originalAd?.type ?? 'sell',
+        location_lat: originalAd?.location_lat ?? null,
+        location_lng: originalAd?.location_lng ?? null,
+        location_radius_meters: originalAd?.location_radius_meters ?? null,
+        location_label: originalAd?.location_label ?? null,
         image_key: originalAd?.image_key ?? null,
       }, 'Edited').catch((error: unknown) => {
         console.error('Telegram notification failed after admin edit', error);
@@ -5009,6 +5549,10 @@ async function getPublishedAdCardById(
              COALESCE(ads.city, ?) AS city,
              ads.category,
              COALESCE(ads.type, 'sell') AS type,
+             ads.location_lat,
+             ads.location_lng,
+             ads.location_radius_meters,
+             ads.location_label,
              ads.owner_user_id,
              ads.image_key,
              ads.image_mime_type,
@@ -5074,6 +5618,10 @@ async function listPublishedAdsByUser(env: Env, userId: number, city: string | n
              COALESCE(ads.city, ?) AS city,
              ads.category,
              COALESCE(ads.type, 'sell') AS type,
+             ads.location_lat,
+             ads.location_lng,
+             ads.location_radius_meters,
+             ads.location_label,
              ads.image_key,
              ads.created_at,
              users.login AS author_login,
@@ -5131,6 +5679,10 @@ async function listPublishedAdsByCategory(env: Env, category: string, city: stri
              COALESCE(ads.city, ?) AS city,
              ads.category,
              COALESCE(ads.type, 'sell') AS type,
+             ads.location_lat,
+             ads.location_lng,
+             ads.location_radius_meters,
+             ads.location_label,
              ads.image_key,
              ads.created_at,
              users.login AS author_login,
@@ -5164,6 +5716,10 @@ async function listPublishedAdsByCategoryAndType(
              COALESCE(ads.city, ?) AS city,
              ads.category,
              COALESCE(ads.type, 'sell') AS type,
+             ads.location_lat,
+             ads.location_lng,
+             ads.location_radius_meters,
+             ads.location_label,
              ads.image_key,
              ads.created_at,
              users.login AS author_login,
@@ -5183,6 +5739,10 @@ async function listPublishedAdsByCategoryAndType(
              COALESCE(ads.city, ?) AS city,
              ads.category,
              COALESCE(ads.type, 'sell') AS type,
+             ads.location_lat,
+             ads.location_lng,
+             ads.location_radius_meters,
+             ads.location_label,
              ads.image_key,
              ads.created_at,
              users.login AS author_login,
@@ -5218,6 +5778,10 @@ async function listPublishedAdsByCategoryPage(
              COALESCE(ads.city, ?) AS city,
              ads.category,
              COALESCE(ads.type, 'sell') AS type,
+             ads.location_lat,
+             ads.location_lng,
+             ads.location_radius_meters,
+             ads.location_label,
              ads.image_key,
              ads.created_at,
              users.login AS author_login,
@@ -5455,6 +6019,37 @@ async function ensureAdCityColumn(env: Env): Promise<void> {
   });
 
   return cachedEnsureAdCityColumnPromise;
+}
+
+async function ensureAdLocationColumns(env: Env): Promise<void> {
+  if (cachedEnsureAdLocationColumnsPromise) {
+    return cachedEnsureAdLocationColumnsPromise;
+  }
+
+  cachedEnsureAdLocationColumnsPromise = (async () => {
+    const tableInfo = await env.DB.prepare(`PRAGMA table_info(ads)`).all<{ name: string }>();
+    const columnNames = new Set((tableInfo.results || []).map((row) => row.name));
+
+    if (!columnNames.has('location_lat')) {
+      await env.DB.prepare(`ALTER TABLE ads ADD COLUMN location_lat REAL`).run();
+    }
+
+    if (!columnNames.has('location_lng')) {
+      await env.DB.prepare(`ALTER TABLE ads ADD COLUMN location_lng REAL`).run();
+    }
+
+    if (!columnNames.has('location_radius_meters')) {
+      await env.DB.prepare(`ALTER TABLE ads ADD COLUMN location_radius_meters INTEGER`).run();
+    }
+
+    if (!columnNames.has('location_label')) {
+      await env.DB.prepare(`ALTER TABLE ads ADD COLUMN location_label TEXT`).run();
+    }
+  })().finally(() => {
+    cachedEnsureAdLocationColumnsPromise = null;
+  });
+
+  return cachedEnsureAdLocationColumnsPromise;
 }
 
 async function ensureAdTypeColumn(env: Env): Promise<void> {
@@ -5749,11 +6344,15 @@ async function createAd(
   categoryInput: string | null | undefined,
   typeInput: string | null | undefined,
   ownerUserId: number | null = null,
-  image: File | null = null
+  image: File | null = null,
+  location: AdLocationInput | null = null
 ): Promise<{ id: number; category: CategorySlug }> {
   const category = normalizeCategory(categoryInput);
   const type = normalizeAdType(typeInput);
   const city = normalizeCity(cityInput);
+  const hasLocation = Boolean(location && typeof location.location_lat === 'number' && Number.isFinite(location.location_lat) && typeof location.location_lng === 'number' && Number.isFinite(location.location_lng));
+  const normalizedRadius = hasLocation ? normalizeLocationRadius(location?.location_radius_meters) ?? AD_LOCATION_DEFAULT_RADIUS : null;
+  const locationLabel = hasLocation ? (location?.location_label || '').trim().slice(0, AD_LOCATION_LABEL_MAX_LENGTH) || null : null;
   let imageUpload: CompressedAdImageUpload | null = null;
 
   if (image) {
@@ -5774,6 +6373,10 @@ async function createAd(
           city,
           category,
           type,
+          location_lat,
+          location_lng,
+          location_radius_meters,
+          location_label,
           status,
           owner_user_id,
           image_key,
@@ -5783,10 +6386,25 @@ async function createAd(
           created_at,
           updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, CASE WHEN ? IS NOT NULL THEN CURRENT_TIMESTAMP ELSE NULL END, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, CASE WHEN ? IS NOT NULL THEN CURRENT_TIMESTAMP ELSE NULL END, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
       `
     )
-      .bind(title, body, contact || null, city, category, type, ownerUserId, imageUpload?.key || null, imageUpload?.mimeType || null, imageUpload?.key || null)
+      .bind(
+        title,
+        body,
+        contact || null,
+        city,
+        category,
+        type,
+        hasLocation ? location?.location_lat ?? null : null,
+        hasLocation ? location?.location_lng ?? null : null,
+        hasLocation ? normalizedRadius : null,
+        hasLocation ? locationLabel : null,
+        ownerUserId,
+        imageUpload?.key || null,
+        imageUpload?.mimeType || null,
+        imageUpload?.key || null
+      )
       .run();
   } catch (error) {
     if (imageUpload) {
@@ -5803,6 +6421,10 @@ async function createAd(
       city,
       type,
       category,
+      location_lat: hasLocation ? location?.location_lat ?? null : null,
+      location_lng: hasLocation ? location?.location_lng ?? null : null,
+      location_radius_meters: hasLocation ? normalizedRadius : null,
+      location_label: hasLocation ? locationLabel : null,
       image_key: imageUpload?.key ?? null,
     }, 'New').catch((error: unknown) => {
       console.error('Telegram notification failed', error);
@@ -5835,6 +6457,11 @@ async function getOwnedAdById(env: Env, id: number, userId: number): Promise<AdR
 async function parseAdForm(request: Request): Promise<AdForm> {
   const form = await request.formData();
   const imageValue = form.get('image');
+  const locationLat = parseOptionalNumberField(form.get('location_lat'));
+  const locationLng = parseOptionalNumberField(form.get('location_lng'));
+  const locationRadius = normalizeLocationRadius(parseOptionalNumberField(form.get('location_radius_meters')));
+  const locationLabel = parseOptionalTextField(form.get('location_label')).slice(0, AD_LOCATION_LABEL_MAX_LENGTH);
+  const hasLocation = locationLat !== null && locationLng !== null;
   return {
     title: String(form.get('title') || '').trim(),
     body: String(form.get('body') || '').trim(),
@@ -5842,6 +6469,10 @@ async function parseAdForm(request: Request): Promise<AdForm> {
     city: String(form.get('city') || '').trim(),
     category: String(form.get('category') || '').trim(),
     type: String(form.get('type') || '').trim(),
+    location_lat: hasLocation ? locationLat : null,
+    location_lng: hasLocation ? locationLng : null,
+    location_radius_meters: hasLocation ? locationRadius ?? AD_LOCATION_DEFAULT_RADIUS : null,
+    location_label: hasLocation ? locationLabel : '',
     image: isFileLike(imageValue) && imageValue.size > 0 ? imageValue : null,
   };
 }
@@ -5904,7 +6535,7 @@ async function handleMyEditPost(
     return text('Not Found', 404);
   }
 
-  const { title, body, contact, category, type, image } = await parseAdForm(request);
+  const { title, body, contact, category, type, location_lat, location_lng, location_radius_meters, location_label, image } = await parseAdForm(request);
 
   if (!title || !body) {
     return renderEditPage(env, currentUser, ad, 'Заполни заголовок и текст');
@@ -5931,6 +6562,10 @@ async function handleMyEditPost(
             contact = ?,
             category = ?,
             type = ?,
+            location_lat = ?,
+            location_lng = ?,
+            location_radius_meters = ?,
+            location_label = ?,
             status = ?,
             image_key = ?,
             image_mime_type = ?,
@@ -5950,6 +6585,10 @@ async function handleMyEditPost(
         contact || null,
         normalizedCategory,
         normalizedType,
+        location_lat,
+        location_lng,
+        location_radius_meters,
+        location_label || null,
         nextStatus,
         newImage?.key ?? ad.image_key,
         newImage?.mimeType ?? ad.image_mime_type,
@@ -5978,6 +6617,10 @@ async function handleMyEditPost(
       city: ad.city,
       category: normalizedCategory,
       type: normalizedType,
+      location_lat: ad.location_lat,
+      location_lng: ad.location_lng,
+      location_radius_meters: ad.location_radius_meters,
+      location_label: ad.location_label,
       image_key: newImage?.key ?? ad.image_key,
     }, 'Edited').catch((error: unknown) => {
       console.error('Telegram notification failed after edit', error);
@@ -6714,7 +7357,7 @@ async function handleUserBotDraftAction(
       }
 
       try {
-        await createAd(env, ctx, draft.title, draft.body, null, userCity, draft.category, draft.ad_type, identity.user_id);
+        await createAd(env, ctx, draft.title, draft.body, null, userCity, draft.category, draft.ad_type, identity.user_id, null, null);
         await clearBotDraft(env, telegramUserId);
         await sendUserBotMenu(env, telegramUserId, chatId, 'Объявление отправлено на модерацию');
       } catch (error) {
@@ -6778,6 +7421,10 @@ async function handleUserBotDraftAction(
             city: ad.city,
             category,
             type: adType,
+            location_lat: ad.location_lat,
+            location_lng: ad.location_lng,
+            location_radius_meters: ad.location_radius_meters,
+            location_label: ad.location_label,
             image_key: ad.image_key,
           }, 'Edited').catch((error: unknown) => {
             console.error('Telegram notification failed', error);
@@ -8184,7 +8831,7 @@ async function handleAdminEditRoute(request: Request, env: Env, ctx: ExecutionCo
     return text('Method Not Allowed', 405);
   }
 
-  const { title, body, contact, category, type, image } = await parseAdForm(request);
+  const { title, body, contact, category, type, location_lat, location_lng, location_radius_meters, location_label, image } = await parseAdForm(request);
 
   if (!title || !body) {
     return renderEditPage(env, currentUser, ad, 'Заполни заголовок и текст', buildAdminActionUrl(`/admin/edit/${ad.id}`, 'ads', page));
@@ -8210,6 +8857,10 @@ async function handleAdminEditRoute(request: Request, env: Env, ctx: ExecutionCo
             contact = ?,
             category = ?,
             type = ?,
+            location_lat = ?,
+            location_lng = ?,
+            location_radius_meters = ?,
+            location_label = ?,
             image_key = ?,
             image_mime_type = ?,
             image_updated_at = CASE
@@ -8227,6 +8878,10 @@ async function handleAdminEditRoute(request: Request, env: Env, ctx: ExecutionCo
         contact || null,
         normalizedCategory,
         normalizedType,
+        location_lat,
+        location_lng,
+        location_radius_meters,
+        location_label || null,
         newImage?.key ?? ad.image_key,
         newImage?.mimeType ?? ad.image_mime_type,
         newImage?.key ?? null,
@@ -8752,7 +9407,7 @@ async function handleApiAdsPost(request: Request, env: Env, ctx: ExecutionContex
     return json({ error: 'title and body are required' }, { status: 400 });
   }
 
-  const ad = await createAd(env, ctx, title, body, null, CITY_DEFAULT_SLUG, category, type, null);
+  const ad = await createAd(env, ctx, title, body, null, CITY_DEFAULT_SLUG, category, type, null, null, null);
   return json(
     {
       ok: true,
@@ -8780,7 +9435,7 @@ async function handleNewPost(request: Request, env: Env, ctx: ExecutionContext):
     return redirect('/login?next=/new');
   }
 
-  const { title, body, contact, city, category, type, image } = await parseAdForm(request);
+  const { title, body, contact, city, category, type, location_lat, location_lng, location_radius_meters, location_label, image } = await parseAdForm(request);
   const currentCity = normalizeCity(getCurrentCityFromRequest(request, currentUser));
 
   if (!title || !body) {
@@ -8788,7 +9443,24 @@ async function handleNewPost(request: Request, env: Env, ctx: ExecutionContext):
   }
 
   try {
-    await createAd(env, ctx, title, body, contact, city || currentCity, category, type, currentUser.id, image);
+    await createAd(
+      env,
+      ctx,
+      title,
+      body,
+      contact,
+      city || currentCity,
+      category,
+      type,
+      currentUser.id,
+      image,
+      {
+        location_lat,
+        location_lng,
+        location_radius_meters,
+        location_label,
+      }
+    );
   } catch (error) {
     console.error('Failed to create ad with image', error);
     return renderNewPage(currentUser, currentCity, 'Не удалось загрузить картинку');
@@ -8958,6 +9630,7 @@ export default {
     await ensureUserCityColumn(env);
     await ensureAdContactColumn(env);
     await ensureAdCityColumn(env);
+    await ensureAdLocationColumns(env);
     await ensureAdTypeColumn(env);
     await ensureBotDraftColumns(env);
     await ensureChatTables(env);

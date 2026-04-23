@@ -159,9 +159,14 @@ const SCHEMA_STATEMENTS = [
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       title TEXT NOT NULL,
       body TEXT NOT NULL,
+      contact TEXT,
       city TEXT,
       category TEXT,
       type TEXT,
+      location_lat REAL,
+      location_lng REAL,
+      location_radius_meters INTEGER,
+      location_label TEXT,
       status TEXT NOT NULL DEFAULT 'pending',
       owner_user_id INTEGER,
       image_key TEXT,
@@ -350,14 +355,30 @@ async function insertAd(params: {
   status?: string;
   type?: string;
   city?: string;
+  location_lat?: number | null;
+  location_lng?: number | null;
+  location_radius_meters?: number | null;
+  location_label?: string | null;
 }): Promise<number> {
   const result = await env.DB.prepare(
     `
-      INSERT INTO ads (title, body, city, category, type, status, owner_user_id, deleted_at, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      INSERT INTO ads (title, body, city, category, type, location_lat, location_lng, location_radius_meters, location_label, status, owner_user_id, deleted_at, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
     `
   )
-    .bind(params.title, params.body, params.city || 'ekb', params.category, params.type || 'sell', params.status || 'pending', params.ownerUserId)
+    .bind(
+      params.title,
+      params.body,
+      params.city || 'ekb',
+      params.category,
+      params.type || 'sell',
+      params.location_lat ?? null,
+      params.location_lng ?? null,
+      params.location_radius_meters ?? null,
+      params.location_label ?? null,
+      params.status || 'pending',
+      params.ownerUserId
+    )
     .run();
 
   return Number(result.meta.last_row_id);
@@ -1269,12 +1290,19 @@ describe('Site create flow', () => {
     const createPageHtml = await createPageResponse.text();
     expect(createPageHtml).toContain('Тип объявления');
     expect(createPageHtml).toContain('name="type"');
+    expect(createPageHtml).toContain('Зона встречи');
+    expect(createPageHtml).toContain('name="location_lat"');
+    expect(createPageHtml).toContain('name="location_radius_meters"');
 
     const createForm = new FormData();
     createForm.set('title', 'Site buy request');
     createForm.set('category', 'jobs');
     createForm.set('type', 'buy');
     createForm.set('body', 'Looking for help');
+    createForm.set('location_lat', '56.8389');
+    createForm.set('location_lng', '60.6057');
+    createForm.set('location_radius_meters', '1000');
+    createForm.set('location_label', 'Центр Екатеринбурга');
 
     const createResponse = await runRequest(
       new Request('http://example.com/new', {
@@ -1290,20 +1318,35 @@ describe('Site create flow', () => {
 
     const createdAd = await env.DB.prepare(
       `
-        SELECT title, category, type, status, owner_user_id
+        SELECT id, title, category, type, status, owner_user_id, location_lat, location_lng, location_radius_meters, location_label
         FROM ads
         WHERE title = ?
         LIMIT 1
       `
     )
       .bind('Site buy request')
-      .first<{ title: string; category: string | null; type: string | null; status: string; owner_user_id: number | null }>();
+      .first<{
+        id: number;
+        title: string;
+        category: string | null;
+        type: string | null;
+        status: string;
+        owner_user_id: number | null;
+        location_lat: number | null;
+        location_lng: number | null;
+        location_radius_meters: number | null;
+        location_label: string | null;
+      }>();
 
     expect(createdAd?.title).toBe('Site buy request');
     expect(createdAd?.category).toBe('jobs');
     expect(createdAd?.type).toBe('buy');
     expect(createdAd?.status).toBe('pending');
     expect(createdAd?.owner_user_id).toBe(63);
+    expect(createdAd?.location_lat).toBeCloseTo(56.8389, 4);
+    expect(createdAd?.location_lng).toBeCloseTo(60.6057, 4);
+    expect(createdAd?.location_radius_meters).toBe(1000);
+    expect(createdAd?.location_label).toBe('Центр Екатеринбурга');
 
     await env.DB.prepare(
       `
@@ -1317,7 +1360,157 @@ describe('Site create flow', () => {
 
     const filteredCategoryResponse = await runRequest(new Request('http://example.com/category/jobs?type=buy'));
     expect(filteredCategoryResponse.status).toBe(200);
-    expect(await filteredCategoryResponse.text()).toContain('Site buy request');
+    const filteredCategoryHtml = await filteredCategoryResponse.text();
+    expect(filteredCategoryHtml).toContain('Site buy request');
+    expect(filteredCategoryHtml).toContain('Центр Екатеринбурга');
+
+    const publishedAdPageResponse = await runRequest(new Request(`http://example.com/ad/${createdAd?.id}`));
+    expect(publishedAdPageResponse.status).toBe(200);
+    const publishedAdPageHtml = await publishedAdPageResponse.text();
+    expect(publishedAdPageHtml).toContain('Зона встречи');
+    expect(publishedAdPageHtml).toContain('location-picker-map');
+    expect(publishedAdPageHtml).toContain('Центр Екатеринбурга');
+
+    const noZoneForm = new FormData();
+    noZoneForm.set('title', 'No zone request');
+    noZoneForm.set('category', 'misc');
+    noZoneForm.set('type', 'sell');
+    noZoneForm.set('body', 'No zone body');
+
+    const noZoneResponse = await runRequest(
+      new Request('http://example.com/new', {
+        method: 'POST',
+        headers: {
+          Cookie: 'session=sitecreator-session',
+        },
+        body: noZoneForm,
+      })
+    );
+    expect(noZoneResponse.status).toBe(303);
+
+    const noZoneAd = await env.DB.prepare(
+      `
+        SELECT location_lat, location_lng, location_radius_meters, location_label
+        FROM ads
+        WHERE title = ?
+        LIMIT 1
+      `
+    )
+      .bind('No zone request')
+      .first<{ location_lat: number | null; location_lng: number | null; location_radius_meters: number | null; location_label: string | null }>();
+
+    expect(noZoneAd?.location_lat).toBeNull();
+    expect(noZoneAd?.location_lng).toBeNull();
+    expect(noZoneAd?.location_radius_meters).toBeNull();
+    expect(noZoneAd?.location_label).toBeNull();
+  });
+
+  it('shows the current zone in edit form and can clear it', async () => {
+    await seedUser({
+      id: 64,
+      login: 'zoneeditor',
+      email: 'zoneeditor@example.com',
+      sessionToken: 'zoneeditor-session',
+    });
+
+    const adId = await insertAd({
+      title: 'Zone ad',
+      body: 'Zone body',
+      category: 'misc',
+      ownerUserId: 64,
+      status: 'published',
+      location_lat: 56.8389,
+      location_lng: 60.6057,
+      location_radius_meters: 3000,
+      location_label: 'Пионерский',
+    });
+
+    const editPageResponse = await runRequest(
+      new Request(`http://example.com/my/edit/${adId}`, {
+        headers: {
+          Cookie: 'session=zoneeditor-session',
+        },
+      })
+    );
+    expect(editPageResponse.status).toBe(200);
+    const editPageHtml = await editPageResponse.text();
+    expect(editPageHtml).toContain('Зона встречи');
+    expect(editPageHtml).toContain('Пионерский');
+    expect(editPageHtml).toContain('name="location_lat"');
+
+    const changeForm = new FormData();
+    changeForm.set('title', 'Zone ad');
+    changeForm.set('category', 'misc');
+    changeForm.set('type', 'sell');
+    changeForm.set('body', 'Zone body');
+    changeForm.set('location_lat', '55.7558');
+    changeForm.set('location_lng', '37.6173');
+    changeForm.set('location_radius_meters', '5000');
+    changeForm.set('location_label', 'Центр Москвы');
+
+    const changeResponse = await runRequest(
+      new Request(`http://example.com/my/edit/${adId}`, {
+        method: 'POST',
+        headers: {
+          Cookie: 'session=zoneeditor-session',
+        },
+        body: changeForm,
+      })
+    );
+    expect(changeResponse.status).toBe(303);
+
+    const movedAd = await env.DB.prepare(
+      `
+        SELECT location_lat, location_lng, location_radius_meters, location_label
+        FROM ads
+        WHERE id = ?
+        LIMIT 1
+      `
+    )
+      .bind(adId)
+      .first<{ location_lat: number | null; location_lng: number | null; location_radius_meters: number | null; location_label: string | null }>();
+
+    expect(movedAd?.location_lat).toBeCloseTo(55.7558, 4);
+    expect(movedAd?.location_lng).toBeCloseTo(37.6173, 4);
+    expect(movedAd?.location_radius_meters).toBe(5000);
+    expect(movedAd?.location_label).toBe('Центр Москвы');
+
+    const clearForm = new FormData();
+    clearForm.set('title', 'Zone ad');
+    clearForm.set('category', 'misc');
+    clearForm.set('type', 'sell');
+    clearForm.set('body', 'Zone body');
+    clearForm.set('location_lat', '');
+    clearForm.set('location_lng', '');
+    clearForm.set('location_radius_meters', '');
+    clearForm.set('location_label', '');
+
+    const clearResponse = await runRequest(
+      new Request(`http://example.com/my/edit/${adId}`, {
+        method: 'POST',
+        headers: {
+          Cookie: 'session=zoneeditor-session',
+        },
+        body: clearForm,
+      })
+    );
+    expect(clearResponse.status).toBe(303);
+
+    const clearedAd = await env.DB.prepare(
+      `
+        SELECT location_lat, location_lng, location_radius_meters, location_label
+        FROM ads
+        WHERE id = ?
+        LIMIT 1
+      `
+    )
+      .bind(adId)
+      .first<{ location_lat: number | null; location_lng: number | null; location_radius_meters: number | null; location_label: string | null }>();
+
+    expect(clearedAd?.location_lat).toBeNull();
+    expect(clearedAd?.location_lng).toBeNull();
+    expect(clearedAd?.location_radius_meters).toBeNull();
+    expect(clearedAd?.location_label).toBeNull();
   });
 });
 
@@ -2550,6 +2743,10 @@ describe('User bot search flow', () => {
       category: 'services',
       ownerUserId: 60,
       status: 'published',
+      location_lat: 56.8389,
+      location_lng: 60.6057,
+      location_radius_meters: 1000,
+      location_label: 'Центр',
     });
     await insertAd({
       title: 'Search hidden',
@@ -2608,10 +2805,12 @@ describe('User bot search flow', () => {
     const detailText = String((detailMessage?.body as { text?: string }).text || '');
     expect(detailText).toContain('Search target');
     expect(detailText).toContain('Автор: botsearch');
+    expect(detailText).toContain('Зона встречи');
     const detailMarkup = (detailMessage?.body as { reply_markup?: { inline_keyboard?: Array<Array<{ text: string }>> } }).reply_markup?.inline_keyboard || [];
     const detailButtons = detailMarkup.flat().map((button) => button.text);
     expect(detailButtons).toContain('Назад');
     expect(detailButtons).toContain('В меню');
+    expect(detailButtons).toContain('Открыть карту');
   });
 });
 
