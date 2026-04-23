@@ -6047,8 +6047,9 @@ async function ensureAdImageColumns(env: Env): Promise<void> {
     if (!columnNames.has('image_updated_at')) {
       await env.DB.prepare(`ALTER TABLE ads ADD COLUMN image_updated_at TEXT`).run();
     }
-  })().finally(() => {
+  })().catch((error: unknown) => {
     cachedEnsureAdImageColumnsPromise = null;
+    throw error;
   });
 
   return cachedEnsureAdImageColumnsPromise;
@@ -6074,8 +6075,9 @@ async function ensureUserAvatarColumns(env: Env): Promise<void> {
     if (!columnNames.has('avatar_updated_at')) {
       await env.DB.prepare(`ALTER TABLE users ADD COLUMN avatar_updated_at TEXT`).run();
     }
-  })().finally(() => {
+  })().catch((error: unknown) => {
     cachedEnsureUserAvatarColumnsPromise = null;
+    throw error;
   });
 
   return cachedEnsureUserAvatarColumnsPromise;
@@ -6102,8 +6104,9 @@ async function ensureUserCityColumn(env: Env): Promise<void> {
     )
       .bind(CITY_DEFAULT_SLUG)
       .run();
-  })().finally(() => {
+  })().catch((error: unknown) => {
     cachedEnsureUserCityColumnPromise = null;
+    throw error;
   });
 
   return cachedEnsureUserCityColumnPromise;
@@ -6120,8 +6123,9 @@ async function ensureAdContactColumn(env: Env): Promise<void> {
     if (!columnNames.has('contact')) {
       await env.DB.prepare(`ALTER TABLE ads ADD COLUMN contact TEXT`).run();
     }
-  })().finally(() => {
+  })().catch((error: unknown) => {
     cachedEnsureAdContactColumnPromise = null;
+    throw error;
   });
 
   return cachedEnsureAdContactColumnPromise;
@@ -6148,8 +6152,9 @@ async function ensureAdCityColumn(env: Env): Promise<void> {
     )
       .bind(CITY_DEFAULT_SLUG)
       .run();
-  })().finally(() => {
+  })().catch((error: unknown) => {
     cachedEnsureAdCityColumnPromise = null;
+    throw error;
   });
 
   return cachedEnsureAdCityColumnPromise;
@@ -6179,8 +6184,9 @@ async function ensureAdLocationColumns(env: Env): Promise<void> {
     if (!columnNames.has('location_label')) {
       await env.DB.prepare(`ALTER TABLE ads ADD COLUMN location_label TEXT`).run();
     }
-  })().finally(() => {
+  })().catch((error: unknown) => {
     cachedEnsureAdLocationColumnsPromise = null;
+    throw error;
   });
 
   return cachedEnsureAdLocationColumnsPromise;
@@ -6219,8 +6225,9 @@ async function ensureAdTypeColumn(env: Env): Promise<void> {
            OR category IN ('sale', 'wanted', 'free')
       `
     ).run();
-  })().finally(() => {
+  })().catch((error: unknown) => {
     cachedEnsureAdTypeColumnPromise = null;
+    throw error;
   });
 
   return cachedEnsureAdTypeColumnPromise;
@@ -6262,8 +6269,9 @@ async function ensureBotDraftColumns(env: Env): Promise<void> {
     if (!columnNames.has('password_new')) {
       await env.DB.prepare(`ALTER TABLE bot_drafts ADD COLUMN password_new TEXT`).run();
     }
-  })().finally(() => {
+  })().catch((error: unknown) => {
     cachedEnsureBotDraftColumnsPromise = null;
+    throw error;
   });
 
   return cachedEnsureBotDraftColumnsPromise;
@@ -6330,8 +6338,9 @@ async function ensureChatTables(env: Env): Promise<void> {
     await env.DB.prepare(
       `CREATE INDEX IF NOT EXISTS bot_chat_notifications_conversation_user_idx ON bot_chat_notifications(conversation_id, user_id)`
     ).run();
-  })().finally(() => {
+  })().catch((error: unknown) => {
     cachedEnsureChatTablesPromise = null;
+    throw error;
   });
 
   return cachedEnsureChatTablesPromise;
@@ -6348,8 +6357,9 @@ async function ensureChatMessageReadColumn(env: Env): Promise<void> {
     if (!columnNames.has('is_read')) {
       await env.DB.prepare(`ALTER TABLE bot_chat_messages ADD COLUMN is_read INTEGER NOT NULL DEFAULT 0`).run();
     }
-  })().finally(() => {
+  })().catch((error: unknown) => {
     cachedEnsureChatMessageReadColumnPromise = null;
+    throw error;
   });
 
   return cachedEnsureChatMessageReadColumnPromise;
