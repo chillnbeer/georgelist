@@ -3331,7 +3331,8 @@ async function sendUserBotChatView(
   conversationId: number,
   message: string | null = null,
   composeHint = false,
-  currentMessageId: number | null = null
+  currentMessageId: number | null = null,
+  skipNotificationClear = false
 ): Promise<void> {
   const telegramIdentity = await findTelegramIdentity(env, telegramUserId);
   if (!telegramIdentity) {
@@ -3370,7 +3371,9 @@ async function sendUserBotChatView(
   ];
 
   await showUserBotScreen(env, telegramUserId, chatId, lines.join('\n'), userBotChatMarkup(conversation.id), currentMessageId);
-  await clearChatNotification(env, conversation.id, telegramIdentity.user_id, currentMessageId);
+  if (!skipNotificationClear) {
+    await clearChatNotification(env, conversation.id, telegramIdentity.user_id, currentMessageId);
+  }
 }
 
 async function sendUserBotReplyPrompt(
@@ -6421,30 +6424,30 @@ async function sendChatMessage(
 
     if (recipientHasOpenChat) {
       try {
-        await sendUserBotChatView(env, recipientTelegram.provider_user_id, recipientChatId, conversation.id);
+        await sendUserBotChatView(env, recipientTelegram.provider_user_id, recipientChatId, conversation.id, null, true, null, true);
       } catch (error) {
         console.error('Failed to refresh open chat for recipient', error);
       }
-    } else {
-      const lines = [
-        `Тебе написал пользователь ${senderLogin}`,
-        `по объявлению: ${title}`,
-        '',
-        'Сообщение:',
-        body,
-      ];
-      try {
-        await sendOrUpdateChatNotification(
-          env,
-          conversation.id,
-          recipientUserId,
-          recipientChatId,
-          lines.join('\n'),
-          userBotIncomingChatMarkup(conversation.id)
-        );
-      } catch (error) {
-        console.error('Failed to notify chat recipient', error);
-      }
+    }
+
+    const lines = [
+      `Тебе написал пользователь ${senderLogin}`,
+      `по объявлению: ${title}`,
+      '',
+      'Сообщение:',
+      body,
+    ];
+    try {
+      await sendOrUpdateChatNotification(
+        env,
+        conversation.id,
+        recipientUserId,
+        recipientChatId,
+        lines.join('\n'),
+        userBotIncomingChatMarkup(conversation.id)
+      );
+    } catch (error) {
+      console.error('Failed to notify chat recipient', error);
     }
   }
 

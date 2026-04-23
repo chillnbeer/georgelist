@@ -2183,7 +2183,13 @@ describe('User bot replies and passwords', () => {
     const writerSendCountAfter = telegramFetchCalls.filter(
       (call) => call.url.includes('/sendMessage') && (call.body as { chat_id?: number }).chat_id === 11101
     ).length;
-    expect(writerSendCountAfter).toBe(writerSendCountBefore);
+    expect(writerSendCountAfter).toBe(writerSendCountBefore + 1);
+
+    const writerNotification = telegramFetchCalls
+      .filter((call) => call.url.includes('/sendMessage') && (call.body as { chat_id?: number }).chat_id === 11101)
+      .at(-1);
+    expect(String((writerNotification?.body as { text?: string }).text || '')).toContain('Тебе написал пользователь replyowner');
+    expect(String((writerNotification?.body as { text?: string }).text || '')).toContain('Ещё одно сообщение');
 
     const writerUpdatedChat = telegramFetchCalls.filter(
       (call) => call.url.includes('/editMessageText') && (call.body as { chat_id?: number }).chat_id === 11101
