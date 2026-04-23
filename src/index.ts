@@ -1694,9 +1694,10 @@ function renderAdMessageSection(
   ad: PublicAdCardRow,
   currentUser: CurrentUser | null,
   canMessageAuthor: boolean,
+  currentUserHasTelegram: boolean,
   message: string | null = null
 ): string {
-  const title = '<h2>Написать автору</h2>';
+  const title = '<h2>Написать продавцу в Telegram</h2>';
 
   if (!ad.owner_user_id) {
     return `<div class="section ad-message-section">
@@ -1712,17 +1713,25 @@ function renderAdMessageSection(
 </div>`;
   }
 
-  if (!canMessageAuthor) {
-    return `<div class="section ad-message-section">
-  ${title}
-  <p class="empty">У автора не привязан Telegram.</p>
-</div>`;
-  }
-
   if (!currentUser) {
     return `<div class="section ad-message-section">
   ${title}
-  <p class="empty">Чтобы написать автору, войди в аккаунт.</p>
+  <p class="empty">Чтобы написать продавцу в Telegram, войди в аккаунт.</p>
+</div>`;
+  }
+
+  if (!currentUserHasTelegram) {
+    return `<div class="section ad-message-section">
+  ${title}
+  <p class="empty">Чтобы написать продавцу в Telegram, подключи Telegram-бот в настройках.</p>
+  <p><a href="/settings/link-telegram">Подключить Telegram-бот</a></p>
+</div>`;
+  }
+
+  if (!canMessageAuthor) {
+    return `<div class="section ad-message-section">
+  ${title}
+  <p class="empty">У продавца не подключён Telegram-бот.</p>
 </div>`;
   }
 
@@ -1730,7 +1739,7 @@ function renderAdMessageSection(
   ${title}
   ${message ? `<p class="empty">${htmlEscape(message)}</p>` : ''}
   <form method="post" action="/ad/${ad.id}/message">
-    <textarea name="message" required maxlength="1000" rows="6" placeholder="Напишите сообщение автору"></textarea>
+    <textarea name="message" required maxlength="1000" rows="6" placeholder="Напишите сообщение продавцу в Telegram"></textarea>
     <button type="submit">Отправить</button>
   </form>
 </div>`;
@@ -1741,6 +1750,7 @@ function renderPublicAdPage(
   ad: PublicAdCardRow,
   currentUser: CurrentUser | null = null,
   canMessageAuthor = false,
+  currentUserHasTelegram = false,
   message: string | null = null
 ): Response {
   const media = ad.image_key
@@ -1771,7 +1781,7 @@ ${nav(currentUser)}
     </div>
   </div>
 </div>
-${renderAdMessageSection(ad, currentUser, canMessageAuthor, message)}
+${renderAdMessageSection(ad, currentUser, canMessageAuthor, currentUserHasTelegram, message)}
 ${renderSearchForm()}`,
     currentUser
   );
@@ -8183,7 +8193,8 @@ async function handleAdGet(
   }
 
   const canMessageAuthor = Boolean(ad.owner_user_id && (await findTelegramIdentityByUserId(env, ad.owner_user_id)));
-  return renderPublicAdPage(env, ad, currentUser, canMessageAuthor, message);
+  const currentUserHasTelegram = currentUser ? Boolean(await findTelegramIdentityByUserId(env, currentUser.id)) : false;
+  return renderPublicAdPage(env, ad, currentUser, canMessageAuthor, currentUserHasTelegram, message);
 }
 
 async function handleAdMessagePost(
@@ -8207,29 +8218,41 @@ async function handleAdMessagePost(
   }
 
   const canMessageAuthor = Boolean(ad.owner_user_id && (await findTelegramIdentityByUserId(env, ad.owner_user_id)));
+  const currentUserHasTelegram = Boolean(await findTelegramIdentityByUserId(env, currentUser.id));
 
   if (!ad.owner_user_id) {
-    return renderPublicAdPage(env, ad, currentUser, canMessageAuthor, 'У объявления не указан автор');
+    return renderPublicAdPage(env, ad, currentUser, canMessageAuthor, currentUserHasTelegram, 'У объявления не указан автор');
   }
 
   if (ad.owner_user_id === currentUser.id) {
-    return renderPublicAdPage(env, ad, currentUser, canMessageAuthor, 'Нельзя написать самому себе');
+    return renderPublicAdPage(env, ad, currentUser, canMessageAuthor, currentUserHasTelegram, 'Нельзя написать самому себе');
+  }
+
+  if (!currentUserHasTelegram) {
+    return renderPublicAdPage(
+      env,
+      ad,
+      currentUser,
+      canMessageAuthor,
+      currentUserHasTelegram,
+      'Чтобы написать продавцу в Telegram, подключи Telegram-бот в настройках'
+    );
   }
 
   const form = await request.formData();
   const message = String(form.get('message') || '').trim();
   if (!message) {
-    return renderPublicAdPage(env, ad, currentUser, canMessageAuthor, 'Введите текст сообщения');
+    return renderPublicAdPage(env, ad, currentUser, canMessageAuthor, currentUserHasTelegram, 'Введите текст сообщения');
   }
 
   if (message.length > 1000) {
-    return renderPublicAdPage(env, ad, currentUser, canMessageAuthor, 'Сообщение слишком длинное');
+    return renderPublicAdPage(env, ad, currentUser, canMessageAuthor, currentUserHasTelegram, 'Сообщение слишком длинное');
   }
 
   const telegramIdentity = await findTelegramIdentityByUserId(env, ad.owner_user_id);
   const chatId = Number(telegramIdentity?.provider_user_id || '');
   if (!telegramIdentity?.provider_user_id || !Number.isInteger(chatId) || chatId <= 0) {
-    return renderPublicAdPage(env, ad, currentUser, false, 'У автора не привязан Telegram');
+    return renderPublicAdPage(env, ad, currentUser, false, currentUserHasTelegram, 'У продавца не подключён Telegram-бот');
   }
 
   try {
@@ -8243,10 +8266,10 @@ async function handleAdMessagePost(
     );
   } catch (error) {
     console.error('Failed to send ad message to author', error);
-    return renderPublicAdPage(env, ad, currentUser, canMessageAuthor, 'Не удалось отправить сообщение');
+    return renderPublicAdPage(env, ad, currentUser, canMessageAuthor, currentUserHasTelegram, 'Не удалось отправить сообщение');
   }
 
-  return redirectWithMessage(`/ad/${ad.id}`, 'Сообщение отправлено');
+  return redirectWithMessage(`/ad/${ad.id}`, 'Сообщение отправлено в Telegram продавцу');
 }
 
 async function handlePublicUserGet(env: Env, login: string, currentUser: CurrentUser | null = null): Promise<Response> {

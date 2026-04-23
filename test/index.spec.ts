@@ -831,8 +831,8 @@ describe('Public ad page', () => {
     expect(adHtml).toContain('/u/poster');
     expect(adHtml).toContain('Public body');
     expect(adHtml).toContain('Продаю');
-    expect(adHtml).toContain('Написать автору');
-    expect(adHtml).toContain('Чтобы написать автору, войди в аккаунт.');
+    expect(adHtml).toContain('Написать продавцу в Telegram');
+    expect(adHtml).toContain('Чтобы написать продавцу в Telegram, войди в аккаунт.');
     expect(adHtml).toContain('/search');
 
     const pendingResponse = await runRequest(new Request(`http://example.com/ad/${pendingAdId}`));
@@ -873,6 +873,11 @@ describe('Ad messages', () => {
       email: 'writer@example.com',
       sessionToken: 'writer-session',
     });
+    await insertTelegramIdentity({
+      userId: 61,
+      telegramUserId: '61001',
+      telegramUsername: 'writer_tg',
+    });
 
     const adId = await insertAd({
       title: 'Write me',
@@ -885,7 +890,7 @@ describe('Ad messages', () => {
     const guestResponse = await runRequest(new Request(`http://example.com/ad/${adId}`));
     expect(guestResponse.status).toBe(200);
     const guestHtml = await guestResponse.text();
-    expect(guestHtml).toContain('Чтобы написать автору, войди в аккаунт.');
+    expect(guestHtml).toContain('Чтобы написать продавцу в Telegram, войди в аккаунт.');
     expect(guestHtml).not.toContain('name="message"');
 
     const writerResponse = await runRequest(
@@ -897,7 +902,7 @@ describe('Ad messages', () => {
     );
     expect(writerResponse.status).toBe(200);
     const writerHtml = await writerResponse.text();
-    expect(writerHtml).toContain('Написать автору');
+    expect(writerHtml).toContain('Написать продавцу в Telegram');
     expect(writerHtml).toContain('Продаю');
     expect(writerHtml).toContain('name="message"');
     expect(writerHtml).toContain('Отправить');
@@ -918,7 +923,7 @@ describe('Ad messages', () => {
     expect(messageResponse.status).toBe(303);
     const messageLocation = new URL(messageResponse.headers.get('Location') || '', 'http://example.com');
     expect(messageLocation.pathname).toBe(`/ad/${adId}`);
-    expect(messageLocation.searchParams.get('message')).toBe('Сообщение отправлено');
+    expect(messageLocation.searchParams.get('message')).toBe('Сообщение отправлено в Telegram продавцу');
 
     const sentMessageCall = telegramFetchCalls
       .filter((call) => call.url.includes('/sendMessage'))
@@ -942,6 +947,50 @@ describe('Ad messages', () => {
     expect(ownerHtml).not.toContain('name="message"');
   });
 
+  it('hides the message form when the viewer has no Telegram identity', async () => {
+    await seedUser({
+      id: 64,
+      login: 'telegramowner',
+      email: 'telegramowner@example.com',
+      sessionToken: 'telegramowner-session',
+    });
+    await insertTelegramIdentity({
+      userId: 64,
+      telegramUserId: '64001',
+      telegramUsername: 'telegramowner_tg',
+    });
+
+    await seedUser({
+      id: 65,
+      login: 'notgwriter',
+      email: 'notgwriter@example.com',
+      sessionToken: 'notgwriter-session',
+    });
+
+    const adId = await insertAd({
+      title: 'Telegram only',
+      body: 'Message body',
+      category: 'services',
+      ownerUserId: 64,
+      status: 'published',
+    });
+
+    const response = await runRequest(
+      new Request(`http://example.com/ad/${adId}`, {
+        headers: {
+          Cookie: 'session=notgwriter-session',
+        },
+      })
+    );
+
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain('Чтобы написать продавцу в Telegram, подключи Telegram-бот в настройках.');
+    expect(html).toContain('/settings/link-telegram');
+    expect(html).not.toContain('name="message"');
+    expect(html).not.toContain('Отправить');
+  });
+
   it('hides the message form when the author has no Telegram identity', async () => {
     await seedUser({
       id: 62,
@@ -955,6 +1004,11 @@ describe('Ad messages', () => {
       login: 'plainwriter',
       email: 'plainwriter@example.com',
       sessionToken: 'plainwriter-session',
+    });
+    await insertTelegramIdentity({
+      userId: 63,
+      telegramUserId: '63001',
+      telegramUsername: 'plainwriter_tg',
     });
 
     const adId = await insertAd({
@@ -975,7 +1029,7 @@ describe('Ad messages', () => {
 
     expect(response.status).toBe(200);
     const html = await response.text();
-    expect(html).toContain('У автора не привязан Telegram.');
+    expect(html).toContain('У продавца не подключён Telegram-бот.');
     expect(html).not.toContain('name="message"');
     expect(html).not.toContain('Отправить');
   });
