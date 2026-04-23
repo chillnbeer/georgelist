@@ -286,6 +286,9 @@ type BotDraftRow = {
 
 const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30;
 const PASSWORD_HASH_ITERATIONS = 210000;
+const ADS_HOME_LIMIT = 200;
+const ADS_USER_LIMIT = 100;
+const ADS_SEARCH_LIMIT = 50;
 const TELEGRAM_AUTH_COOKIE_NAME = 'telegram_auth';
 const TELEGRAM_AUTH_COOKIE_MAX_AGE_SECONDS = 60 * 10;
 const TELEGRAM_AUTH_MAX_AGE_SECONDS = 60 * 60 * 24;
@@ -5767,9 +5770,10 @@ async function listPublishedAdsByUser(env: Env, userId: number, city: string | n
         AND deleted_at IS NULL
         AND COALESCE(ads.city, ?) = ?
       ORDER BY ads.created_at DESC, ads.id DESC
+      LIMIT ?
     `
   )
-    .bind(CITY_DEFAULT_SLUG, userId, CITY_DEFAULT_SLUG, normalizeCity(city))
+    .bind(CITY_DEFAULT_SLUG, userId, CITY_DEFAULT_SLUG, normalizeCity(city), ADS_USER_LIMIT)
     .all<AdCardRow>();
 
   return result.results ?? [];
@@ -5784,9 +5788,10 @@ async function listPublishedAds(env: Env, city: string | null = null): Promise<A
         AND deleted_at IS NULL
         AND COALESCE(city, ?) = ?
       ORDER BY created_at DESC, id DESC
+      LIMIT ?
     `
   )
-    .bind(CITY_DEFAULT_SLUG, normalizeCity(city))
+    .bind(CITY_DEFAULT_SLUG, normalizeCity(city), ADS_HOME_LIMIT)
     .all<AdRow>();
 
   return result.results;
@@ -5964,9 +5969,10 @@ async function searchPublishedAds(env: Env, query: string, city: string | null =
           OR LOWER(ads.body) LIKE ? ESCAPE '\\'
         )
       ORDER BY ads.created_at DESC, ads.id DESC
+      LIMIT ?
     `
   )
-    .bind(CITY_DEFAULT_SLUG, CITY_DEFAULT_SLUG, normalizeCity(city), pattern, pattern)
+    .bind(CITY_DEFAULT_SLUG, CITY_DEFAULT_SLUG, normalizeCity(city), pattern, pattern, ADS_SEARCH_LIMIT)
     .all<AdCardRow>();
 
   return result.results;
@@ -8526,9 +8532,10 @@ async function listMyAds(env: Env, userId: number): Promise<AdRow[]> {
       WHERE owner_user_id = ?
         AND deleted_at IS NULL
       ORDER BY created_at DESC, id DESC
+      LIMIT ?
     `
   )
-    .bind(userId)
+    .bind(userId, ADS_USER_LIMIT)
     .all<AdRow>();
 
   return result.results;
