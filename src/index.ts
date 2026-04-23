@@ -6557,10 +6557,11 @@ async function sendChatMessage(
 
     if (recipientHasOpenChat) {
       try {
-        await sendUserBotChatView(env, recipientTelegram.provider_user_id, recipientChatId, conversation.id, null, true, null, true);
+        await sendUserBotChatView(env, recipientTelegram.provider_user_id, recipientChatId, conversation.id);
       } catch (error) {
         console.error('Failed to refresh open chat for recipient', error);
       }
+      return conversation;
     }
 
     const lines = [
