@@ -8678,7 +8678,9 @@ export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     await ensureAdImageColumns(env);
     await ensureUserAvatarColumns(env);
+    await ensureUserCityColumn(env);
     await ensureAdContactColumn(env);
+    await ensureAdCityColumn(env);
     await ensureAdTypeColumn(env);
     await ensureBotDraftColumns(env);
     await ensureChatTables(env);
