@@ -6800,8 +6800,6 @@ async function handleUserBotCallback(
   const chatId = callbackQuery.message.chat.id;
   const data = callbackQuery.data;
 
-  await rememberUserBotScreen(env, telegramUserId, chatId, callbackQuery.message.message_id);
-
   if (data === USER_BOT_MENU_EDIT) {
     await answerUserCallbackQuery(env, callbackQuery.id, 'Редактирование скоро будет').catch(() => {});
     await showUserBotScreen(env, telegramUserId, chatId, 'Редактирование скоро будет', userBotMenuMarkup(env));
@@ -7013,8 +7011,27 @@ async function handleUserBotCallback(
     }
 
     const conversation = await getOrCreateConversation(env, adId, telegramIdentity.user_id, ad.owner_user_id);
+    await upsertBotDraft(
+      env,
+      telegramUserId,
+      'chat',
+      'message',
+      null,
+      null,
+      null,
+      adId,
+      null,
+      null,
+      null,
+      null,
+      null,
+      ad.owner_user_id,
+      adId,
+      null,
+      null
+    );
     await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
-    await sendUserBotChatView(env, telegramUserId, chatId, conversation.id);
+    await sendUserBotChatView(env, telegramUserId, chatId, conversation.id, null, true);
     return json({ ok: true });
   }
 
