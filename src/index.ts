@@ -8712,7 +8712,7 @@ async function handleMyDeleteRoute(request: Request, env: Env, id: string): Prom
   }
 
   if (request.method !== 'POST') {
-    return text('Method Not Allowed', 405);
+    return methodNotAllowed();
   }
 
   return handleMyDeletePost(request, env, currentUser.id, id);
@@ -8732,7 +8732,7 @@ async function handleMyEditRoute(request: Request, env: Env, ctx: ExecutionConte
     return handleMyEditPost(request, env, ctx, currentUser.id, id, currentUser);
   }
 
-  return text('Method Not Allowed', 405);
+  return methodNotAllowed();
 }
 
 async function handleAdminGet(request: Request, env: Env): Promise<Response> {
@@ -8782,7 +8782,7 @@ async function handleAdminDeleteRoute(request: Request, env: Env, id: string): P
   }
 
   if (request.method !== 'POST') {
-    return text('Method Not Allowed', 405);
+    return methodNotAllowed();
   }
 
   const numericId = Number(id);
@@ -8847,7 +8847,7 @@ async function handleAdminAdStatusRoute(
   }
 
   if (request.method !== 'POST') {
-    return text('Method Not Allowed', 405);
+    return methodNotAllowed();
   }
 
   const numericId = Number(id);
@@ -8879,7 +8879,7 @@ async function handleAdminUserActionRoute(request: Request, env: Env, id: string
   }
 
   if (request.method !== 'POST') {
-    return text('Method Not Allowed', 405);
+    return methodNotAllowed();
   }
 
   const numericId = Number(id);
@@ -8954,7 +8954,7 @@ async function handleAdminEditRoute(request: Request, env: Env, ctx: ExecutionCo
   }
 
   if (request.method !== 'POST') {
-    return text('Method Not Allowed', 405);
+    return methodNotAllowed();
   }
 
   const { title, body, contact, category, type, location_lat, location_lng, location_radius_meters, location_label, image } = await parseAdForm(request);
@@ -9040,7 +9040,7 @@ async function handleAdminPromoteUserRoute(request: Request, env: Env, id: strin
   }
 
   if (request.method !== 'POST') {
-    return text('Method Not Allowed', 405);
+    return methodNotAllowed();
   }
 
   const numericId = Number(id);
@@ -9859,59 +9859,59 @@ export default {
     if (path === '/register') {
       if (request.method === 'GET') return handleRegisterGet(request, env);
       if (request.method === 'POST') return handleRegisterPost(request, env);
-      return text('Method Not Allowed', 405);
+      return methodNotAllowed();
     }
 
     if (path === '/login') {
       if (request.method === 'GET') return handleLoginGet(request, env);
       if (request.method === 'POST') return handleLoginPost(request, env);
-      return text('Method Not Allowed', 405);
+      return methodNotAllowed();
     }
 
     if (path === '/login/telegram') {
       if (request.method === 'GET') return handleLoginTelegramGet(request, env);
-      return text('Method Not Allowed', 405);
+      return methodNotAllowed();
     }
 
     if (path === '/register/telegram') {
       if (request.method === 'GET') return handleRegisterTelegramGet(request, env);
-      return text('Method Not Allowed', 405);
+      return methodNotAllowed();
     }
 
     if (path === '/logout') {
       if (request.method === 'POST') return handleLogoutPost(request, env);
-      return text('Method Not Allowed', 405);
+      return methodNotAllowed();
     }
 
     if (path === '/my') {
       if (request.method === 'GET') return handleMyGet(request, env);
-      return text('Method Not Allowed', 405);
+      return methodNotAllowed();
     }
 
     if (path === '/settings') {
       if (request.method === 'GET') return handleSettingsGet(request, env);
       if (request.method === 'POST') return handleSettingsPost(request, env);
-      return text('Method Not Allowed', 405);
+      return methodNotAllowed();
     }
 
     if (path === '/settings/avatar') {
       if (request.method === 'POST') return handleSettingsAvatarPost(request, env);
-      return text('Method Not Allowed', 405);
+      return methodNotAllowed();
     }
 
     if (path === '/settings/password') {
       if (request.method === 'POST') return handleSettingsPasswordPost(request, env);
-      return text('Method Not Allowed', 405);
+      return methodNotAllowed();
     }
 
     if (path === '/settings/avatar/delete') {
       if (request.method === 'POST') return handleSettingsAvatarDeletePost(request, env);
-      return text('Method Not Allowed', 405);
+      return methodNotAllowed();
     }
 
     if (path === '/admin') {
       if (request.method === 'GET') return handleAdminGet(request, env);
-      return text('Method Not Allowed', 405);
+      return methodNotAllowed();
     }
 
     if (path.startsWith('/admin/publish/')) {
@@ -9924,12 +9924,12 @@ export default {
 
     if (path === '/settings/link-telegram') {
       if (request.method === 'GET') return handleSettingsLinkTelegramGet(request, env);
-      return text('Method Not Allowed', 405);
+      return methodNotAllowed();
     }
 
     if (path === '/settings/link-telegram/confirm') {
       if (request.method === 'POST') return handleSettingsLinkTelegramConfirmPost(request, env);
-      return text('Method Not Allowed', 405);
+      return methodNotAllowed();
     }
 
     if (path.startsWith('/my/delete/')) {
@@ -9963,7 +9963,7 @@ export default {
     if (path === '/new') {
       if (request.method === 'GET') return handleNewGet(request, env);
       if (request.method === 'POST') return handleNewPost(request, env, ctx);
-      return text('Method Not Allowed', 405);
+      return methodNotAllowed();
     }
 
     if (path === '/api/location-search' && request.method === 'GET') {
@@ -9978,7 +9978,7 @@ export default {
       if (request.method === 'POST') {
         return handleAdMessagePost(request, env, path.slice('/ad/'.length, -'/message'.length), await getCurrentUser(request, env));
       }
-      return text('Method Not Allowed', 405);
+      return methodNotAllowed();
     }
 
     if (path.startsWith('/ad/') && request.method === 'GET') {
@@ -10002,13 +10002,13 @@ export default {
     if (path === '/city') {
       if (request.method === 'GET') return handleCityGet(request, env);
       if (request.method === 'POST') return handleCityPost(request, env);
-      return text('Method Not Allowed', 405);
+      return methodNotAllowed();
     }
 
     if (path === '/api/ads') {
       if (request.method === 'GET') return handleApiAdsGet(env);
       if (request.method === 'POST') return handleApiAdsPost(request, env, ctx);
-      return text('Method Not Allowed', 405);
+      return methodNotAllowed();
     }
 
     if (path === '/telegram/auth' && request.method === 'GET') {
