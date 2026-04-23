@@ -143,6 +143,16 @@ const SCHEMA_STATEMENTS = [
     )
   `,
   `
+    CREATE TABLE IF NOT EXISTS bot_chat_notifications (
+      conversation_id INTEGER NOT NULL,
+      user_id INTEGER NOT NULL,
+      message_id INTEGER NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(conversation_id, user_id)
+    )
+  `,
+  `
     CREATE TABLE IF NOT EXISTS ads (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       title TEXT NOT NULL,
@@ -258,6 +268,7 @@ async function resetDatabase(): Promise<void> {
   await env.DB.prepare('DELETE FROM ads').run();
   await env.DB.prepare('DELETE FROM bot_drafts').run();
   await env.DB.prepare('DELETE FROM bot_chat_messages').run();
+  await env.DB.prepare('DELETE FROM bot_chat_notifications').run();
   await env.DB.prepare('DELETE FROM bot_conversations').run();
   await env.DB.prepare('DELETE FROM users').run();
   mediaStore.clear();
@@ -391,13 +402,15 @@ function cookieFromSetCookie(setCookie: string | null, name: string): string | n
 
 beforeEach(async () => {
   telegramFetchCalls.length = 0;
+  let telegramMessageId = 1000;
   vi.stubGlobal(
     'fetch',
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === 'string' || input instanceof URL ? String(input) : input.url;
       const body = typeof init?.body === 'string' ? JSON.parse(init.body) : null;
       telegramFetchCalls.push({ url, body });
-      return new Response(JSON.stringify({ ok: true, result: {} }), {
+      const result = url.includes('/sendMessage') || url.includes('/sendPhoto') ? { message_id: telegramMessageId++ } : {};
+      return new Response(JSON.stringify({ ok: true, result }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -1032,6 +1045,85 @@ describe('Ad messages', () => {
     expect(html).toContain('У продавца не подключён Telegram-бот.');
     expect(html).not.toContain('name="message"');
     expect(html).not.toContain('Отправить');
+  });
+
+  it('updates the same Telegram notification card when the dialog is closed', async () => {
+    await seedUser({
+      id: 66,
+      login: 'closedowner',
+      email: 'closedowner@example.com',
+      sessionToken: 'closedowner-session',
+    });
+    await insertTelegramIdentity({
+      userId: 66,
+      telegramUserId: '66001',
+      telegramUsername: 'closedowner_tg',
+    });
+
+    await seedUser({
+      id: 67,
+      login: 'closedwriter',
+      email: 'closedwriter@example.com',
+      sessionToken: 'closedwriter-session',
+    });
+    await insertTelegramIdentity({
+      userId: 67,
+      telegramUserId: '67001',
+      telegramUsername: 'closedwriter_tg',
+    });
+
+    const adId = await insertAd({
+      title: 'Closed dialog',
+      body: 'Message body',
+      category: 'services',
+      ownerUserId: 66,
+      status: 'published',
+    });
+
+    const firstForm = new FormData();
+    firstForm.set('message', 'Первое сообщение');
+    const firstResponse = await runRequest(
+      new Request(`http://example.com/ad/${adId}/message`, {
+        method: 'POST',
+        headers: {
+          Cookie: 'session=closedwriter-session',
+        },
+        body: firstForm,
+      })
+    );
+    expect(firstResponse.status).toBe(303);
+
+    const firstNotify = telegramFetchCalls.filter(
+      (call) => call.url.includes('/sendMessage') && (call.body as { chat_id?: number }).chat_id === 66001
+    ).at(-1);
+    expect(String((firstNotify?.body as { text?: string }).text || '')).toContain('Первое сообщение');
+
+    const firstSendCount = telegramFetchCalls.filter(
+      (call) => call.url.includes('/sendMessage') && (call.body as { chat_id?: number }).chat_id === 66001
+    ).length;
+
+    const secondForm = new FormData();
+    secondForm.set('message', 'Второе сообщение');
+    const secondResponse = await runRequest(
+      new Request(`http://example.com/ad/${adId}/message`, {
+        method: 'POST',
+        headers: {
+          Cookie: 'session=closedwriter-session',
+        },
+        body: secondForm,
+      })
+    );
+    expect(secondResponse.status).toBe(303);
+
+    const secondSendCount = telegramFetchCalls.filter(
+      (call) => call.url.includes('/sendMessage') && (call.body as { chat_id?: number }).chat_id === 66001
+    ).length;
+    expect(secondSendCount).toBe(firstSendCount);
+
+    const updatedNotify = telegramFetchCalls.filter(
+      (call) => call.url.includes('/editMessageText') && (call.body as { chat_id?: number }).chat_id === 66001
+    ).at(-1);
+    expect(String((updatedNotify?.body as { text?: string }).text || '')).toContain('Второе сообщение');
   });
 });
 

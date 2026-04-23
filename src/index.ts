@@ -255,6 +255,14 @@ type ChatMessageRow = {
   created_at: string;
 };
 
+type ChatNotificationRow = {
+  conversation_id: number;
+  user_id: number;
+  message_id: number;
+  created_at: string;
+  updated_at: string;
+};
+
 const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30;
 const PASSWORD_HASH_ITERATIONS = 100000;
 const TELEGRAM_AUTH_COOKIE_NAME = 'telegram_auth';
@@ -3154,7 +3162,7 @@ async function sendUserBotChatView(
 
   const otherUserId = conversation.user_low_id === telegramIdentity.user_id ? conversation.user_high_id : conversation.user_low_id;
   const otherUser = await findUserById(env, otherUserId);
-  const messages = await listConversationMessages(env, conversation.id, 8, 0);
+  const messages = await listConversationMessages(env, conversation.id, 20, 0);
   const lines = [
     ...(message ? [message, ''] : []),
     buildChatScreenTitle(otherUser?.login || 'пользователь', ad.title),
@@ -3162,7 +3170,7 @@ async function sendUserBotChatView(
     ...(messages.length
       ? messages.map((row) => {
           const senderLogin = row.sender_user_id === telegramIdentity.user_id ? 'Вы' : otherUser?.login || 'пользователь';
-          const time = row.created_at ? row.created_at.slice(11, 16) : '';
+          const time = row.created_at ? row.created_at.slice(11, 19) : '';
           return `${time ? `${time} ` : ''}${senderLogin}: ${row.body}`;
         })
       : ['Пока нет сообщений']),
@@ -5119,11 +5127,28 @@ async function ensureChatTables(env: Env): Promise<void> {
     ).run();
 
     await env.DB.prepare(
+      `
+        CREATE TABLE IF NOT EXISTS bot_chat_notifications (
+          conversation_id INTEGER NOT NULL,
+          user_id INTEGER NOT NULL,
+          message_id INTEGER NOT NULL,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(conversation_id, user_id)
+        )
+      `
+    ).run();
+
+    await env.DB.prepare(
       `CREATE INDEX IF NOT EXISTS bot_conversations_last_message_at_idx ON bot_conversations(last_message_at)`
     ).run();
 
     await env.DB.prepare(
       `CREATE INDEX IF NOT EXISTS bot_chat_messages_conversation_id_idx ON bot_chat_messages(conversation_id, id)`
+    ).run();
+
+    await env.DB.prepare(
+      `CREATE INDEX IF NOT EXISTS bot_chat_notifications_conversation_user_idx ON bot_chat_notifications(conversation_id, user_id)`
     ).run();
   })().finally(() => {
     cachedEnsureChatTablesPromise = null;
@@ -5250,6 +5275,51 @@ async function listConversationMessages(env: Env, conversationId: number, limit 
   return result.results.reverse();
 }
 
+async function getChatNotification(
+  env: Env,
+  conversationId: number,
+  userId: number
+): Promise<ChatNotificationRow | null> {
+  const result = await env.DB.prepare(
+    `
+      SELECT conversation_id, user_id, message_id, created_at, updated_at
+      FROM bot_chat_notifications
+      WHERE conversation_id = ?
+        AND user_id = ?
+      LIMIT 1
+    `
+  )
+    .bind(conversationId, userId)
+    .first<ChatNotificationRow>();
+
+  return result ?? null;
+}
+
+async function upsertChatNotification(
+  env: Env,
+  conversationId: number,
+  userId: number,
+  messageId: number
+): Promise<void> {
+  await env.DB.prepare(
+    `
+      INSERT INTO bot_chat_notifications (
+        conversation_id,
+        user_id,
+        message_id,
+        created_at,
+        updated_at
+      )
+      VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      ON CONFLICT(conversation_id, user_id) DO UPDATE SET
+        message_id = excluded.message_id,
+        updated_at = CURRENT_TIMESTAMP
+    `
+  )
+    .bind(conversationId, userId, messageId)
+    .run();
+}
+
 async function storeConversationMessage(
   env: Env,
   conversationId: number,
@@ -5300,6 +5370,30 @@ async function storeConversationMessage(
     .run();
 
   return message;
+}
+
+async function sendOrUpdateChatNotification(
+  env: Env,
+  conversationId: number,
+  recipientUserId: number,
+  recipientChatId: number,
+  text: string,
+  replyMarkup?: Record<string, unknown>
+): Promise<void> {
+  const existing = await getChatNotification(env, conversationId, recipientUserId);
+  if (existing?.message_id) {
+    try {
+      await editUserBotMessage(env, recipientChatId, existing.message_id, text, replyMarkup);
+      return;
+    } catch (error) {
+      console.error('Failed to edit chat notification', error);
+    }
+  }
+
+  const messageId = await sendUserBotMessageWithId(env, recipientChatId, text, replyMarkup);
+  if (messageId !== null) {
+    await upsertChatNotification(env, conversationId, recipientUserId, messageId);
+  }
 }
 
 async function createAd(
@@ -6100,13 +6194,14 @@ async function sendChatMessage(
         'Сообщение:',
         body,
       ];
-      const senderIdentity = await findTelegramIdentityByUserId(env, senderUserId);
       try {
-        await sendChatMessageToUser(
+        await sendOrUpdateChatNotification(
           env,
-          recipientTelegram.provider_user_id,
+          conversation.id,
+          recipientUserId,
+          recipientChatId,
           lines.join('\n'),
-          senderIdentity?.provider_user_id ? userBotIncomingChatMarkup(conversation.id) : undefined
+          userBotIncomingChatMarkup(conversation.id)
         );
       } catch (error) {
         console.error('Failed to notify chat recipient', error);
