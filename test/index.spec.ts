@@ -51,6 +51,7 @@ const SCHEMA_STATEMENTS = [
       login TEXT NOT NULL UNIQUE,
       display_name TEXT,
       role TEXT NOT NULL DEFAULT 'user',
+      city TEXT,
       avatar_key TEXT,
       avatar_mime_type TEXT,
       avatar_updated_at TEXT,
@@ -139,6 +140,7 @@ const SCHEMA_STATEMENTS = [
       conversation_id INTEGER NOT NULL,
       sender_user_id INTEGER NOT NULL,
       body TEXT NOT NULL,
+      is_read INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )
   `,
@@ -157,6 +159,7 @@ const SCHEMA_STATEMENTS = [
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       title TEXT NOT NULL,
       body TEXT NOT NULL,
+      city TEXT,
       category TEXT,
       type TEXT,
       status TEXT NOT NULL DEFAULT 'pending',
@@ -288,11 +291,11 @@ async function seedUser(params: {
 
   await env.DB.batch([
     env.DB.prepare(
-      `
-        INSERT INTO users (id, login, display_name, role, created_at, updated_at)
-        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-      `
-    ).bind(params.id, params.login, displayName, role),
+    `
+      INSERT INTO users (id, login, display_name, role, city, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+    `
+    ).bind(params.id, params.login, displayName, role, 'ekb'),
     env.DB.prepare(
       `
         INSERT INTO user_identities (
@@ -349,11 +352,11 @@ async function insertAd(params: {
 }): Promise<number> {
   const result = await env.DB.prepare(
     `
-      INSERT INTO ads (title, body, category, type, status, owner_user_id, deleted_at, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      INSERT INTO ads (title, body, city, category, type, status, owner_user_id, deleted_at, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
     `
   )
-    .bind(params.title, params.body, params.category, params.type || 'sell', params.status || 'pending', params.ownerUserId)
+    .bind(params.title, params.body, 'ekb', params.category, params.type || 'sell', params.status || 'pending', params.ownerUserId)
     .run();
 
   return Number(result.meta.last_row_id);
@@ -2083,7 +2086,7 @@ describe('User bot replies and passwords', () => {
     const initialNotification = lastTelegramCall('sendMessage');
     expect(String((initialNotification?.body as { text?: string }).text || '')).toContain('Тебе написал пользователь replywriter');
     const initialReplyMarkup = (initialNotification?.body as { reply_markup?: { inline_keyboard?: Array<Array<{ text?: string; callback_data?: string }>> } }).reply_markup;
-    expect(initialReplyMarkup?.inline_keyboard?.[0]?.[0]?.text).toBe('Открыть чат');
+    expect(initialReplyMarkup?.inline_keyboard?.[0]?.[0]?.text).toBe('Открыть диалог');
     expect(initialReplyMarkup?.inline_keyboard?.[1]?.[0]?.text).toBe('Диалоги');
 
     const conversation = await env.DB.prepare(
@@ -2132,7 +2135,7 @@ describe('User bot replies and passwords', () => {
     expect(String((replySent?.body as { text?: string }).text || '')).toContain('по объявлению: Reply chain');
     expect(String((replySent?.body as { text?: string }).text || '')).toContain('Да, актуально');
     const replyReplyMarkup = (replySent?.body as { reply_markup?: { inline_keyboard?: Array<Array<{ text?: string; callback_data?: string }>> } }).reply_markup;
-    expect(replyReplyMarkup?.inline_keyboard?.[0]?.[0]?.text).toBe('Открыть чат');
+    expect(replyReplyMarkup?.inline_keyboard?.[0]?.[0]?.text).toBe('Открыть диалог');
     expect(replyReplyMarkup?.inline_keyboard?.[1]?.[0]?.text).toBe('Диалоги');
 
     const replyDelete = lastTelegramCall('deleteMessage');

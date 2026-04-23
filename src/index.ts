@@ -1,5 +1,31 @@
 import { decode as decodePng } from 'fast-png';
 import * as jpeg from 'jpeg-js';
+import {
+  CITIES,
+  CITY_COOKIE_NAME,
+  CITY_DEFAULT_SLUG,
+  CITY_LABELS,
+  buildCityCookie,
+  buildCityLocation,
+  cityLabel,
+  normalizeCity,
+  type CitySlug,
+} from './cities';
+import {
+  getChatNotification,
+  getConversationById,
+  getConversationForUsers,
+  getOrCreateConversation,
+  listConversationMessages,
+  listConversationsForUser,
+  markConversationMessagesRead,
+  normalizeConversationUserIds,
+  type ChatMessageRow,
+  type ChatNotificationRow,
+  type ChatThreadListRow,
+  type ChatThreadRow,
+  upsertChatNotification,
+} from './chat';
 
 const CATEGORIES = [
   { slug: 'auto', label: 'Авто' },
@@ -52,6 +78,7 @@ type CurrentUser = {
   login: string;
   display_name: string | null;
   email: string | null;
+  city: string | null;
   role: string;
   avatar_key: string | null;
   avatar_mime_type: string | null;
@@ -65,6 +92,7 @@ type AdRow = {
   title: string;
   body: string;
   contact: string | null;
+  city: string | null;
   category: string | null;
   type: string | null;
   owner_user_id: number | null;
@@ -84,6 +112,7 @@ type PublicAdCardRow = {
   title: string;
   body: string;
   contact: string | null;
+  city: string | null;
   category: string | null;
   type: string | null;
   owner_user_id: number | null;
@@ -98,6 +127,7 @@ type PublicAdCardRow = {
 type AdCardRow = {
   id: number;
   title: string;
+  city: string | null;
   category: string | null;
   type: string | null;
   image_key: string | null;
@@ -110,6 +140,7 @@ type PublicUserRow = {
   id: number;
   login: string;
   display_name: string | null;
+  city: string | null;
   avatar_key: string | null;
   avatar_mime_type: string | null;
   avatar_updated_at: string | null;
@@ -120,6 +151,7 @@ type AdForm = {
   title: string;
   body: string;
   contact: string;
+  city: string;
   category: string;
   type: string;
   image: File | null;
@@ -223,46 +255,6 @@ type BotDraftRow = {
   updated_at: string;
 };
 
-type ChatThreadRow = {
-  id: number;
-  ad_id: number;
-  user_low_id: number;
-  user_high_id: number;
-  last_message_sender_user_id: number | null;
-  last_message_text: string | null;
-  last_message_at: string | null;
-  created_at: string;
-  updated_at: string;
-};
-
-type ChatThreadListRow = {
-  id: number;
-  ad_id: number;
-  ad_title: string;
-  other_user_id: number;
-  other_login: string;
-  other_avatar_key: string | null;
-  last_message_sender_user_id: number | null;
-  last_message_text: string | null;
-  last_message_at: string | null;
-};
-
-type ChatMessageRow = {
-  id: number;
-  conversation_id: number;
-  sender_user_id: number;
-  body: string;
-  created_at: string;
-};
-
-type ChatNotificationRow = {
-  conversation_id: number;
-  user_id: number;
-  message_id: number;
-  created_at: string;
-  updated_at: string;
-};
-
 const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30;
 const PASSWORD_HASH_ITERATIONS = 100000;
 const TELEGRAM_AUTH_COOKIE_NAME = 'telegram_auth';
@@ -291,6 +283,7 @@ const BOT_ADS_PAGE_SIZE = 5;
 const USER_BOT_DELETE_PREFIX = 'delete_';
 const USER_BOT_SETTINGS_PREFIX = 'user:settings:';
 const USER_BOT_CHAT_PREFIX = 'user:chat:';
+const USER_BOT_CHAT_HIDE_PREFIX = 'user:chathide:';
 const USER_BOT_CHAT_START_PREFIX = 'user:chatstart:';
 const USER_BOT_CHAT_LIST = 'user:chats';
 const USER_BOT_DRAFT_PREFIX = 'draft:';
@@ -305,6 +298,7 @@ const AD_SELECT_COLUMNS = `
   title,
   body,
   contact,
+  city,
   category,
   type,
   owner_user_id,
@@ -324,6 +318,8 @@ let cachedTelegramUserBotUsernamePromise: Promise<string | null> | null = null;
 let cachedEnsureAdImageColumnsPromise: Promise<void> | null = null;
 let cachedEnsureUserAvatarColumnsPromise: Promise<void> | null = null;
 let cachedEnsureAdContactColumnPromise: Promise<void> | null = null;
+let cachedEnsureAdCityColumnPromise: Promise<void> | null = null;
+let cachedEnsureUserCityColumnPromise: Promise<void> | null = null;
 let cachedEnsureAdTypeColumnPromise: Promise<void> | null = null;
 let cachedEnsureBotDraftColumnsPromise: Promise<void> | null = null;
 let cachedEnsureChatTablesPromise: Promise<void> | null = null;
@@ -994,6 +990,16 @@ function clearTelegramAuthCookie(secure: boolean): string {
     .join('; ');
 }
 
+function getCurrentCityFromRequest(request: Request, currentUser: CurrentUser | null = null): CitySlug {
+  const cookieValue = getCookieValue(request, CITY_COOKIE_NAME);
+  const cookieCity = normalizeCity(cookieValue);
+  if (cookieCity !== CITY_DEFAULT_SLUG || cookieValue) {
+    return cookieCity;
+  }
+
+  return normalizeCity(currentUser?.city);
+}
+
 async function getTelegramUserBotToken(env: Env): Promise<string> {
   const token = env.USER_TELEGRAM_BOT_TOKEN || env.TELEGRAM_USER_BOT_TOKEN;
   if (!token) {
@@ -1128,13 +1134,15 @@ async function readPendingTelegramAuthValue(env: Env, request: Request): Promise
   }
 }
 
-function nav(currentUser: CurrentUser | null = null): string {
+function nav(currentUser: CurrentUser | null = null, city: string | null = null): string {
+  const citySlug = normalizeCity(city);
+  const cityLink = `<a href="/city">${htmlEscape(cityLabel(citySlug))}</a>`;
   const adminLink = currentUser && currentUser.role === 'admin' ? ' <a href="/admin">админка</a>' : '';
   const authLinks = currentUser
     ? `<a href="/u/${encodeURIComponent(currentUser.login)}">мой профиль</a> <a href="/settings">настройки</a>${adminLink} <form method="post" action="/logout" style="display:inline"><button class="link-button" type="submit">выйти</button></form>`
     : `<a href="/login">войти</a> <a href="/register">зарегистрироваться</a>`;
 
-  return `<div class="nav"><a href="/">главная</a> <a href="/new">создать объявление</a> ${authLinks}</div>`;
+  return `<div class="nav"><a href="/">главная</a> <a href="/new">создать объявление</a> ${cityLink} ${authLinks}</div>`;
 }
 
 function shell(title: string, body: string, currentUser: CurrentUser | null = null, status = 200): Response {
@@ -1493,6 +1501,7 @@ function renderAdList(env: Env, ads: AdCardRow[]): string {
 
   return `<div class="ad-grid">${ads
     .map((ad) => {
+      const city = ad.city ? `${htmlEscape(cityLabel(ad.city))} · ` : '';
       const category = ad.category ? `${htmlEscape(categoryLabel(ad.category))} · ` : '';
       const type = renderTypeBadge(ad.type);
       const author = ad.author_login
@@ -1502,7 +1511,7 @@ function renderAdList(env: Env, ads: AdCardRow[]): string {
   ${renderAdImage(env, ad.image_key, ad.title, 'ad-image')}
   <div class="ad-content">
     <div class="title">${type}<a href="/ad/${ad.id}">${htmlEscape(ad.title)}</a></div>
-    <div class="meta">${category}${htmlEscape(ad.created_at)}</div>
+    <div class="meta">${city}${category}${htmlEscape(ad.created_at)}</div>
     ${author}
   </div>
 </div>`;
@@ -1550,8 +1559,22 @@ function renderTypeSelect(selected = 'sell'): string {
   </select>`;
 }
 
+function renderCityOptions(selected: string | null | undefined = CITY_DEFAULT_SLUG): string {
+  return CITIES.map((city) => `<option value="${city.slug}"${normalizeCity(selected) === city.slug ? ' selected' : ''}>${htmlEscape(city.label)}</option>`).join('');
+}
+
+function renderCitySelect(selected: string | null | undefined = CITY_DEFAULT_SLUG): string {
+  return `<select id="city" name="city">
+    ${renderCityOptions(selected)}
+  </select>`;
+}
+
 function renderTypeBadge(type: string | null): string {
   return `<span class="badge">${htmlEscape(typeLabel(type))}</span>`;
+}
+
+function renderCityBadge(city: string | null): string {
+  return `<span class="badge">${htmlEscape(cityLabel(city))}</span>`;
 }
 
 function renderAdImage(env: Env, key: string | null, alt: string, className: string): string {
@@ -1570,11 +1593,11 @@ function renderAvatar(env: Env, key: string | null, alt: string, className = 'av
   return `<div class="${className}"><img src="${htmlEscape(buildMediaUrl(env, key))}" alt="${htmlEscape(alt)}" loading="lazy" /></div>`;
 }
 
-function renderNotFoundPage(currentUser: CurrentUser | null = null): Response {
+function renderNotFoundPage(currentUser: CurrentUser | null = null, currentCity: string | null = null): Response {
   return shell(
     'страница не найдена - жоржлист',
     `<h1>жоржлист</h1>
-${nav(currentUser)}
+${nav(currentUser, currentCity)}
 <div class="section">
   <h2>страница не найдена</h2>
   <p>такого объявления, пользователя или страницы здесь нет</p>
@@ -1589,7 +1612,7 @@ ${nav(currentUser)}
   );
 }
 
-function renderHome(currentUser: CurrentUser | null = null): Response {
+function renderHome(currentUser: CurrentUser | null = null, currentCity: string | null = null): Response {
   const categories = CATEGORIES.map(
     (category) => `<li><a href="/category/${category.slug}">${htmlEscape(category.label)}</a></li>`
   ).join('');
@@ -1597,7 +1620,7 @@ function renderHome(currentUser: CurrentUser | null = null): Response {
   return shell(
     'жоржлист',
     `<h1>жоржлист</h1>
-${nav(currentUser)}
+${nav(currentUser, currentCity)}
 <div class="section">
   <h2>Категории</h2>
   <ul>
@@ -1608,7 +1631,7 @@ ${renderSearchForm()}`
   );
 }
 
-function renderSearchPage(env: Env, query: string, ads: AdCardRow[], currentUser: CurrentUser | null = null): Response {
+function renderSearchPage(env: Env, query: string, ads: AdCardRow[], currentUser: CurrentUser | null = null, currentCity: string | null = null): Response {
   const hasQuery = query.trim().length > 0;
   const content = hasQuery
     ? ads.length
@@ -1619,7 +1642,7 @@ function renderSearchPage(env: Env, query: string, ads: AdCardRow[], currentUser
   return shell(
     'поиск - жоржлист',
     `<h1>жоржлист</h1>
-${nav(currentUser)}
+${nav(currentUser, currentCity)}
 <div class="section">
   <h2>Поиск</h2>
   <form method="get" action="/search">
@@ -1634,7 +1657,27 @@ ${nav(currentUser)}
   );
 }
 
-function renderNewPage(currentUser: CurrentUser | null = null, error: string | null = null): Response {
+function renderCityPage(currentUser: CurrentUser | null = null, currentCity: string | null = null, message: string | null = null, nextPath = '/'): Response {
+  const city = normalizeCity(currentCity || currentUser?.city || CITY_DEFAULT_SLUG);
+  return shell(
+    'город - жоржлист',
+    `<h1>жоржлист</h1>
+${nav(currentUser, city)}
+<div class="section">
+  <h2>Выбери город</h2>
+  ${message ? `<p class="empty">${htmlEscape(message)}</p>` : ''}
+  <form method="post" action="/city">
+    <input type="hidden" name="next" value="${htmlEscape(nextPath)}" />
+    <label for="city">Город</label>
+    ${renderCitySelect(city)}
+    <button type="submit">Сохранить город</button>
+  </form>
+</div>`,
+    currentUser
+  );
+}
+
+function renderNewPage(currentUser: CurrentUser | null = null, currentCity: string | null = null, error: string | null = null): Response {
   const options = CATEGORIES.map(
     (category) => `<option value="${category.slug}"${category.slug === 'misc' ? ' selected' : ''}>${htmlEscape(category.label)}</option>`
   ).join('');
@@ -1642,11 +1685,14 @@ function renderNewPage(currentUser: CurrentUser | null = null, error: string | n
   return shell(
     'создать объявление - жоржлист',
     `<h1>жоржлист</h1>
-${nav(currentUser)}
+${nav(currentUser, currentCity)}
 <div class="section">
   <h2>Создать объявление</h2>
   ${error ? `<p class="empty">${htmlEscape(error)}</p>` : ''}
   <form method="post" action="/new" enctype="multipart/form-data">
+    <label for="city">Город</label>
+    ${renderCitySelect(currentCity || currentUser?.city || CITY_DEFAULT_SLUG)}
+
     <label for="title">Заголовок</label>
     <input id="title" name="title" type="text" required maxlength="200" />
 
@@ -1678,17 +1724,18 @@ function renderCategoryPage(
   slug: string,
   ads: AdCardRow[],
   currentUser: CurrentUser | null = null,
-  typeFilter: string | null = null
+  typeFilter: string | null = null,
+  currentCity: string | null = null
 ): Response {
   const category = CATEGORIES.find((item) => item.slug === slug);
   if (!category) {
-    return renderNotFoundPage(currentUser);
+    return renderNotFoundPage(currentUser, currentCity);
   }
 
   return shell(
     `${category.label} - жоржлист`,
     `<h1>жоржлист</h1>
-${nav(currentUser)}
+${nav(currentUser, currentCity)}
 <div class="section">
   <h2>${htmlEscape(category.label)}</h2>
   ${renderTypeFilter(typeFilter, `/category/${encodeURIComponent(category.slug)}`)}
@@ -1759,7 +1806,8 @@ function renderPublicAdPage(
   currentUser: CurrentUser | null = null,
   canMessageAuthor = false,
   currentUserHasTelegram = false,
-  message: string | null = null
+  message: string | null = null,
+  currentCity: string | null = null
 ): Response {
   const media = ad.image_key
     ? `<div class="ad-page-media"><img src="${htmlEscape(buildMediaUrl(env, ad.image_key))}" alt="${htmlEscape(ad.title)}" /></div>`
@@ -1775,15 +1823,16 @@ function renderPublicAdPage(
   return shell(
     `${ad.title} - жоржлист`,
     `<h1>жоржлист</h1>
-${nav(currentUser)}
+${nav(currentUser, currentCity)}
 <div class="section">
   <div class="ad-page">
     ${media}
     <div>
       <h2 class="ad-page-title">${renderTypeBadge(ad.type)}${htmlEscape(ad.title)}</h2>
       ${author}
-      <div class="ad-page-badges"><span class="badge">${htmlEscape(categoryLabel(ad.category))}</span></div>
+      <div class="ad-page-badges">${renderCityBadge(ad.city)}<span class="badge">${htmlEscape(categoryLabel(ad.category))}</span></div>
       <div class="ad-page-body">${htmlEscape(ad.body)}</div>
+      ${ad.city ? `<div class="ad-page-contact"><strong>Город:</strong> ${htmlEscape(cityLabel(ad.city))}</div>` : ''}
       ${ad.contact ? `<div class="ad-page-contact"><strong>Контакты:</strong> ${htmlEscape(ad.contact)}</div>` : ''}
       <div class="ad-page-footer">${htmlEscape(ad.created_at)}</div>
     </div>
@@ -1795,11 +1844,12 @@ ${renderSearchForm()}`,
   );
 }
 
-function renderPublicUserPage(env: Env, user: PublicUserRow, ads: AdCardRow[], currentUser: CurrentUser | null = null): Response {
+function renderPublicUserPage(env: Env, user: PublicUserRow, ads: AdCardRow[], currentUser: CurrentUser | null = null, currentCity: string | null = null): Response {
   const isOwner = currentUser?.login === user.login;
   const adItems = ads.length
     ? `<div class="ad-grid">${ads
         .map((ad) => {
+          const city = ad.city ? `${htmlEscape(cityLabel(ad.city))} · ` : '';
           const category = ad.category ? `${htmlEscape(categoryLabel(ad.category))} · ` : '';
           const type = renderTypeBadge(ad.type);
           const actions = isOwner
@@ -1814,7 +1864,7 @@ function renderPublicUserPage(env: Env, user: PublicUserRow, ads: AdCardRow[], c
   ${renderAdImage(env, ad.image_key, ad.title, 'ad-image')}
   <div class="ad-content">
     <div class="title">${type}<a href="/ad/${ad.id}">${htmlEscape(ad.title)}</a></div>
-    <div class="meta">${category}${htmlEscape(ad.created_at)}</div>
+    <div class="meta">${city}${category}${htmlEscape(ad.created_at)}</div>
     ${actions}
   </div>
 </div>`;
@@ -1825,10 +1875,11 @@ function renderPublicUserPage(env: Env, user: PublicUserRow, ads: AdCardRow[], c
   return shell(
     `${user.login} - жоржлист`,
     `<h1>жоржлист</h1>
-${nav(currentUser)}
+${nav(currentUser, currentCity)}
 <div class="section">
   ${renderAvatar(env, user.avatar_key, user.login)}
   <h2>${htmlEscape(user.login)}</h2>
+  <p>Город: ${htmlEscape(cityLabel(user.city))}</p>
   <p>${htmlEscape(String(ads.length))} объявлений</p>
 </div>
 <div class="section">
@@ -1902,17 +1953,18 @@ ${nav()}
   );
 }
 
-function renderMyPage(env: Env, currentUser: CurrentUser, ads: AdRow[], message: string | null = null): Response {
+function renderMyPage(env: Env, currentUser: CurrentUser, ads: AdRow[], message: string | null = null, currentCity: string | null = null): Response {
   const items = ads.length
     ? ads
         .map((ad) => {
+          const city = `${htmlEscape(cityLabel(ad.city))} · `;
           const category = ad.category ? `${htmlEscape(categoryLabel(ad.category))} · ` : '';
           const type = renderTypeBadge(ad.type);
           return `<div class="ad">
   ${renderAdImage(env, ad.image_key, ad.title, 'ad-image')}
   <div class="ad-content">
     <div class="title">${type}<a href="/ad/${ad.id}">${htmlEscape(ad.title)}</a></div>
-    <div class="meta">${htmlEscape(ad.status)} · ${category}${htmlEscape(ad.created_at)}</div>
+    <div class="meta">${htmlEscape(ad.status)} · ${city}${category}${htmlEscape(ad.created_at)}</div>
     <div class="ad-actions">
       <a href="/my/edit/${ad.id}">Редактировать</a>
       <form method="post" action="/my/delete/${ad.id}" style="display:inline">
@@ -1928,7 +1980,7 @@ function renderMyPage(env: Env, currentUser: CurrentUser, ads: AdRow[], message:
   return shell(
     'мои объявления - жоржлист',
     `<h1>жоржлист</h1>
-${nav(currentUser)}
+${nav(currentUser, currentCity)}
 <div class="section">
   <h2>Мои объявления</h2>
   ${message ? `<p class="empty">${htmlEscape(message)}</p>` : ''}
@@ -1943,7 +1995,8 @@ function renderEditPage(
   currentUser: CurrentUser,
   ad: AdRow,
   error: string | null = null,
-  formAction = `/my/edit/${ad.id}`
+  formAction = `/my/edit/${ad.id}`,
+  currentCity: string | null = null
 ): Response {
   const options = CATEGORIES.map(
     (category) => `<option value="${category.slug}"${category.slug === ad.category ? ' selected' : ''}>${htmlEscape(category.label)}</option>`
@@ -1955,11 +2008,14 @@ function renderEditPage(
   return shell(
     'редактировать объявление - жоржлист',
     `<h1>жоржлист</h1>
-${nav(currentUser)}
+${nav(currentUser, currentCity)}
 <div class="section">
   <h2>Редактировать объявление</h2>
   ${error ? `<p class="empty">${htmlEscape(error)}</p>` : ''}
   <form method="post" action="${htmlEscape(formAction)}" enctype="multipart/form-data">
+    <label for="city">Город</label>
+    ${renderCitySelect(ad.city || currentCity || currentUser.city || CITY_DEFAULT_SLUG)}
+
     <label for="title">Заголовок</label>
     <input id="title" name="title" type="text" required maxlength="200" value="${htmlEscape(ad.title)}" />
 
@@ -2288,6 +2344,7 @@ function renderSettingsPage(
   const telegramStatus = telegramIdentity
     ? `Telegram: ${htmlEscape(telegramIdentity.telegram_username ? `@${telegramIdentity.telegram_username}` : telegramIdentity.provider_user_id || '')}`
     : 'Telegram: не привязан';
+  const cityStatus = `Город: ${htmlEscape(cityLabel(currentUser.city))}`;
   const telegramAction = telegramIdentity
     ? '<p>Привязка уже настроена.</p>'
     : pendingTelegramAuth
@@ -2345,6 +2402,7 @@ ${nav(currentUser)}
 <div class="section">
   <h2>Настройки</h2>
   <p>Роль: ${htmlEscape(currentUser.role)}</p>
+  <p>${cityStatus} <a href="/city">Изменить город</a></p>
   <form class="settings-account" method="post" action="/settings">
     <label for="login">Login</label>
     <input id="login" name="login" type="text" required value="${htmlEscape(currentUser.login)}" />
@@ -2435,6 +2493,7 @@ async function findUserByLogin(env: Env, login: string): Promise<CurrentUser | n
       SELECT users.id,
              users.login,
              users.display_name,
+             COALESCE(users.city, ?) AS city,
              (SELECT email FROM user_identities WHERE user_id = users.id AND provider = 'email' LIMIT 1) AS email,
              users.role,
              users.avatar_key,
@@ -2447,7 +2506,7 @@ async function findUserByLogin(env: Env, login: string): Promise<CurrentUser | n
       LIMIT 1
     `
   )
-    .bind(login)
+    .bind(CITY_DEFAULT_SLUG, login)
     .first<CurrentUser>();
 
   return result ?? null;
@@ -2459,6 +2518,7 @@ async function findUserById(env: Env, userId: number): Promise<CurrentUser | nul
       SELECT users.id,
              users.login,
              users.display_name,
+             COALESCE(users.city, ?) AS city,
              (SELECT email FROM user_identities WHERE user_id = users.id AND provider = 'email' LIMIT 1) AS email,
              users.role,
              users.avatar_key,
@@ -2471,7 +2531,7 @@ async function findUserById(env: Env, userId: number): Promise<CurrentUser | nul
       LIMIT 1
     `
   )
-    .bind(userId)
+    .bind(CITY_DEFAULT_SLUG, userId)
     .first<CurrentUser>();
 
   return result ?? null;
@@ -2489,6 +2549,7 @@ async function getCurrentUser(request: Request, env: Env): Promise<CurrentUser |
       SELECT users.id,
              users.login,
              users.display_name,
+             COALESCE(users.city, ?) AS city,
              (SELECT email FROM user_identities WHERE user_id = users.id AND provider = 'email' LIMIT 1) AS email,
              users.role,
              users.avatar_key,
@@ -2503,7 +2564,7 @@ async function getCurrentUser(request: Request, env: Env): Promise<CurrentUser |
       LIMIT 1
     `
   )
-    .bind(sessionTokenHash)
+    .bind(CITY_DEFAULT_SLUG, sessionTokenHash)
     .first<CurrentUser>();
 
   return result ?? null;
@@ -2548,10 +2609,10 @@ async function createEmailUser(
   const results = await env.DB.batch([
     env.DB.prepare(
       `
-        INSERT INTO users (login, display_name, role, created_at, updated_at)
-        VALUES (?, ?, 'user', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        INSERT INTO users (login, display_name, role, city, created_at, updated_at)
+        VALUES (?, ?, 'user', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
       `
-    ).bind(login, displayName),
+    ).bind(login, displayName, CITY_DEFAULT_SLUG),
     env.DB.prepare(
       `
         INSERT INTO user_identities (
@@ -2951,7 +3012,10 @@ function userBotChatMarkup(conversationId: number): Record<string, unknown> {
 function userBotIncomingChatMarkup(conversationId: number): Record<string, unknown> {
   return {
     inline_keyboard: [
-      [{ text: 'Открыть чат', callback_data: `${USER_BOT_CHAT_PREFIX}${conversationId}` }],
+      [
+        { text: 'Открыть диалог', callback_data: `${USER_BOT_CHAT_PREFIX}${conversationId}` },
+        { text: 'Скрыть', callback_data: `${USER_BOT_CHAT_HIDE_PREFIX}${conversationId}` },
+      ],
       [{ text: 'Диалоги', callback_data: USER_BOT_CHAT_LIST }],
     ],
   };
@@ -2960,12 +3024,27 @@ function userBotIncomingChatMarkup(conversationId: number): Record<string, unkno
 function userBotSettingsMarkup(hasPassword: boolean): Record<string, unknown> {
   return {
     inline_keyboard: [
+      [{ text: 'Изменить город', callback_data: `${USER_BOT_SETTINGS_PREFIX}city` }],
       [{ text: 'Изменить логин', callback_data: `${USER_BOT_SETTINGS_PREFIX}login` }],
       [{ text: 'Изменить email', callback_data: `${USER_BOT_SETTINGS_PREFIX}email` }],
       [{ text: hasPassword ? 'Сменить пароль' : 'Задать пароль', callback_data: `${USER_BOT_SETTINGS_PREFIX}password` }],
       [{ text: 'Изменить аватар', callback_data: `${USER_BOT_SETTINGS_PREFIX}avatar` }],
       [{ text: 'Удалить аватар', callback_data: `${USER_BOT_SETTINGS_PREFIX}avatar-delete` }],
       [{ text: 'Назад', callback_data: USER_BOT_MENU_HOME }],
+    ],
+  };
+}
+
+function userBotCityMarkup(selectedCity: string | null = null): Record<string, unknown> {
+  return {
+    inline_keyboard: [
+      ...CITIES.map((city) => [
+        {
+          text: `${normalizeCity(selectedCity) === city.slug ? '• ' : ''}${city.label}`,
+          callback_data: `${USER_BOT_SETTINGS_PREFIX}city:${city.slug}`,
+        },
+      ]),
+      [{ text: 'Отмена', callback_data: `${USER_BOT_SETTINGS_PREFIX}cancel` }],
     ],
   };
 }
@@ -3064,6 +3143,7 @@ async function sendUserBotSettings(
     ...(message ? [message, ''] : []),
     'Настройки',
     `Login: ${user.login}`,
+    `Город: ${cityLabel(user.city)}`,
     `Email: ${emailIdentity?.email || user.email || 'не задан'}`,
     `Пароль: ${hasPassword ? 'задан' : 'не задан'}`,
     `Telegram: ${telegramLine}`,
@@ -3086,6 +3166,17 @@ async function sendUserBotSettingsEmailPrompt(env: Env, telegramUserId: string, 
 async function sendUserBotSettingsAvatarPrompt(env: Env, telegramUserId: string, chatId: number, message: string | null = null): Promise<void> {
   const lines = [...(message ? [message, ''] : []), 'Пришли изображение для аватара'];
   await showUserBotScreen(env, telegramUserId, chatId, lines.join('\n'), userBotCancelSettingsMarkup());
+}
+
+async function sendUserBotSettingsCityPrompt(
+  env: Env,
+  telegramUserId: string,
+  chatId: number,
+  message: string | null = null
+): Promise<void> {
+  const lines = [...(message ? [message, ''] : []), 'Выбери город'];
+  const userCity = await getTelegramUserCity(env, telegramUserId);
+  await showUserBotScreen(env, telegramUserId, chatId, lines.join('\n'), userBotCityMarkup(userCity));
 }
 
 async function sendUserBotSettingsPasswordPrompt(
@@ -3140,7 +3231,8 @@ async function sendUserBotChatView(
   chatId: number,
   conversationId: number,
   message: string | null = null,
-  composeHint = false
+  composeHint = false,
+  currentMessageId: number | null = null
 ): Promise<void> {
   const telegramIdentity = await findTelegramIdentity(env, telegramUserId);
   if (!telegramIdentity) {
@@ -3163,6 +3255,7 @@ async function sendUserBotChatView(
   const otherUserId = conversation.user_low_id === telegramIdentity.user_id ? conversation.user_high_id : conversation.user_low_id;
   const otherUser = await findUserById(env, otherUserId);
   const messages = await listConversationMessages(env, conversation.id, 20, 0);
+  await markConversationMessagesRead(env, conversation.id, telegramIdentity.user_id);
   const lines = [
     ...(message ? [message, ''] : []),
     buildChatScreenTitle(otherUser?.login || 'пользователь', ad.title),
@@ -3178,6 +3271,7 @@ async function sendUserBotChatView(
   ];
 
   await showUserBotScreen(env, telegramUserId, chatId, lines.join('\n'), userBotChatMarkup(conversation.id));
+  await clearChatNotification(env, conversation.id, telegramIdentity.user_id, currentMessageId);
 }
 
 async function sendUserBotReplyPrompt(
@@ -3209,6 +3303,7 @@ function buildUserBotAdListText(
   ads: Array<{
     id: number;
     title: string;
+    city: string | null;
     category: string | null;
     type: string | null;
     author_login?: string | null;
@@ -3227,7 +3322,7 @@ function buildUserBotAdListText(
 
   for (const [index, ad] of ads.entries()) {
     const number = offset + index + 1;
-    const meta = [ad.type ? `Тип: ${typeLabel(ad.type)}` : null, ad.category ? categoryLabel(ad.category) : null, ad.author_login ? `Автор: ${ad.author_login}` : null, ad.status ? `Статус: ${ad.status}` : null]
+    const meta = [ad.city ? cityLabel(ad.city) : null, ad.type ? `Тип: ${typeLabel(ad.type)}` : null, ad.category ? categoryLabel(ad.category) : null, ad.author_login ? `Автор: ${ad.author_login}` : null, ad.status ? `Статус: ${ad.status}` : null]
       .filter((value): value is string => value !== null)
       .join(' · ');
     lines.push('', `${number}. ${ad.title}`);
@@ -3275,7 +3370,8 @@ async function sendUserBotAdCards(
 }
 
 async function sendUserBotSearchResults(env: Env, telegramUserId: string, chatId: number, query: string, offset = 0): Promise<void> {
-  const ads = await searchPublishedAdsPage(env, query, BOT_ADS_PAGE_SIZE + 1, offset);
+  const city = await getTelegramUserCity(env, telegramUserId);
+  const ads = await searchPublishedAdsPage(env, query, BOT_ADS_PAGE_SIZE + 1, offset, city);
   const hasMore = ads.length > BOT_ADS_PAGE_SIZE;
   const page = ads.slice(0, BOT_ADS_PAGE_SIZE);
 
@@ -3309,9 +3405,10 @@ async function sendUserBotSearchResults(env: Env, telegramUserId: string, chatId
 }
 
 function buildUserBotPublicAdText(
-  ad: Pick<PublicAdCardRow, 'title' | 'body' | 'contact' | 'category' | 'type' | 'author_login' | 'created_at'>
+  ad: Pick<PublicAdCardRow, 'title' | 'body' | 'contact' | 'category' | 'type' | 'author_login' | 'created_at' | 'city'>
 ): string {
   return [
+    `Город: ${cityLabel(ad.city)}`,
     `Тип: ${typeLabel(ad.type)}`,
     `Заголовок: ${ad.title}`,
     `Категория: ${categoryLabel(ad.category)}`,
@@ -3355,6 +3452,7 @@ async function sendUserBotPublicAdCard(
       chatId,
       buildMediaUrl(env, ad.image_key),
       [
+        `Город: ${cityLabel(ad.city)}`,
         `Тип: ${typeLabel(ad.type)}`,
         `Заголовок: ${ad.title}`,
         `Категория: ${categoryLabel(ad.category)}`,
@@ -3375,7 +3473,8 @@ async function sendUserBotPublicAdCard(
 }
 
 async function sendUserBotSearchAdDetail(env: Env, telegramUserId: string, chatId: number, adId: number): Promise<void> {
-  const ad = await getPublishedAdCardById(env, adId);
+  const city = await getTelegramUserCity(env, telegramUserId);
+  const ad = await getPublishedAdCardById(env, adId, null, city);
   if (!ad) {
     await showUserBotScreen(env, telegramUserId, chatId, 'Объявление не найдено', {
       inline_keyboard: [
@@ -3391,7 +3490,8 @@ async function sendUserBotSearchAdDetail(env: Env, telegramUserId: string, chatI
 
 async function sendUserBotSectionAds(env: Env, telegramUserId: string, chatId: number, category: string, offset = 0): Promise<void> {
   const categoryKey = normalizeCategory(category);
-  const ads = await listPublishedAdsByCategoryPage(env, categoryKey, BOT_ADS_PAGE_SIZE + 1, offset);
+  const city = await getTelegramUserCity(env, telegramUserId);
+  const ads = await listPublishedAdsByCategoryPage(env, categoryKey, BOT_ADS_PAGE_SIZE + 1, offset, city);
   const hasMore = ads.length > BOT_ADS_PAGE_SIZE;
   const page = ads.slice(0, BOT_ADS_PAGE_SIZE);
 
@@ -3421,7 +3521,8 @@ async function sendUserBotSectionAds(env: Env, telegramUserId: string, chatId: n
 
 async function sendUserBotSectionAdDetail(env: Env, telegramUserId: string, chatId: number, category: string, adId: number): Promise<void> {
   const categoryKey = normalizeCategory(category);
-  const ad = await getPublishedAdCardById(env, adId, categoryKey);
+  const city = await getTelegramUserCity(env, telegramUserId);
+  const ad = await getPublishedAdCardById(env, adId, categoryKey, city);
 
   if (!ad) {
     await showUserBotScreen(env, telegramUserId, chatId, 'Объявление не найдено', userBotSectionsMarkup());
@@ -4039,7 +4140,7 @@ async function sendUserBotMyAds(env: Env, telegramUserId: string, chatId: number
 
   const result = await env.DB.prepare(
     `
-      SELECT id, title, category, type, status, image_key, image_mime_type, image_updated_at, created_at
+      SELECT id, title, city, category, type, status, image_key, image_mime_type, image_updated_at, created_at
       FROM ads
       WHERE owner_user_id = ?
         AND deleted_at IS NULL
@@ -4047,7 +4148,7 @@ async function sendUserBotMyAds(env: Env, telegramUserId: string, chatId: number
     `
   )
   .bind(identity.user_id)
-  .all<{ id: number; title: string; category: string | null; type: string | null; status: string; created_at: string }>();
+  .all<{ id: number; title: string; city: string | null; category: string | null; type: string | null; status: string; created_at: string }>();
 
   if (!result.results.length) {
     await showUserBotScreen(
@@ -4065,6 +4166,7 @@ async function sendUserBotMyAds(env: Env, telegramUserId: string, chatId: number
     result.results.map((ad) => ({
       id: ad.id,
       title: ad.title,
+      city: ad.city,
       category: ad.category,
       type: ad.type,
       status: ad.status,
@@ -4138,10 +4240,11 @@ async function startUserBotEditFlow(
 }
 
 function buildUserBotOwnedAdText(
-  ad: Pick<AdRow, 'id' | 'title' | 'body' | 'category' | 'type' | 'status' | 'created_at'>
+  ad: Pick<AdRow, 'id' | 'title' | 'body' | 'category' | 'type' | 'status' | 'created_at' | 'city'>
 ): string {
   return [
     `#${ad.id}`,
+    `Город: ${cityLabel(ad.city)}`,
     `Тип: ${typeLabel(ad.type)}`,
     `Заголовок: ${ad.title}`,
     `Категория: ${categoryLabel(ad.category)}`,
@@ -4161,6 +4264,7 @@ async function sendUserBotSingleAd(env: Env, telegramUserId: string, chatId: num
       chatId,
       buildMediaUrl(env, ad.image_key),
       [
+        `Город: ${cityLabel(ad.city)}`,
         `Тип: ${typeLabel(ad.type)}`,
         `Заголовок: ${ad.title}`,
         `Категория: ${categoryLabel(ad.category)}`,
@@ -4178,7 +4282,7 @@ async function sendUserBotSingleAd(env: Env, telegramUserId: string, chatId: num
 }
 
 function buildTelegramAdText(
-  ad: Pick<AdRow, 'id' | 'title' | 'body' | 'category' | 'type'>,
+  ad: Pick<AdRow, 'id' | 'title' | 'body' | 'category' | 'type' | 'city'>,
   statusLabel: string,
   itemKind: 'New' | 'Edited',
   bodyLimit = 2800
@@ -4187,6 +4291,7 @@ function buildTelegramAdText(
     `Type: ${itemKind}`,
     statusLabel,
     `ID: ${ad.id}`,
+    `City: ${cityLabel(ad.city)}`,
     `Title: ${ad.title}`,
     `Ad type: ${typeLabel(ad.type)}`,
     `Category: ${categoryLabel(ad.category)}`,
@@ -4197,7 +4302,7 @@ function buildTelegramAdText(
 
 async function sendTelegramMessage(
   env: Env,
-  ad: Pick<AdRow, 'id' | 'title' | 'body' | 'category' | 'type' | 'image_key'>,
+  ad: Pick<AdRow, 'id' | 'title' | 'body' | 'category' | 'type' | 'city' | 'image_key'>,
   itemKind: 'New' | 'Edited' = 'New'
 ): Promise<void> {
   const replyMarkup = {
@@ -4249,7 +4354,7 @@ async function editTelegramMessage(
   env: Env,
   chatId: number,
   messageId: number,
-  ad: Pick<AdRow, 'id' | 'title' | 'body' | 'category' | 'type' | 'image_key'>,
+  ad: Pick<AdRow, 'id' | 'title' | 'body' | 'category' | 'type' | 'city' | 'image_key'>,
   statusLabel: string,
   itemKind: 'New' | 'Edited' = 'New'
 ): Promise<void> {
@@ -4416,6 +4521,7 @@ async function handleAdminBotText(
         id: adId,
         title: draft.title || '',
         body: draft.body || '',
+        city: originalAd?.city || CITY_DEFAULT_SLUG,
         category,
         type: originalAd?.type ?? 'sell',
         image_key: originalAd?.image_key ?? null,
@@ -4647,13 +4753,19 @@ async function getAdById(env: Env, id: number): Promise<AdRow | null> {
   return result ?? null;
 }
 
-async function getPublishedAdCardById(env: Env, id: number, category: string | null = null): Promise<PublicAdCardRow | null> {
+async function getPublishedAdCardById(
+  env: Env,
+  id: number,
+  category: string | null = null,
+  city: string | null = null
+): Promise<PublicAdCardRow | null> {
   const sql = [
     `
       SELECT ads.id,
              ads.title,
              ads.body,
              ads.contact,
+             COALESCE(ads.city, ?) AS city,
              ads.category,
              COALESCE(ads.type, 'sell') AS type,
              ads.owner_user_id,
@@ -4671,16 +4783,22 @@ async function getPublishedAdCardById(env: Env, id: number, category: string | n
     `,
   ];
 
+  const params: Array<number | string> = [CITY_DEFAULT_SLUG, id];
+
   if (category) {
     sql.push('        AND ads.category = ?');
+    params.push(category);
+  }
+
+  if (city) {
+    sql.push('        AND COALESCE(ads.city, ?) = ?');
+    params.push(CITY_DEFAULT_SLUG, normalizeCity(city));
   }
 
   sql.push('      LIMIT 1');
 
   const statement = await env.DB.prepare(sql.join('\n'));
-  const result = category
-    ? await statement.bind(id, category).first<PublicAdCardRow>()
-    : await statement.bind(id).first<PublicAdCardRow>();
+  const result = await statement.bind(...params).first<PublicAdCardRow>();
 
   return result ?? null;
 }
@@ -4691,6 +4809,7 @@ async function getPublicUserByLogin(env: Env, login: string): Promise<PublicUser
       SELECT id,
              login,
              display_name,
+             COALESCE(city, ?) AS city,
              avatar_key,
              avatar_mime_type,
              avatar_updated_at,
@@ -4700,17 +4819,18 @@ async function getPublicUserByLogin(env: Env, login: string): Promise<PublicUser
       LIMIT 1
     `
   )
-    .bind(login)
+    .bind(CITY_DEFAULT_SLUG, login)
     .first<PublicUserRow>();
 
   return result ?? null;
 }
 
-async function listPublishedAdsByUser(env: Env, userId: number): Promise<AdCardRow[]> {
+async function listPublishedAdsByUser(env: Env, userId: number, city: string | null = null): Promise<AdCardRow[]> {
   const result = await env.DB.prepare(
     `
       SELECT ads.id,
              ads.title,
+             COALESCE(ads.city, ?) AS city,
              ads.category,
              COALESCE(ads.type, 'sell') AS type,
              ads.image_key,
@@ -4722,25 +4842,29 @@ async function listPublishedAdsByUser(env: Env, userId: number): Promise<AdCardR
       WHERE owner_user_id = ?
         AND status = 'published'
         AND deleted_at IS NULL
+        AND COALESCE(ads.city, ?) = ?
       ORDER BY ads.created_at DESC, ads.id DESC
     `
   )
-    .bind(userId)
+    .bind(CITY_DEFAULT_SLUG, userId, CITY_DEFAULT_SLUG, normalizeCity(city))
     .all<AdCardRow>();
 
   return result.results ?? [];
 }
 
-async function listPublishedAds(env: Env): Promise<AdRow[]> {
+async function listPublishedAds(env: Env, city: string | null = null): Promise<AdRow[]> {
   const result = await env.DB.prepare(
     `
       SELECT ${AD_SELECT_COLUMNS}
       FROM ads
       WHERE status = 'published'
         AND deleted_at IS NULL
+        AND COALESCE(city, ?) = ?
       ORDER BY created_at DESC, id DESC
     `
-  ).all<AdRow>();
+  )
+    .bind(CITY_DEFAULT_SLUG, normalizeCity(city))
+    .all<AdRow>();
 
   return result.results;
 }
@@ -4758,11 +4882,12 @@ async function listAllAds(env: Env): Promise<AdRow[]> {
   return result.results;
 }
 
-async function listPublishedAdsByCategory(env: Env, category: string): Promise<AdCardRow[]> {
+async function listPublishedAdsByCategory(env: Env, category: string, city: string | null = null): Promise<AdCardRow[]> {
   const result = await env.DB.prepare(
     `
       SELECT ads.id,
              ads.title,
+             COALESCE(ads.city, ?) AS city,
              ads.category,
              COALESCE(ads.type, 'sell') AS type,
              ads.image_key,
@@ -4774,21 +4899,28 @@ async function listPublishedAdsByCategory(env: Env, category: string): Promise<A
       WHERE ads.status = 'published'
         AND ads.deleted_at IS NULL
         AND ads.category = ?
+        AND COALESCE(ads.city, ?) = ?
       ORDER BY ads.created_at DESC, ads.id DESC
     `
   )
-    .bind(category)
+    .bind(CITY_DEFAULT_SLUG, category, CITY_DEFAULT_SLUG, normalizeCity(city))
     .all<AdCardRow>();
 
   return result.results;
 }
 
-async function listPublishedAdsByCategoryAndType(env: Env, category: string, type: string | null): Promise<AdCardRow[]> {
+async function listPublishedAdsByCategoryAndType(
+  env: Env,
+  category: string,
+  type: string | null,
+  city: string | null = null
+): Promise<AdCardRow[]> {
   const normalizedType = type ? normalizeAdType(type) : null;
   const query = normalizedType
     ? `
       SELECT ads.id,
              ads.title,
+             COALESCE(ads.city, ?) AS city,
              ads.category,
              COALESCE(ads.type, 'sell') AS type,
              ads.image_key,
@@ -4801,11 +4933,13 @@ async function listPublishedAdsByCategoryAndType(env: Env, category: string, typ
         AND ads.deleted_at IS NULL
         AND ads.category = ?
         AND COALESCE(ads.type, 'sell') = ?
+        AND COALESCE(ads.city, ?) = ?
       ORDER BY ads.created_at DESC, ads.id DESC
     `
     : `
       SELECT ads.id,
              ads.title,
+             COALESCE(ads.city, ?) AS city,
              ads.category,
              COALESCE(ads.type, 'sell') AS type,
              ads.image_key,
@@ -4817,22 +4951,30 @@ async function listPublishedAdsByCategoryAndType(env: Env, category: string, typ
       WHERE ads.status = 'published'
         AND ads.deleted_at IS NULL
         AND ads.category = ?
+        AND COALESCE(ads.city, ?) = ?
       ORDER BY ads.created_at DESC, ads.id DESC
     `;
 
   const statement = await env.DB.prepare(query);
   const result = normalizedType
-    ? await statement.bind(category, normalizedType).all<AdCardRow>()
-    : await statement.bind(category).all<AdCardRow>();
+    ? await statement.bind(CITY_DEFAULT_SLUG, category, normalizedType, CITY_DEFAULT_SLUG, normalizeCity(city)).all<AdCardRow>()
+    : await statement.bind(CITY_DEFAULT_SLUG, category, CITY_DEFAULT_SLUG, normalizeCity(city)).all<AdCardRow>();
 
   return result.results;
 }
 
-async function listPublishedAdsByCategoryPage(env: Env, category: string, limit: number, offset: number): Promise<AdCardRow[]> {
+async function listPublishedAdsByCategoryPage(
+  env: Env,
+  category: string,
+  limit: number,
+  offset: number,
+  city: string | null = null
+): Promise<AdCardRow[]> {
   const result = await env.DB.prepare(
     `
       SELECT ads.id,
              ads.title,
+             COALESCE(ads.city, ?) AS city,
              ads.category,
              COALESCE(ads.type, 'sell') AS type,
              ads.image_key,
@@ -4844,17 +4986,18 @@ async function listPublishedAdsByCategoryPage(env: Env, category: string, limit:
       WHERE ads.status = 'published'
         AND ads.deleted_at IS NULL
         AND ads.category = ?
+        AND COALESCE(ads.city, ?) = ?
       ORDER BY ads.created_at DESC, ads.id DESC
       LIMIT ? OFFSET ?
     `
   )
-    .bind(category, limit, offset)
+    .bind(CITY_DEFAULT_SLUG, category, CITY_DEFAULT_SLUG, normalizeCity(city), limit, offset)
     .all<AdCardRow>();
 
   return result.results;
 }
 
-async function searchPublishedAds(env: Env, query: string): Promise<AdCardRow[]> {
+async function searchPublishedAds(env: Env, query: string, city: string | null = null): Promise<AdCardRow[]> {
   const trimmed = query.trim();
   if (!trimmed) {
     return [];
@@ -4865,6 +5008,7 @@ async function searchPublishedAds(env: Env, query: string): Promise<AdCardRow[]>
     `
       SELECT ads.id,
              ads.title,
+             COALESCE(ads.city, ?) AS city,
              ads.category,
              COALESCE(ads.type, 'sell') AS type,
              ads.image_key,
@@ -4875,6 +5019,7 @@ async function searchPublishedAds(env: Env, query: string): Promise<AdCardRow[]>
       LEFT JOIN users ON users.id = ads.owner_user_id
       WHERE ads.status = 'published'
         AND ads.deleted_at IS NULL
+        AND COALESCE(ads.city, ?) = ?
         AND (
           LOWER(ads.title) LIKE ? ESCAPE '\\'
           OR LOWER(ads.body) LIKE ? ESCAPE '\\'
@@ -4882,13 +5027,19 @@ async function searchPublishedAds(env: Env, query: string): Promise<AdCardRow[]>
       ORDER BY ads.created_at DESC, ads.id DESC
     `
   )
-    .bind(pattern, pattern)
+    .bind(CITY_DEFAULT_SLUG, CITY_DEFAULT_SLUG, normalizeCity(city), pattern, pattern)
     .all<AdCardRow>();
 
   return result.results;
 }
 
-async function searchPublishedAdsPage(env: Env, query: string, limit: number, offset: number): Promise<AdCardRow[]> {
+async function searchPublishedAdsPage(
+  env: Env,
+  query: string,
+  limit: number,
+  offset: number,
+  city: string | null = null
+): Promise<AdCardRow[]> {
   const trimmed = query.trim();
   if (!trimmed) return [];
 
@@ -4897,6 +5048,7 @@ async function searchPublishedAdsPage(env: Env, query: string, limit: number, of
     `
       SELECT ads.id,
              ads.title,
+             COALESCE(ads.city, ?) AS city,
              ads.category,
              COALESCE(ads.type, 'sell') AS type,
              ads.image_key,
@@ -4907,6 +5059,7 @@ async function searchPublishedAdsPage(env: Env, query: string, limit: number, of
       LEFT JOIN users ON users.id = ads.owner_user_id
       WHERE ads.status = 'published'
         AND ads.deleted_at IS NULL
+        AND COALESCE(ads.city, ?) = ?
         AND (
           LOWER(ads.title) LIKE ? ESCAPE '\\'
           OR LOWER(ads.body) LIKE ? ESCAPE '\\'
@@ -4915,7 +5068,7 @@ async function searchPublishedAdsPage(env: Env, query: string, limit: number, of
       LIMIT ? OFFSET ?
     `
   )
-    .bind(pattern, pattern, limit, offset)
+    .bind(CITY_DEFAULT_SLUG, CITY_DEFAULT_SLUG, normalizeCity(city), pattern, pattern, limit, offset)
     .all<AdCardRow>();
 
   return result.results;
@@ -4989,6 +5142,34 @@ async function ensureUserAvatarColumns(env: Env): Promise<void> {
   return cachedEnsureUserAvatarColumnsPromise;
 }
 
+async function ensureUserCityColumn(env: Env): Promise<void> {
+  if (cachedEnsureUserCityColumnPromise) {
+    return cachedEnsureUserCityColumnPromise;
+  }
+
+  cachedEnsureUserCityColumnPromise = (async () => {
+    const tableInfo = await env.DB.prepare(`PRAGMA table_info(users)`).all<{ name: string }>();
+    const columnNames = new Set((tableInfo.results || []).map((row) => row.name));
+    if (!columnNames.has('city')) {
+      await env.DB.prepare(`ALTER TABLE users ADD COLUMN city TEXT`).run();
+    }
+
+    await env.DB.prepare(
+      `
+        UPDATE users
+        SET city = COALESCE(NULLIF(city, ''), ?)
+        WHERE city IS NULL OR city = ''
+      `
+    )
+      .bind(CITY_DEFAULT_SLUG)
+      .run();
+  })().finally(() => {
+    cachedEnsureUserCityColumnPromise = null;
+  });
+
+  return cachedEnsureUserCityColumnPromise;
+}
+
 async function ensureAdContactColumn(env: Env): Promise<void> {
   if (cachedEnsureAdContactColumnPromise) {
     return cachedEnsureAdContactColumnPromise;
@@ -5005,6 +5186,34 @@ async function ensureAdContactColumn(env: Env): Promise<void> {
   });
 
   return cachedEnsureAdContactColumnPromise;
+}
+
+async function ensureAdCityColumn(env: Env): Promise<void> {
+  if (cachedEnsureAdCityColumnPromise) {
+    return cachedEnsureAdCityColumnPromise;
+  }
+
+  cachedEnsureAdCityColumnPromise = (async () => {
+    const tableInfo = await env.DB.prepare(`PRAGMA table_info(ads)`).all<{ name: string }>();
+    const columnNames = new Set((tableInfo.results || []).map((row) => row.name));
+    if (!columnNames.has('city')) {
+      await env.DB.prepare(`ALTER TABLE ads ADD COLUMN city TEXT`).run();
+    }
+
+    await env.DB.prepare(
+      `
+        UPDATE ads
+        SET city = COALESCE(NULLIF(city, ''), ?)
+        WHERE city IS NULL OR city = ''
+      `
+    )
+      .bind(CITY_DEFAULT_SLUG)
+      .run();
+  })().finally(() => {
+    cachedEnsureAdCityColumnPromise = null;
+  });
+
+  return cachedEnsureAdCityColumnPromise;
 }
 
 async function ensureAdTypeColumn(env: Env): Promise<void> {
@@ -5120,6 +5329,7 @@ async function ensureChatTables(env: Env): Promise<void> {
           conversation_id INTEGER NOT NULL,
           sender_user_id INTEGER NOT NULL,
           body TEXT NOT NULL,
+          is_read INTEGER NOT NULL DEFAULT 0,
           created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
           FOREIGN KEY (conversation_id) REFERENCES bot_conversations(id) ON DELETE CASCADE
         )
@@ -5157,169 +5367,6 @@ async function ensureChatTables(env: Env): Promise<void> {
   return cachedEnsureChatTablesPromise;
 }
 
-function normalizeConversationUserIds(userAId: number, userBId: number): [number, number] {
-  return userAId < userBId ? [userAId, userBId] : [userBId, userAId];
-}
-
-async function getConversationById(env: Env, conversationId: number): Promise<ChatThreadRow | null> {
-  const result = await env.DB.prepare(
-    `
-      SELECT id, ad_id, user_low_id, user_high_id, last_message_sender_user_id, last_message_text, last_message_at, created_at, updated_at
-      FROM bot_conversations
-      WHERE id = ?
-      LIMIT 1
-    `
-  )
-    .bind(conversationId)
-    .first<ChatThreadRow>();
-
-  return result ?? null;
-}
-
-async function getConversationForUsers(env: Env, adId: number, userAId: number, userBId: number): Promise<ChatThreadRow | null> {
-  const [lowUserId, highUserId] = normalizeConversationUserIds(userAId, userBId);
-  const result = await env.DB.prepare(
-    `
-      SELECT id, ad_id, user_low_id, user_high_id, last_message_sender_user_id, last_message_text, last_message_at, created_at, updated_at
-      FROM bot_conversations
-      WHERE ad_id = ?
-        AND user_low_id = ?
-        AND user_high_id = ?
-      LIMIT 1
-    `
-  )
-    .bind(adId, lowUserId, highUserId)
-    .first<ChatThreadRow>();
-
-  return result ?? null;
-}
-
-async function getOrCreateConversation(env: Env, adId: number, userAId: number, userBId: number): Promise<ChatThreadRow> {
-  const existing = await getConversationForUsers(env, adId, userAId, userBId);
-  if (existing) {
-    return existing;
-  }
-
-  const [lowUserId, highUserId] = normalizeConversationUserIds(userAId, userBId);
-  await env.DB.prepare(
-    `
-      INSERT INTO bot_conversations (
-        ad_id,
-        user_low_id,
-        user_high_id,
-        created_at,
-        updated_at
-      )
-      VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-      ON CONFLICT(ad_id, user_low_id, user_high_id) DO UPDATE SET
-        updated_at = CURRENT_TIMESTAMP
-    `
-  )
-    .bind(adId, lowUserId, highUserId)
-    .run();
-
-  const created = await getConversationForUsers(env, adId, userAId, userBId);
-  if (!created) {
-    throw new Error('Failed to create conversation');
-  }
-
-  return created;
-}
-
-async function listConversationsForUser(env: Env, userId: number): Promise<ChatThreadListRow[]> {
-  const result = await env.DB.prepare(
-    `
-      SELECT
-        c.id,
-        c.ad_id,
-        a.title AS ad_title,
-        CASE
-          WHEN c.user_low_id = ? THEN c.user_high_id
-          ELSE c.user_low_id
-        END AS other_user_id,
-        u.login AS other_login,
-        u.avatar_key AS other_avatar_key,
-        c.last_message_sender_user_id,
-        c.last_message_text,
-        c.last_message_at
-      FROM bot_conversations c
-      JOIN ads a ON a.id = c.ad_id AND a.deleted_at IS NULL
-      JOIN users u ON u.id = CASE
-        WHEN c.user_low_id = ? THEN c.user_high_id
-        ELSE c.user_low_id
-      END
-      WHERE c.user_low_id = ?
-         OR c.user_high_id = ?
-      ORDER BY COALESCE(c.last_message_at, c.created_at) DESC, c.id DESC
-    `
-  )
-    .bind(userId, userId, userId, userId)
-    .all<ChatThreadListRow>();
-
-  return result.results;
-}
-
-async function listConversationMessages(env: Env, conversationId: number, limit = 8, offset = 0): Promise<ChatMessageRow[]> {
-  const result = await env.DB.prepare(
-    `
-      SELECT id, conversation_id, sender_user_id, body, created_at
-      FROM bot_chat_messages
-      WHERE conversation_id = ?
-      ORDER BY id DESC
-      LIMIT ? OFFSET ?
-    `
-  )
-    .bind(conversationId, limit, offset)
-    .all<ChatMessageRow>();
-
-  return result.results.reverse();
-}
-
-async function getChatNotification(
-  env: Env,
-  conversationId: number,
-  userId: number
-): Promise<ChatNotificationRow | null> {
-  const result = await env.DB.prepare(
-    `
-      SELECT conversation_id, user_id, message_id, created_at, updated_at
-      FROM bot_chat_notifications
-      WHERE conversation_id = ?
-        AND user_id = ?
-      LIMIT 1
-    `
-  )
-    .bind(conversationId, userId)
-    .first<ChatNotificationRow>();
-
-  return result ?? null;
-}
-
-async function upsertChatNotification(
-  env: Env,
-  conversationId: number,
-  userId: number,
-  messageId: number
-): Promise<void> {
-  await env.DB.prepare(
-    `
-      INSERT INTO bot_chat_notifications (
-        conversation_id,
-        user_id,
-        message_id,
-        created_at,
-        updated_at
-      )
-      VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-      ON CONFLICT(conversation_id, user_id) DO UPDATE SET
-        message_id = excluded.message_id,
-        updated_at = CURRENT_TIMESTAMP
-    `
-  )
-    .bind(conversationId, userId, messageId)
-    .run();
-}
-
 async function storeConversationMessage(
   env: Env,
   conversationId: number,
@@ -5332,9 +5379,10 @@ async function storeConversationMessage(
         conversation_id,
         sender_user_id,
         body,
+        is_read,
         created_at
       )
-      VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+      VALUES (?, ?, ?, 0, CURRENT_TIMESTAMP)
     `
   )
     .bind(conversationId, senderUserId, body)
@@ -5343,7 +5391,7 @@ async function storeConversationMessage(
   const rowId = Number(insert.meta.last_row_id);
   const message = await env.DB.prepare(
     `
-      SELECT id, conversation_id, sender_user_id, body, created_at
+      SELECT id, conversation_id, sender_user_id, body, is_read, created_at
       FROM bot_chat_messages
       WHERE id = ?
       LIMIT 1
@@ -5396,12 +5444,49 @@ async function sendOrUpdateChatNotification(
   }
 }
 
+async function clearChatNotification(
+  env: Env,
+  conversationId: number,
+  userId: number,
+  currentMessageId: number | null = null
+): Promise<void> {
+  const existing = await getChatNotification(env, conversationId, userId);
+  if (!existing) {
+    return;
+  }
+
+  if (currentMessageId !== null && existing.message_id === currentMessageId) {
+    return;
+  }
+
+  await env.DB.prepare(
+    `
+      DELETE FROM bot_chat_notifications
+      WHERE conversation_id = ?
+        AND user_id = ?
+    `
+  )
+    .bind(conversationId, userId)
+    .run();
+
+  try {
+    const telegramIdentity = await findTelegramIdentityByUserId(env, userId);
+    const chatId = Number(telegramIdentity?.provider_user_id || '');
+    if (telegramIdentity?.provider_user_id && Number.isInteger(chatId) && chatId > 0) {
+      await deleteTelegramMessage(env, chatId, existing.message_id);
+    }
+  } catch (error) {
+    console.error('Failed to clear chat notification', error);
+  }
+}
+
 async function createAd(
   env: Env,
   ctx: ExecutionContext,
   title: string,
   body: string,
   contact: string | null | undefined,
+  cityInput: string | null | undefined,
   categoryInput: string | null | undefined,
   typeInput: string | null | undefined,
   ownerUserId: number | null = null,
@@ -5409,6 +5494,7 @@ async function createAd(
 ): Promise<{ id: number; category: CategorySlug }> {
   const category = normalizeCategory(categoryInput);
   const type = normalizeAdType(typeInput);
+  const city = normalizeCity(cityInput);
   let imageUpload: CompressedAdImageUpload | null = null;
 
   if (image) {
@@ -5426,6 +5512,7 @@ async function createAd(
           title,
           body,
           contact,
+          city,
           category,
           type,
           status,
@@ -5437,10 +5524,10 @@ async function createAd(
           created_at,
           updated_at
         )
-        VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, CASE WHEN ? IS NOT NULL THEN CURRENT_TIMESTAMP ELSE NULL END, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, CASE WHEN ? IS NOT NULL THEN CURRENT_TIMESTAMP ELSE NULL END, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
       `
     )
-      .bind(title, body, contact || null, category, type, ownerUserId, imageUpload?.key || null, imageUpload?.mimeType || null, imageUpload?.key || null)
+      .bind(title, body, contact || null, city, category, type, ownerUserId, imageUpload?.key || null, imageUpload?.mimeType || null, imageUpload?.key || null)
       .run();
   } catch (error) {
     if (imageUpload) {
@@ -5454,6 +5541,7 @@ async function createAd(
       id: Number(result.meta.last_row_id),
       title,
       body,
+      city,
       type,
       category,
       image_key: imageUpload?.key ?? null,
@@ -5492,6 +5580,7 @@ async function parseAdForm(request: Request): Promise<AdForm> {
     title: String(form.get('title') || '').trim(),
     body: String(form.get('body') || '').trim(),
     contact: String(form.get('contact') || '').trim(),
+    city: String(form.get('city') || '').trim(),
     category: String(form.get('category') || '').trim(),
     type: String(form.get('type') || '').trim(),
     image: isFileLike(imageValue) && imageValue.size > 0 ? imageValue : null,
@@ -5627,6 +5716,7 @@ async function handleMyEditPost(
       id: numericId,
       title,
       body,
+      city: ad.city,
       category: normalizedCategory,
       type: normalizedType,
       image_key: newImage?.key ?? ad.image_key,
@@ -5802,11 +5892,11 @@ async function createTelegramUser(
 ): Promise<number> {
   const userResult = await env.DB.prepare(
     `
-      INSERT INTO users (login, display_name, role, created_at, updated_at)
-      VALUES (?, ?, 'user', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      INSERT INTO users (login, display_name, role, city, created_at, updated_at)
+      VALUES (?, ?, 'user', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
     `
   )
-    .bind(login, login)
+    .bind(login, login, CITY_DEFAULT_SLUG)
     .run();
 
   const userId = Number(userResult.meta.last_row_id);
@@ -5858,11 +5948,11 @@ async function createTelegramSignupUser(
     if (!existingLogin) {
       const userResult = await env.DB.prepare(
         `
-          INSERT INTO users (login, display_name, role, created_at, updated_at)
-          VALUES (?, ?, 'user', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+          INSERT INTO users (login, display_name, role, city, created_at, updated_at)
+          VALUES (?, ?, 'user', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         `
       )
-        .bind(login, displayName)
+        .bind(login, displayName, CITY_DEFAULT_SLUG)
         .run();
 
       const userId = Number(userResult.meta.last_row_id);
@@ -6155,6 +6245,32 @@ async function getTelegramIdentityUserId(env: Env, telegramUserId: string): Prom
   return identity ? identity.user_id : null;
 }
 
+async function getTelegramUserCity(env: Env, telegramUserId: string): Promise<CitySlug> {
+  const userId = await getTelegramIdentityUserId(env, telegramUserId);
+  if (!userId) {
+    return CITY_DEFAULT_SLUG;
+  }
+
+  const user = await findUserById(env, userId);
+  return normalizeCity(user?.city);
+}
+
+async function updateUserCity(env: Env, userId: number, city: string): Promise<CitySlug> {
+  const normalizedCity = normalizeCity(city);
+  await env.DB.prepare(
+    `
+      UPDATE users
+      SET city = ?,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `
+  )
+    .bind(normalizedCity, userId)
+    .run();
+
+  return normalizedCity;
+}
+
 async function sendChatMessage(
   env: Env,
   senderUserId: number,
@@ -6328,6 +6444,8 @@ async function handleUserBotDraftAction(
         await sendUserBotMenu(env, telegramUserId, chatId, 'Пользователь не найден');
         return;
       }
+      const user = await findUserById(env, identity.user_id);
+      const userCity = normalizeCity(user?.city);
 
       if (!draft.title || !draft.body) {
         await clearBotDraft(env, telegramUserId);
@@ -6336,7 +6454,7 @@ async function handleUserBotDraftAction(
       }
 
       try {
-        await createAd(env, ctx, draft.title, draft.body, null, draft.category, draft.ad_type, identity.user_id);
+        await createAd(env, ctx, draft.title, draft.body, null, userCity, draft.category, draft.ad_type, identity.user_id);
         await clearBotDraft(env, telegramUserId);
         await sendUserBotMenu(env, telegramUserId, chatId, 'Объявление отправлено на модерацию');
       } catch (error) {
@@ -6397,6 +6515,7 @@ async function handleUserBotDraftAction(
             id: ad.id,
             title: draft.title,
             body: draft.body,
+            city: ad.city,
             category,
             type: adType,
             image_key: ad.image_key,
@@ -6981,7 +7100,25 @@ async function handleUserBotCallback(
       null
     );
     await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
-    await sendUserBotChatView(env, telegramUserId, chatId, conversationId, null, true);
+    await sendUserBotChatView(env, telegramUserId, chatId, conversationId, null, true, callbackQuery.message.message_id);
+    return json({ ok: true });
+  }
+
+  if (data.startsWith(USER_BOT_CHAT_HIDE_PREFIX)) {
+    const conversationId = Number(data.slice(USER_BOT_CHAT_HIDE_PREFIX.length));
+    if (!Number.isInteger(conversationId) || conversationId <= 0) {
+      await answerUserCallbackQuery(env, callbackQuery.id, 'Invalid chat').catch(() => {});
+      return json({ ok: true });
+    }
+
+    const telegramIdentity = await findTelegramIdentity(env, telegramUserId);
+    if (!telegramIdentity) {
+      await answerUserCallbackQuery(env, callbackQuery.id, 'User not found').catch(() => {});
+      return json({ ok: true });
+    }
+
+    await clearChatNotification(env, conversationId, telegramIdentity.user_id, callbackQuery.message.message_id);
+    await answerUserCallbackQuery(env, callbackQuery.id, 'Уведомление скрыто').catch(() => {});
     return json({ ok: true });
   }
 
@@ -7086,6 +7223,13 @@ async function handleUserBotCallback(
       return json({ ok: true });
     }
 
+    if (action === 'city') {
+      await upsertBotDraft(env, telegramUserId, 'settings', 'city');
+      await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
+      await sendUserBotSettingsCityPrompt(env, telegramUserId, chatId);
+      return json({ ok: true });
+    }
+
     if (action === 'password') {
       const telegramIdentity = await findTelegramIdentity(env, telegramUserId);
       const emailIdentity = telegramIdentity ? await findEmailIdentityByUserId(env, telegramIdentity.user_id) : null;
@@ -7114,6 +7258,21 @@ async function handleUserBotCallback(
       await handleUserBotSettingsAvatarDelete(env, telegramUserId, chatId);
       return json({ ok: true });
     }
+  }
+
+  if (data.startsWith(`${USER_BOT_SETTINGS_PREFIX}city:`)) {
+    const city = data.slice(`${USER_BOT_SETTINGS_PREFIX}city:`.length);
+    const telegramIdentity = await findTelegramIdentity(env, telegramUserId);
+    if (!telegramIdentity) {
+      await answerUserCallbackQuery(env, callbackQuery.id, 'User not found').catch(() => {});
+      return json({ ok: true });
+    }
+
+    await updateUserCity(env, telegramIdentity.user_id, city);
+    await clearBotDraft(env, telegramUserId);
+    await answerUserCallbackQuery(env, callbackQuery.id, 'Город обновлён').catch(() => {});
+    await sendUserBotSettings(env, telegramUserId, chatId, 'Город обновлён');
+    return json({ ok: true });
   }
 
   if (data.startsWith(USER_BOT_MENU_MY_AD)) {
@@ -7239,10 +7398,25 @@ async function handleUserWebhook(request: Request, env: Env, ctx: ExecutionConte
 
   if (message.text === '/start') {
     await handleUserBotStart(env, telegramUserId, chatId, telegramUsername);
+    if (message.message_id) {
+      ctx.waitUntil(
+        deleteTelegramMessage(env, chatId, message.message_id).catch((error: unknown) => {
+          console.error('Failed to delete /start message from Telegram', error);
+        })
+      );
+    }
     return json({ ok: true });
   }
 
   await handleUserBotText(env, telegramUserId, chatId, telegramUsername, message.text, ctx, message.message_id);
+
+  if (message.message_id) {
+    ctx.waitUntil(
+      deleteTelegramMessage(env, chatId, message.message_id).catch((error: unknown) => {
+        console.error('Failed to delete user message from Telegram', error);
+      })
+    );
+  }
 
   return json({ ok: true });
 }
@@ -8033,6 +8207,28 @@ async function handleSettingsPost(request: Request, env: Env): Promise<Response>
   return renderSettingsPage(env, refreshedUser, updatedTelegramIdentity, updatedEmailIdentity, 'Настройки сохранены');
 }
 
+async function handleCityGet(request: Request, env: Env): Promise<Response> {
+  const currentUser = await getCurrentUser(request, env);
+  const currentCity = getCurrentCityFromRequest(request, currentUser);
+  const nextPath = new URL(request.url).searchParams.get('next') || '/';
+  return renderCityPage(currentUser, currentCity, null, nextPath);
+}
+
+async function handleCityPost(request: Request, env: Env): Promise<Response> {
+  const currentUser = await getCurrentUser(request, env);
+  const form = await request.formData();
+  const nextPath = String(form.get('next') || '/');
+  const city = normalizeCity(String(form.get('city') || ''));
+
+  if (currentUser) {
+    await updateUserCity(env, currentUser.id, city);
+  }
+
+  const response = redirect(buildCityLocation(nextPath, city));
+  response.headers.set('Set-Cookie', buildCityCookie(city, request.url.startsWith('https://')));
+  return response;
+}
+
 async function handleSettingsAvatarPost(request: Request, env: Env): Promise<Response> {
   const currentUser = await getCurrentUser(request, env);
   if (!currentUser) {
@@ -8247,7 +8443,7 @@ async function handleApiAdsPost(request: Request, env: Env, ctx: ExecutionContex
     return json({ error: 'title and body are required' }, { status: 400 });
   }
 
-  const ad = await createAd(env, ctx, title, body, null, category, type, null);
+  const ad = await createAd(env, ctx, title, body, null, CITY_DEFAULT_SLUG, category, type, null);
   return json(
     {
       ok: true,
@@ -8265,7 +8461,7 @@ async function handleNewGet(request: Request, env: Env): Promise<Response> {
     return redirect('/login?next=/new');
   }
 
-  return renderNewPage(currentUser);
+  return renderNewPage(currentUser, getCurrentCityFromRequest(request, currentUser));
 }
 
 async function handleNewPost(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -8274,36 +8470,39 @@ async function handleNewPost(request: Request, env: Env, ctx: ExecutionContext):
     return redirect('/login?next=/new');
   }
 
-  const { title, body, contact, category, type, image } = await parseAdForm(request);
+  const { title, body, contact, city, category, type, image } = await parseAdForm(request);
+  const currentCity = normalizeCity(getCurrentCityFromRequest(request, currentUser));
 
   if (!title || !body) {
-    return renderNewPage(currentUser, 'Заполни заголовок и текст');
+    return renderNewPage(currentUser, currentCity, 'Заполни заголовок и текст');
   }
 
   try {
-    await createAd(env, ctx, title, body, contact, category, type, currentUser.id, image);
+    await createAd(env, ctx, title, body, contact, city || currentCity, category, type, currentUser.id, image);
   } catch (error) {
     console.error('Failed to create ad with image', error);
-    return renderNewPage(currentUser, 'Не удалось загрузить картинку');
+    return renderNewPage(currentUser, currentCity, 'Не удалось загрузить картинку');
   }
   return redirect('/my?message=Объявление создано');
 }
 
 async function handleCategoryGet(request: Request, env: Env, slug: string, currentUser: CurrentUser | null = null): Promise<Response> {
+  const currentCity = getCurrentCityFromRequest(request, currentUser);
   const category = CATEGORIES.find((item) => item.slug === slug);
   if (!category) {
-    return renderNotFoundPage(currentUser);
+    return renderNotFoundPage(currentUser, currentCity);
   }
 
   const typeFilter = new URL(request.url).searchParams.get('type');
   const normalizedTypeFilter = typeFilter ? normalizeAdType(typeFilter) : null;
   const ads = normalizedTypeFilter
-    ? await listPublishedAdsByCategoryAndType(env, slug, normalizedTypeFilter)
-    : await listPublishedAdsByCategory(env, slug);
-  return renderCategoryPage(env, slug, ads, currentUser, normalizedTypeFilter);
+    ? await listPublishedAdsByCategoryAndType(env, slug, normalizedTypeFilter, currentCity)
+    : await listPublishedAdsByCategory(env, slug, currentCity);
+  return renderCategoryPage(env, slug, ads, currentUser, normalizedTypeFilter, currentCity);
 }
 
 async function handleAdGet(
+  request: Request,
   env: Env,
   id: string,
   currentUser: CurrentUser | null = null,
@@ -8316,12 +8515,13 @@ async function handleAdGet(
 
   const ad = await getPublishedAdCardById(env, numericId);
   if (!ad) {
-    return renderNotFoundPage(currentUser);
+    return renderNotFoundPage(currentUser, getCurrentCityFromRequest(request, currentUser));
   }
 
   const canMessageAuthor = Boolean(ad.owner_user_id && (await findTelegramIdentityByUserId(env, ad.owner_user_id)));
   const currentUserHasTelegram = currentUser ? Boolean(await findTelegramIdentityByUserId(env, currentUser.id)) : false;
-  return renderPublicAdPage(env, ad, currentUser, canMessageAuthor, currentUserHasTelegram, message);
+  const currentCity = getCurrentCityFromRequest(request, currentUser);
+  return renderPublicAdPage(env, ad, currentUser, canMessageAuthor, currentUserHasTelegram, message, currentCity);
 }
 
 async function handleAdMessagePost(
@@ -8341,18 +8541,18 @@ async function handleAdMessagePost(
 
   const ad = await getPublishedAdCardById(env, numericId);
   if (!ad) {
-    return renderNotFoundPage(currentUser);
+    return renderNotFoundPage(currentUser, currentUser ? currentUser.city : CITY_DEFAULT_SLUG);
   }
 
   const canMessageAuthor = Boolean(ad.owner_user_id && (await findTelegramIdentityByUserId(env, ad.owner_user_id)));
   const currentUserHasTelegram = Boolean(await findTelegramIdentityByUserId(env, currentUser.id));
 
   if (!ad.owner_user_id) {
-    return renderPublicAdPage(env, ad, currentUser, canMessageAuthor, currentUserHasTelegram, 'У объявления не указан автор');
+    return renderPublicAdPage(env, ad, currentUser, canMessageAuthor, currentUserHasTelegram, 'У объявления не указан автор', currentUser.city);
   }
 
   if (ad.owner_user_id === currentUser.id) {
-    return renderPublicAdPage(env, ad, currentUser, canMessageAuthor, currentUserHasTelegram, 'Нельзя написать самому себе');
+    return renderPublicAdPage(env, ad, currentUser, canMessageAuthor, currentUserHasTelegram, 'Нельзя написать самому себе', currentUser.city);
   }
 
   if (!currentUserHasTelegram) {
@@ -8362,24 +8562,25 @@ async function handleAdMessagePost(
       currentUser,
       canMessageAuthor,
       currentUserHasTelegram,
-      'Чтобы написать продавцу в Telegram, подключи Telegram-бот в настройках'
+      'Чтобы написать продавцу в Telegram, подключи Telegram-бот в настройках',
+      currentUser.city
     );
   }
 
   const form = await request.formData();
   const message = String(form.get('message') || '').trim();
   if (!message) {
-    return renderPublicAdPage(env, ad, currentUser, canMessageAuthor, currentUserHasTelegram, 'Введите текст сообщения');
+    return renderPublicAdPage(env, ad, currentUser, canMessageAuthor, currentUserHasTelegram, 'Введите текст сообщения', currentUser.city);
   }
 
   if (message.length > 1000) {
-    return renderPublicAdPage(env, ad, currentUser, canMessageAuthor, currentUserHasTelegram, 'Сообщение слишком длинное');
+    return renderPublicAdPage(env, ad, currentUser, canMessageAuthor, currentUserHasTelegram, 'Сообщение слишком длинное', currentUser.city);
   }
 
   const telegramIdentity = await findTelegramIdentityByUserId(env, ad.owner_user_id);
   const chatId = Number(telegramIdentity?.provider_user_id || '');
   if (!telegramIdentity?.provider_user_id || !Number.isInteger(chatId) || chatId <= 0) {
-    return renderPublicAdPage(env, ad, currentUser, false, currentUserHasTelegram, 'У продавца не подключён Telegram-бот');
+    return renderPublicAdPage(env, ad, currentUser, false, currentUserHasTelegram, 'У продавца не подключён Telegram-бот', currentUser.city);
   }
 
   try {
@@ -8393,13 +8594,13 @@ async function handleAdMessagePost(
     );
   } catch (error) {
     console.error('Failed to send ad message to author', error);
-    return renderPublicAdPage(env, ad, currentUser, canMessageAuthor, currentUserHasTelegram, 'Не удалось отправить сообщение');
+    return renderPublicAdPage(env, ad, currentUser, canMessageAuthor, currentUserHasTelegram, 'Не удалось отправить сообщение', currentUser.city);
   }
 
   return redirectWithMessage(`/ad/${ad.id}`, 'Сообщение отправлено в Telegram продавцу');
 }
 
-async function handlePublicUserGet(env: Env, login: string, currentUser: CurrentUser | null = null): Promise<Response> {
+async function handlePublicUserGet(request: Request, env: Env, login: string, currentUser: CurrentUser | null = null): Promise<Response> {
   let decodedLogin = login;
   try {
     decodedLogin = decodeURIComponent(login);
@@ -8409,10 +8610,10 @@ async function handlePublicUserGet(env: Env, login: string, currentUser: Current
 
   const user = await getPublicUserByLogin(env, decodedLogin);
   if (!user) {
-    return renderNotFoundPage(currentUser);
+    return renderNotFoundPage(currentUser, getCurrentCityFromRequest(request, currentUser));
   }
 
-  return renderPublicUserPage(env, user, await listPublishedAdsByUser(env, user.id), currentUser);
+  return renderPublicUserPage(env, user, await listPublishedAdsByUser(env, user.id, getCurrentCityFromRequest(request, currentUser)), currentUser, getCurrentCityFromRequest(request, currentUser));
 }
 
 async function handleMediaGet(env: Env, key: string): Promise<Response> {
@@ -8448,7 +8649,8 @@ export default {
     const path = url.pathname;
 
     if (path === '/') {
-      return renderHome(await getCurrentUser(request, env));
+      const currentUser = await getCurrentUser(request, env);
+      return renderHome(currentUser, getCurrentCityFromRequest(request, currentUser));
     }
 
     if (path === '/register') {
@@ -8573,11 +8775,11 @@ export default {
     }
 
     if (path.startsWith('/ad/') && request.method === 'GET') {
-      return handleAdGet(env, path.slice('/ad/'.length), await getCurrentUser(request, env), url.searchParams.get('message'));
+      return handleAdGet(request, env, path.slice('/ad/'.length), await getCurrentUser(request, env), url.searchParams.get('message'));
     }
 
     if (path.startsWith('/u/') && request.method === 'GET') {
-      return handlePublicUserGet(env, path.slice('/u/'.length), await getCurrentUser(request, env));
+      return handlePublicUserGet(request, env, path.slice('/u/'.length), await getCurrentUser(request, env));
     }
 
     if (path.startsWith('/media/') && request.method === 'GET') {
@@ -8586,7 +8788,14 @@ export default {
 
     if (path === '/search' && request.method === 'GET') {
       const query = url.searchParams.get('q') || '';
-      return renderSearchPage(env, query, await searchPublishedAds(env, query), await getCurrentUser(request, env));
+      const currentUser = await getCurrentUser(request, env);
+      return renderSearchPage(env, query, await searchPublishedAds(env, query, getCurrentCityFromRequest(request, currentUser)), currentUser, getCurrentCityFromRequest(request, currentUser));
+    }
+
+    if (path === '/city') {
+      if (request.method === 'GET') return handleCityGet(request, env);
+      if (request.method === 'POST') return handleCityPost(request, env);
+      return text('Method Not Allowed', 405);
     }
 
     if (path === '/api/ads') {

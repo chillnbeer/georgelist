@@ -3,6 +3,7 @@ CREATE TABLE IF NOT EXISTS users (
   login TEXT NOT NULL UNIQUE,
   display_name TEXT,
   role TEXT NOT NULL DEFAULT 'user',
+  city TEXT,
   avatar_key TEXT,
   avatar_mime_type TEXT,
   avatar_updated_at TEXT,
@@ -63,7 +64,9 @@ CREATE TABLE IF NOT EXISTS ads (
   title TEXT NOT NULL,
   body TEXT NOT NULL,
   contact TEXT,
+  city TEXT,
   category TEXT,
+  type TEXT,
   status TEXT NOT NULL DEFAULT 'pending',
   owner_user_id INTEGER,
   image_key TEXT,
@@ -73,4 +76,36 @@ CREATE TABLE IF NOT EXISTS ads (
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (owner_user_id) REFERENCES users(id)
+);
+
+CREATE TABLE IF NOT EXISTS bot_conversations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ad_id INTEGER NOT NULL,
+  user_low_id INTEGER NOT NULL,
+  user_high_id INTEGER NOT NULL,
+  last_message_sender_user_id INTEGER,
+  last_message_text TEXT,
+  last_message_at TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(ad_id, user_low_id, user_high_id)
+);
+
+CREATE TABLE IF NOT EXISTS bot_chat_messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  conversation_id INTEGER NOT NULL,
+  sender_user_id INTEGER NOT NULL,
+  body TEXT NOT NULL,
+  is_read INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (conversation_id) REFERENCES bot_conversations(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS bot_chat_notifications (
+  conversation_id INTEGER NOT NULL,
+  user_id INTEGER NOT NULL,
+  message_id INTEGER NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(conversation_id, user_id)
 );
