@@ -29,6 +29,7 @@ import {
   type ChatThreadRow,
   upsertChatNotification,
 } from './chat';
+import { html, json, redirect, redirectWithHeaders, redirectWithMessage, text } from './http';
 
 const CATEGORIES = [
   { slug: 'auto', label: 'Авто' },
@@ -371,47 +372,6 @@ function htmlEscape(value: string): string {
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#39;');
-}
-
-function text(body: string, status = 200): Response {
-  return new Response(body, {
-    status,
-    headers: { 'Content-Type': 'text/plain; charset=utf-8' },
-  });
-}
-
-function html(body: string, status = 200): Response {
-  return new Response(body, {
-    status,
-    headers: { 'Content-Type': 'text/html; charset=utf-8' },
-  });
-}
-
-function json(data: unknown, init?: ResponseInit): Response {
-  return new Response(JSON.stringify(data), {
-    ...init,
-    headers: {
-      'Content-Type': 'application/json; charset=utf-8',
-      ...(init?.headers || {}),
-    },
-  });
-}
-
-function redirect(location: string, status = 303): Response {
-  return redirectWithHeaders(location, status);
-}
-
-function redirectWithHeaders(location: string, status = 303, headers?: HeadersInit): Response {
-  const responseHeaders = new Headers(headers);
-  responseHeaders.set('Location', location);
-  return new Response(null, {
-    status,
-    headers: responseHeaders,
-  });
-}
-
-function redirectWithMessage(path: string, message: string, status = 303, headers?: HeadersInit): Response {
-  return redirectWithHeaders(`${path}?message=${encodeURIComponent(message)}`, status, headers);
 }
 
 function categoryLabel(slug: string | null): string {
