@@ -13,14 +13,12 @@ export function html(body: string, status = 200): Response {
 }
 
 export function json(data: unknown, init?: ResponseInit): Response {
-  const headers = new Headers(init?.headers);
-  if (!headers.has('Content-Type')) {
-    headers.set('Content-Type', 'application/json; charset=utf-8');
-  }
-
   return new Response(JSON.stringify(data), {
     ...init,
-    headers,
+    headers: {
+      'Content-Type': 'application/json; charset=utf-8',
+      ...(init?.headers || {}),
+    },
   });
 }
 
@@ -36,8 +34,4 @@ export function redirectWithHeaders(location: string, status = 303, headers?: He
 
 export function redirectWithMessage(path: string, message: string, status = 303, headers?: HeadersInit): Response {
   return redirectWithHeaders(`${path}?message=${encodeURIComponent(message)}`, status, headers);
-}
-
-export function methodNotAllowed(): Response {
-  return text('Method Not Allowed', 405);
 }
