@@ -6079,23 +6079,38 @@ async function sendChatMessage(
     const ad = await getPublishedAdCardById(env, adId);
     const title = ad?.title || `#${adId}`;
     const senderLogin = sender?.login || senderTelegramUserId || 'пользователь';
-    const lines = [
-      `Тебе написал пользователь ${senderLogin}`,
-      `по объявлению: ${title}`,
-      '',
-      'Сообщение:',
-      body,
-    ];
-    const senderIdentity = await findTelegramIdentityByUserId(env, senderUserId);
-    try {
-      await sendChatMessageToUser(
-        env,
-        recipientTelegram.provider_user_id,
-        lines.join('\n'),
-        senderIdentity?.provider_user_id ? userBotIncomingChatMarkup(conversation.id) : undefined
-      );
-    } catch (error) {
-      console.error('Failed to notify chat recipient', error);
+    const recipientDraft = await getBotDraft(env, recipientTelegram.provider_user_id);
+    const recipientHasOpenChat =
+      recipientDraft?.action === 'chat' &&
+      recipientDraft.step === 'message' &&
+      recipientDraft.reply_user_id === senderUserId &&
+      recipientDraft.reply_ad_id === adId;
+
+    if (recipientHasOpenChat) {
+      try {
+        await sendUserBotChatView(env, recipientTelegram.provider_user_id, recipientChatId, conversation.id);
+      } catch (error) {
+        console.error('Failed to refresh open chat for recipient', error);
+      }
+    } else {
+      const lines = [
+        `Тебе написал пользователь ${senderLogin}`,
+        `по объявлению: ${title}`,
+        '',
+        'Сообщение:',
+        body,
+      ];
+      const senderIdentity = await findTelegramIdentityByUserId(env, senderUserId);
+      try {
+        await sendChatMessageToUser(
+          env,
+          recipientTelegram.provider_user_id,
+          lines.join('\n'),
+          senderIdentity?.provider_user_id ? userBotIncomingChatMarkup(conversation.id) : undefined
+        );
+      } catch (error) {
+        console.error('Failed to notify chat recipient', error);
+      }
     }
   }
 

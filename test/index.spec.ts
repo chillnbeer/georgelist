@@ -2047,6 +2047,27 @@ describe('User bot replies and passwords', () => {
     expect((replyDelete?.body as { chat_id?: number }).chat_id).toBe(11001);
     expect((replyDelete?.body as { message_id?: number }).message_id).toBe(601);
 
+    const writerChatOpenResponse = await sendUserTelegramWebhook({
+      callback_query: {
+        id: 'cb-writer-open-chat',
+        data: `user:chat:${conversation?.id}`,
+        message: {
+          chat: { id: 11101 },
+          message_id: 700,
+        },
+      },
+    });
+    expect(writerChatOpenResponse.status).toBe(200);
+
+    const writerChatScreen = lastTelegramCall('editMessageText');
+    expect((writerChatScreen?.body as { chat_id?: number }).chat_id).toBe(11101);
+    expect(String((writerChatScreen?.body as { text?: string }).text || '')).toContain('Диалог с replyowner');
+    expect(String((writerChatScreen?.body as { text?: string }).text || '')).toContain('Да, актуально');
+
+    const writerSendCountBefore = telegramFetchCalls.filter(
+      (call) => call.url.includes('/sendMessage') && (call.body as { chat_id?: number }).chat_id === 11101
+    ).length;
+
     const secondReplyResponse = await sendUserTelegramWebhook({
       message: {
         chat: { id: 11001 },
@@ -2057,10 +2078,15 @@ describe('User bot replies and passwords', () => {
     });
     expect(secondReplyResponse.status).toBe(200);
 
-    const sentMessages = telegramFetchCalls.filter((call) => call.url.includes('/sendMessage'));
-    expect(sentMessages.length).toBeGreaterThanOrEqual(3);
-    const lastSentMessage = sentMessages.at(-1);
-    expect(String((lastSentMessage?.body as { text?: string }).text || '')).toContain('Ещё одно сообщение');
+    const writerSendCountAfter = telegramFetchCalls.filter(
+      (call) => call.url.includes('/sendMessage') && (call.body as { chat_id?: number }).chat_id === 11101
+    ).length;
+    expect(writerSendCountAfter).toBe(writerSendCountBefore);
+
+    const writerUpdatedChat = telegramFetchCalls.filter(
+      (call) => call.url.includes('/editMessageText') && (call.body as { chat_id?: number }).chat_id === 11101
+    ).at(-1);
+    expect(String((writerUpdatedChat?.body as { text?: string }).text || '')).toContain('Ещё одно сообщение');
 
     const secondDelete = telegramFetchCalls.filter((call) => call.url.includes('/deleteMessage')).at(-1);
     expect((secondDelete?.body as { chat_id?: number }).chat_id).toBe(11001);
