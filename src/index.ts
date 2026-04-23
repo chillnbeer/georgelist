@@ -7431,12 +7431,18 @@ async function handleUserWebhook(request: Request, env: Env, ctx: ExecutionConte
   const telegramUserId = String(message.from.id);
   const chatId = message.chat.id;
   const telegramUsername = message.from.username || null;
+  const messageId = message.message_id || null;
 
   const avatarFileId = message.photo?.length ? message.photo[message.photo.length - 1]?.file_id : message.document?.mime_type?.startsWith('image/') ? message.document.file_id : null;
   if (avatarFileId) {
     const draft = await getBotDraft(env, telegramUserId);
     if (draft?.action === 'settings' && draft.step === 'avatar') {
       await handleUserBotSettingsAvatarUpdate(env, telegramUserId, chatId, avatarFileId);
+      if (messageId !== null) {
+        await deleteTelegramMessage(env, chatId, messageId).catch((error: unknown) => {
+          console.error('Failed to delete avatar message from Telegram', error);
+        });
+      }
       return json({ ok: true });
     }
   }
@@ -7447,25 +7453,21 @@ async function handleUserWebhook(request: Request, env: Env, ctx: ExecutionConte
 
   if (message.text === '/start') {
     await handleUserBotStart(env, telegramUserId, chatId, telegramUsername);
-    if (message.message_id) {
-      ctx.waitUntil(
-        deleteTelegramMessage(env, chatId, message.message_id).catch((error: unknown) => {
-          console.error('Failed to delete /start message from Telegram', error);
-        })
-      );
+    if (messageId !== null) {
+      await deleteTelegramMessage(env, chatId, messageId).catch((error: unknown) => {
+        console.error('Failed to delete /start message from Telegram', error);
+      });
     }
     return json({ ok: true });
   }
 
-  await handleUserBotText(env, telegramUserId, chatId, telegramUsername, message.text, ctx, message.message_id);
-
-  if (message.message_id) {
-    try {
-      await deleteTelegramMessage(env, chatId, message.message_id);
-    } catch (error) {
+  if (messageId !== null) {
+    await deleteTelegramMessage(env, chatId, messageId).catch((error: unknown) => {
       console.error('Failed to delete user message from Telegram', error);
-    }
+    });
   }
+
+  await handleUserBotText(env, telegramUserId, chatId, telegramUsername, message.text, ctx, message.message_id);
 
   return json({ ok: true });
 }
