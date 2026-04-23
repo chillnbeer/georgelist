@@ -4209,6 +4209,17 @@ async function sendTelegramMessage(
   }
 }
 
+async function deleteTelegramMessage(env: Env, chatId: number, messageId: number): Promise<void> {
+  const response = await telegramApi(env, 'deleteMessage', {
+    chat_id: chatId,
+    message_id: messageId,
+  });
+
+  if (!response.ok) {
+    throw new Error(`Telegram deleteMessage failed with status ${response.status}`);
+  }
+}
+
 async function answerCallbackQuery(env: Env, callbackQueryId: string, text?: string): Promise<void> {
   await telegramApi(env, 'answerCallbackQuery', {
     callback_query_id: callbackQueryId,
@@ -6290,7 +6301,8 @@ async function handleUserBotText(
   chatId: number,
   telegramUsername: string | null,
   text: string,
-  ctx: ExecutionContext
+  ctx: ExecutionContext,
+  messageId: number | null = null
 ): Promise<void> {
   if (text === '/start') {
     await handleUserBotStart(env, telegramUserId, chatId, telegramUsername);
@@ -6370,11 +6382,36 @@ async function handleUserBotText(
         replyText,
         telegramUsername || null
       );
-      await clearBotDraft(env, telegramUserId);
+      await upsertBotDraft(
+        env,
+        telegramUserId,
+        'chat',
+        'message',
+        null,
+        null,
+        null,
+        draft.reply_ad_id,
+        null,
+        null,
+        null,
+        null,
+        null,
+        draft.reply_user_id,
+        draft.reply_ad_id,
+        null,
+        null
+      );
       await sendUserBotChatView(env, telegramUserId, chatId, conversation.id, 'Сообщение отправлено', true);
+
+      if (messageId !== null) {
+        ctx.waitUntil(
+          deleteTelegramMessage(env, chatId, messageId).catch((error: unknown) => {
+            console.error('Failed to delete sent chat message from Telegram', error);
+          })
+        );
+      }
     } catch (error) {
       console.error('Failed to send reply message to user', error);
-      await clearBotDraft(env, telegramUserId);
       await sendUserBotMenu(env, telegramUserId, chatId, 'Не удалось отправить сообщение');
       return;
     }
@@ -7068,7 +7105,7 @@ async function handleUserWebhook(request: Request, env: Env, ctx: ExecutionConte
     return json({ ok: true });
   }
 
-  await handleUserBotText(env, telegramUserId, chatId, telegramUsername, message.text, ctx);
+  await handleUserBotText(env, telegramUserId, chatId, telegramUsername, message.text, ctx, message.message_id);
 
   return json({ ok: true });
 }

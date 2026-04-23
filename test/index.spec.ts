@@ -238,7 +238,7 @@ async function sendUserTelegramWebhook(update: unknown): Promise<Response> {
   );
 }
 
-function lastTelegramCall(method: 'sendMessage' | 'editMessageText' | 'sendPhoto' | 'editMessageCaption' | 'editMessageMedia') {
+function lastTelegramCall(method: 'sendMessage' | 'editMessageText' | 'sendPhoto' | 'editMessageCaption' | 'editMessageMedia' | 'deleteMessage') {
   return telegramFetchCalls.filter((call) => call.url.includes(`/${method}`) && typeof call.body === 'object' && call.body !== null).at(-1);
 }
 
@@ -1976,6 +1976,7 @@ describe('User bot replies and passwords', () => {
         chat: { id: 11001 },
         from: { id: 11001, username: 'replyowner_tg' },
         text: 'Да, актуально',
+        message_id: 601,
       },
     });
     expect(replySendResponse.status).toBe(200);
@@ -1987,6 +1988,29 @@ describe('User bot replies and passwords', () => {
     const replyReplyMarkup = (replySent?.body as { reply_markup?: { inline_keyboard?: Array<Array<{ text?: string; callback_data?: string }>> } }).reply_markup;
     expect(replyReplyMarkup?.inline_keyboard?.[0]?.[0]?.text).toBe('Открыть чат');
     expect(replyReplyMarkup?.inline_keyboard?.[1]?.[0]?.text).toBe('Диалоги');
+
+    const replyDelete = lastTelegramCall('deleteMessage');
+    expect((replyDelete?.body as { chat_id?: number }).chat_id).toBe(11001);
+    expect((replyDelete?.body as { message_id?: number }).message_id).toBe(601);
+
+    const secondReplyResponse = await sendUserTelegramWebhook({
+      message: {
+        chat: { id: 11001 },
+        from: { id: 11001, username: 'replyowner_tg' },
+        text: 'Ещё одно сообщение',
+        message_id: 602,
+      },
+    });
+    expect(secondReplyResponse.status).toBe(200);
+
+    const sentMessages = telegramFetchCalls.filter((call) => call.url.includes('/sendMessage'));
+    expect(sentMessages.length).toBeGreaterThanOrEqual(3);
+    const lastSentMessage = sentMessages.at(-1);
+    expect(String((lastSentMessage?.body as { text?: string }).text || '')).toContain('Ещё одно сообщение');
+
+    const secondDelete = telegramFetchCalls.filter((call) => call.url.includes('/deleteMessage')).at(-1);
+    expect((secondDelete?.body as { chat_id?: number }).chat_id).toBe(11001);
+    expect((secondDelete?.body as { message_id?: number }).message_id).toBe(602);
   });
 
   it('lets Telegram users set and change their password from settings', async () => {
