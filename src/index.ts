@@ -1307,6 +1307,14 @@ function renderLocationEditor(location: {
       </select>
     </div>
   </div>
+  <div class="location-picker-search">
+    <label for="${htmlEscape(prefix)}-query">Найти адрес</label>
+    <div class="location-picker-search-row">
+      <input id="${htmlEscape(prefix)}-query" type="search" placeholder="Например, Ленина 1, Екатеринбург" autocomplete="off" />
+      <button type="button" data-location-search>Найти</button>
+    </div>
+    <div class="location-picker-results" data-location-results></div>
+  </div>
   <input type="hidden" name="location_lat" value="${htmlEscape(latValue)}" />
   <input type="hidden" name="location_lng" value="${htmlEscape(lngValue)}" />
   <div class="location-picker-status" data-location-status>${htmlEscape(statusText)}</div>
@@ -1378,6 +1386,9 @@ function renderLocationPickerScript(): string {
     var lngInput = root.querySelector('input[name="location_lng"]');
     var radiusSelect = root.querySelector('select[name="location_radius_meters"]');
     var labelInput = root.querySelector('input[name="location_label"]');
+    var queryInput = root.querySelector('[id$="-query"]');
+    var searchButton = root.querySelector('[data-location-search]');
+    var resultsEl = root.querySelector('[data-location-results]');
     var statusEl = root.querySelector('[data-location-status]');
     var clearButton = root.querySelector('[data-location-clear]');
     var citySelect = root.querySelector('select[name="city"]');
@@ -1410,6 +1421,113 @@ function renderLocationPickerScript(): string {
         statusEl.textContent = 'Выбрана зона: ' + (label || 'без подписи') + ' · ' + formatRadius(currentRadius);
       } else {
         statusEl.textContent = 'Кликни по карте, чтобы выбрать примерную зону встречи';
+      }
+    }
+
+    function renderResults(items, message) {
+      if (!resultsEl) {
+        return;
+      }
+
+      resultsEl.innerHTML = '';
+
+      if (message) {
+        var messageNode = document.createElement('div');
+        messageNode.className = 'empty';
+        messageNode.textContent = message;
+        resultsEl.appendChild(messageNode);
+      }
+
+      items.forEach(function (item) {
+        var button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'location-picker-result';
+        button.textContent = item.label;
+
+        var small = document.createElement('small');
+        small.textContent = item.displayName;
+        button.appendChild(small);
+
+        button.addEventListener('click', function () {
+          setLocation(item.lat, item.lng, true);
+          if (labelInput && !labelInput.value.trim()) {
+            labelInput.value = item.label;
+          }
+          if (queryInput) {
+            queryInput.value = item.displayName;
+          }
+          renderResults([], 'Адрес выбран');
+          updateStatus();
+        });
+
+        resultsEl.appendChild(button);
+      });
+    }
+
+    async function searchAddress() {
+      if (!queryInput) {
+        return;
+      }
+
+      var query = queryInput.value.trim();
+      if (!query) {
+        renderResults([], 'Введите адрес для поиска');
+        return;
+      }
+
+      var cityValue = citySelect && citySelect.value ? citySelect.value : '';
+      renderResults([], 'Ищем адрес...');
+
+      try {
+        var url = new URL('/api/location-search', window.location.origin);
+        url.searchParams.set('q', query);
+        if (cityValue) {
+          url.searchParams.set('city', cityValue);
+        }
+
+        var response = await fetch(url.toString(), {
+          headers: {
+            Accept: 'application/json',
+          },
+        });
+
+        if (!response.ok) {
+          throw new Error('search failed');
+        }
+
+        var payload = await response.json();
+        var items = Array.isArray(payload?.results)
+          ? payload.results.map(function (item) {
+              return {
+                label: item.label,
+                displayName: item.display_name,
+                lat: Number(item.lat),
+                lng: Number(item.lng),
+              };
+            }).filter(function (item) {
+              return Number.isFinite(item.lat) && Number.isFinite(item.lng) && item.label;
+            })
+          : [];
+
+        if (!items.length) {
+          renderResults([], 'Адрес не найден');
+          return;
+        }
+
+        renderResults(items, 'Найдено: ' + items.length);
+        if (items.length === 1) {
+          setLocation(items[0].lat, items[0].lng, true);
+          if (labelInput && !labelInput.value.trim()) {
+            labelInput.value = items[0].label;
+          }
+          if (queryInput) {
+            queryInput.value = items[0].displayName;
+          }
+          updateStatus();
+        }
+      } catch (error) {
+        console.error('Failed to search address', error);
+        renderResults([], 'Не удалось найти адрес');
       }
     }
 
@@ -1494,6 +1612,21 @@ function renderLocationPickerScript(): string {
       clearButton.addEventListener('click', clearLocation);
     }
 
+    if (searchButton) {
+      searchButton.addEventListener('click', function () {
+        searchAddress();
+      });
+    }
+
+    if (queryInput) {
+      queryInput.addEventListener('keydown', function (event) {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          searchAddress();
+        }
+      });
+    }
+
     if (citySelect) {
       citySelect.addEventListener('change', function () {
         if (hasLocation()) {
@@ -1505,6 +1638,7 @@ function renderLocationPickerScript(): string {
     }
 
     updateStatus();
+    renderResults([], '');
   }
 
   function init() {
@@ -2012,6 +2146,35 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       max-width: none;
       margin-bottom: 0;
     }
+    .location-picker-search {
+      display: grid;
+      gap: 6px;
+    }
+    .location-picker-search-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 8px;
+      align-items: center;
+    }
+    .location-picker-results {
+      display: grid;
+      gap: 6px;
+      max-height: 180px;
+      overflow: auto;
+    }
+    .location-picker-result {
+      text-align: left;
+      padding: 8px 10px;
+      border: 1px solid #d6dbe6;
+      border-radius: 10px;
+      background: #fff;
+      font-size: 13px;
+    }
+    .location-picker-result small {
+      display: block;
+      color: #667;
+      margin-top: 2px;
+    }
     .location-picker-status {
       font-size: 13px;
       color: #444;
@@ -2057,6 +2220,9 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       }
       .location-picker-map {
         min-height: 260px;
+      }
+      .location-picker-search-row {
+        grid-template-columns: 1fr;
       }
     }
   </style>
@@ -9385,6 +9551,88 @@ async function handleTelegramAuthCallback(request: Request, env: Env): Promise<R
   });
 }
 
+type LocationSearchResult = {
+  label: string;
+  display_name: string;
+  lat: number;
+  lng: number;
+};
+
+function buildLocationSearchUrl(query: string, city: string | null): URL {
+  const url = new URL('https://nominatim.openstreetmap.org/search');
+  url.searchParams.set('q', query);
+  url.searchParams.set('format', 'jsonv2');
+  url.searchParams.set('limit', '5');
+  url.searchParams.set('addressdetails', '1');
+  url.searchParams.set('countrycodes', 'ru');
+  url.searchParams.set('accept-language', 'ru');
+
+  const citySlug = normalizeCity(city);
+  const center = cityMapCenter(citySlug);
+  const latitudeSpread = 0.6;
+  const longitudeSpread = 0.9;
+  url.searchParams.set(
+    'viewbox',
+    [
+      center.lng - longitudeSpread,
+      center.lat + latitudeSpread,
+      center.lng + longitudeSpread,
+      center.lat - latitudeSpread,
+    ].join(',')
+  );
+
+  return url;
+}
+
+async function handleLocationSearchGet(request: Request): Promise<Response> {
+  const url = new URL(request.url);
+  const query = url.searchParams.get('q')?.trim() || '';
+  const city = url.searchParams.get('city');
+  if (!query) {
+    return json({ error: 'query is required' }, { status: 400 });
+  }
+
+  const searchUrl = buildLocationSearchUrl(query, city);
+  const response = await fetch(searchUrl.toString(), {
+    headers: {
+      Accept: 'application/json',
+      'User-Agent': 'georgelist/1.0',
+    },
+  });
+
+  if (!response.ok) {
+    return json({ error: 'geocode failed' }, { status: 502 });
+  }
+
+  const results = (await response.json().catch(() => [])) as Array<{
+    display_name?: string;
+    lat?: string;
+    lon?: string;
+  }>;
+
+  return json({
+    ok: true,
+    results: results
+      .map((item) => {
+        const lat = Number(item.lat);
+        const lng = Number(item.lon);
+        const displayName = String(item.display_name || '').trim();
+        if (!displayName || !Number.isFinite(lat) || !Number.isFinite(lng)) {
+          return null;
+        }
+
+        const label = displayName.split(',').slice(0, 2).join(', ').trim() || displayName;
+        return {
+          label,
+          display_name: displayName,
+          lat,
+          lng,
+        };
+      })
+      .filter((item): item is LocationSearchResult => item !== null),
+  });
+}
+
 async function handleApiAdsGet(env: Env): Promise<Response> {
   return json({ ads: await listPublishedAds(env) });
 }
@@ -9756,6 +10004,10 @@ export default {
       if (request.method === 'GET') return handleNewGet(request, env);
       if (request.method === 'POST') return handleNewPost(request, env, ctx);
       return text('Method Not Allowed', 405);
+    }
+
+    if (path === '/api/location-search' && request.method === 'GET') {
+      return handleLocationSearchGet(request);
     }
 
     if (path.startsWith('/category/') && request.method === 'GET') {

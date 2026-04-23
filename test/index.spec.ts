@@ -434,6 +434,23 @@ beforeEach(async () => {
       const url = typeof input === 'string' || input instanceof URL ? String(input) : input.url;
       const body = typeof init?.body === 'string' ? JSON.parse(init.body) : init?.body ?? null;
       telegramFetchCalls.push({ url, body });
+      if (url.includes('nominatim.openstreetmap.org/search')) {
+        const searchUrl = new URL(url);
+        const query = (searchUrl.searchParams.get('q') || '').toLowerCase();
+        const results = query.includes('ленина')
+          ? [
+              {
+                display_name: 'улица Ленина, Екатеринбург, Свердловская область, Россия',
+                lat: '56.84',
+                lon: '60.61',
+              },
+            ]
+          : [];
+        return new Response(JSON.stringify(results), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
       const result = url.includes('/sendMessage') || url.includes('/sendPhoto') || url.includes('/sendDocument')
         ? { message_id: telegramMessageId++ }
         : {};
@@ -1293,6 +1310,7 @@ describe('Site create flow', () => {
     expect(createPageHtml).toContain('Зона встречи');
     expect(createPageHtml).toContain('name="location_lat"');
     expect(createPageHtml).toContain('name="location_radius_meters"');
+    expect(createPageHtml).toContain('Найти адрес');
 
     const createForm = new FormData();
     createForm.set('title', 'Site buy request');
@@ -1370,6 +1388,14 @@ describe('Site create flow', () => {
     expect(publishedAdPageHtml).toContain('Зона встречи');
     expect(publishedAdPageHtml).toContain('location-picker-map');
     expect(publishedAdPageHtml).toContain('Центр Екатеринбурга');
+
+    const geocodeResponse = await runRequest(new Request('http://example.com/api/location-search?q=%D0%9B%D0%B5%D0%BD%D0%B8%D0%BD%D0%B0%201&city=ekb'));
+    expect(geocodeResponse.status).toBe(200);
+    const geocodeJson = await geocodeResponse.json();
+    expect(geocodeJson.ok).toBe(true);
+    expect(geocodeJson.results?.[0]?.label).toContain('улица Ленина');
+    expect(geocodeJson.results?.[0]?.lat).toBeCloseTo(56.84, 2);
+    expect(geocodeJson.results?.[0]?.lng).toBeCloseTo(60.61, 2);
 
     const noZoneForm = new FormData();
     noZoneForm.set('title', 'No zone request');
