@@ -1007,8 +1007,12 @@ function getCurrentCityFromRequest(request: Request, currentUser: CurrentUser | 
   return normalizeCity(currentUser?.city);
 }
 
+function resolveUserBotToken(env: Env): string | undefined {
+  return env.USER_TELEGRAM_BOT_TOKEN || env.TELEGRAM_USER_BOT_TOKEN;
+}
+
 async function getTelegramUserBotToken(env: Env): Promise<string> {
-  const token = env.USER_TELEGRAM_BOT_TOKEN || env.TELEGRAM_USER_BOT_TOKEN;
+  const token = resolveUserBotToken(env);
   if (!token) {
     throw new Error('Missing user Telegram bot token');
   }
@@ -3408,7 +3412,7 @@ async function telegramApi(env: Env, method: string, payload: Record<string, unk
 }
 
 async function userBotApi(env: Env, method: string, payload: Record<string, unknown>): Promise<Response> {
-  const token = env.USER_TELEGRAM_BOT_TOKEN || env.TELEGRAM_USER_BOT_TOKEN;
+  const token = resolveUserBotToken(env);
 
   if (!token) {
     throw new Error('Missing user Telegram bot token');
@@ -3496,7 +3500,7 @@ async function sendUserBotDocument(
     payload.set('reply_markup', JSON.stringify(replyMarkup));
   }
 
-  const token = env.USER_TELEGRAM_BOT_TOKEN || env.TELEGRAM_USER_BOT_TOKEN;
+  const token = resolveUserBotToken(env);
   if (!token) {
     throw new Error('Missing user Telegram bot token');
   }
