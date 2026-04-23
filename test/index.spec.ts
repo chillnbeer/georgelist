@@ -1744,6 +1744,8 @@ describe('Admin web flow', () => {
     const adminAdsHtml = await adminAdsPage.text();
     expect(adminAdsHtml).toContain('Объявления');
     expect(adminAdsHtml).toContain('Old title');
+    expect(adminAdsHtml).toContain('href="/u/user11"');
+    expect(adminAdsHtml).toContain('avatar-mini');
     expect(adminAdsHtml).toContain(`/admin/edit/${adId}`);
     expect(adminAdsHtml).toContain(`/admin/delete/${adId}`);
 

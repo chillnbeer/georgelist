@@ -57,6 +57,8 @@ type AdRow = {
   contact: string | null;
   category: string | null;
   owner_user_id: number | null;
+  owner_login: string | null;
+  owner_avatar_key: string | null;
   status: string;
   image_key: string | null;
   image_mime_type: string | null;
@@ -1107,6 +1109,11 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       color: #444;
       font-size: 12px;
     }
+    .ad-owner {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
     .settings-account,
     .settings-password {
       display: flex;
@@ -1733,10 +1740,25 @@ async function listAdminAdsPage(env: Env, page: number): Promise<AdRow[]> {
   const offset = (page - 1) * ADMIN_PAGE_SIZE;
   const result = await env.DB.prepare(
     `
-      SELECT ${AD_SELECT_COLUMNS}
+      SELECT ads.id,
+             ads.title,
+             ads.body,
+             ads.contact,
+             ads.category,
+             ads.owner_user_id,
+             ads.status,
+             ads.image_key,
+             ads.image_mime_type,
+             ads.image_updated_at,
+             ads.created_at,
+             ads.updated_at,
+             ads.deleted_at,
+             users.login AS owner_login,
+             users.avatar_key AS owner_avatar_key
       FROM ads
+      LEFT JOIN users ON users.id = ads.owner_user_id
       WHERE deleted_at IS NULL
-      ORDER BY created_at DESC, id DESC
+      ORDER BY ads.created_at DESC, ads.id DESC
       LIMIT ?
       OFFSET ?
     `
@@ -1837,13 +1859,18 @@ function renderAdminAdsSection(
   const items = ads.length
     ? ads
         .map((ad) => {
-          const owner = ad.owner_user_id ? `owner #${ad.owner_user_id}` : 'no owner';
+          const owner = ad.owner_user_id
+            ? ad.owner_login
+              ? `<div class="ad-owner">${renderAvatar(env, ad.owner_avatar_key, ad.owner_login, 'avatar-mini')}<a href="/u/${encodeURIComponent(ad.owner_login)}">${htmlEscape(ad.owner_login)}</a></div>`
+              : `<div class="meta">owner #${ad.owner_user_id}</div>`
+            : '<div class="meta">no owner</div>';
           const category = ad.category ? `${htmlEscape(categoryLabel(ad.category))} · ` : '';
           return `<div class="ad">
   ${renderAdImage(env, ad.image_key, ad.title, 'ad-image')}
   <div class="ad-content">
     <div class="title"><a href="/ad/${ad.id}">#${ad.id} · ${htmlEscape(ad.title)}</a></div>
-    <div class="meta">${htmlEscape(ad.status)} · ${category}${htmlEscape(owner)} · ${htmlEscape(ad.created_at)}</div>
+    <div class="meta">${htmlEscape(ad.status)} · ${category}${htmlEscape(ad.created_at)}</div>
+    ${owner}
     <div class="ad-actions">
       <a href="${htmlEscape(buildAdminActionUrl(`/admin/edit/${ad.id}`, 'ads', pagination.page))}">Редактировать</a>
       <form method="post" action="${htmlEscape(buildAdminActionUrl(`/admin/delete/${ad.id}`, 'ads', pagination.page))}" style="display:inline">
