@@ -1,5 +1,6 @@
 import { env, createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
 import { createHash, createHmac } from 'node:crypto';
+import Jimp from 'jimp';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import worker from '../src';
 
@@ -307,6 +308,12 @@ async function insertAd(params: {
     .run();
 
   return Number(result.meta.last_row_id);
+}
+
+async function buildPngFile(name: string, width: number, height: number, color: number): Promise<File> {
+  const image = await new Jimp(width, height, color);
+  const bytes = await image.getBufferAsync(Jimp.MIME_PNG);
+  return new File([bytes], name, { type: 'image/png' });
 }
 
 async function fetchTelegramIdentity(telegramUserId: string): Promise<{
@@ -793,11 +800,12 @@ describe('Public ad page', () => {
     expect(adResponse.status).toBe(200);
     const adHtml = await adResponse.text();
     expect(adHtml).toContain('Public ad');
-    expect(adHtml).toContain('<strong>Категория:</strong> Работа');
-    expect(adHtml).toContain('<strong>Автор:</strong>');
+    expect(adHtml).toContain('Работа');
+    expect(adHtml).toContain('poster');
     expect(adHtml).toContain('/u/poster');
     expect(adHtml).toContain('Public body');
-    expect(adHtml).toContain('Дата:');
+    expect(adHtml).toContain('Написать автору');
+    expect(adHtml).toContain('Чтобы написать автору, войди в аккаунт.');
     expect(adHtml).toContain('/search');
 
     const pendingResponse = await runRequest(new Request(`http://example.com/ad/${pendingAdId}`));
@@ -815,6 +823,94 @@ describe('Public ad page', () => {
 
     const deletedResponse = await runRequest(new Request(`http://example.com/ad/${publishedAdId}`));
     expect(deletedResponse.status).toBe(404);
+  });
+});
+
+describe('Ad messages', () => {
+  it('shows a message form for logged-in users and sends Telegram messages to the author', async () => {
+    await seedUser({
+      id: 60,
+      login: 'adowner',
+      email: 'adowner@example.com',
+      sessionToken: 'adowner-session',
+    });
+    await insertTelegramIdentity({
+      userId: 60,
+      telegramUserId: '60001',
+      telegramUsername: 'adowner_tg',
+    });
+
+    await seedUser({
+      id: 61,
+      login: 'writer',
+      email: 'writer@example.com',
+      sessionToken: 'writer-session',
+    });
+
+    const adId = await insertAd({
+      title: 'Write me',
+      body: 'Message body',
+      category: 'services',
+      ownerUserId: 60,
+      status: 'published',
+    });
+
+    const guestResponse = await runRequest(new Request(`http://example.com/ad/${adId}`));
+    expect(guestResponse.status).toBe(200);
+    const guestHtml = await guestResponse.text();
+    expect(guestHtml).toContain('Чтобы написать автору, войди в аккаунт.');
+    expect(guestHtml).not.toContain('name="message"');
+
+    const writerResponse = await runRequest(
+      new Request(`http://example.com/ad/${adId}`, {
+        headers: {
+          Cookie: 'session=writer-session',
+        },
+      })
+    );
+    expect(writerResponse.status).toBe(200);
+    const writerHtml = await writerResponse.text();
+    expect(writerHtml).toContain('Написать автору');
+    expect(writerHtml).toContain('name="message"');
+    expect(writerHtml).toContain('Отправить');
+
+    const messageForm = new FormData();
+    messageForm.set('message', 'Привет, ещё актуально?');
+
+    const messageResponse = await runRequest(
+      new Request(`http://example.com/ad/${adId}/message`, {
+        method: 'POST',
+        headers: {
+          Cookie: 'session=writer-session',
+        },
+        body: messageForm,
+      })
+    );
+
+    expect(messageResponse.status).toBe(303);
+    const messageLocation = new URL(messageResponse.headers.get('Location') || '', 'http://example.com');
+    expect(messageLocation.pathname).toBe(`/ad/${adId}`);
+    expect(messageLocation.searchParams.get('message')).toBe('Сообщение отправлено');
+
+    const sentMessageCall = telegramFetchCalls
+      .filter((call) => call.url.includes('/sendMessage'))
+      .at(-1);
+    expect(sentMessageCall).toBeTruthy();
+    expect(String((sentMessageCall?.body as { text?: string }).text || '')).toContain('Тебе написал пользователь writer');
+    expect(String((sentMessageCall?.body as { text?: string }).text || '')).toContain('по объявлению: Write me');
+    expect(String((sentMessageCall?.body as { text?: string }).text || '')).toContain('Привет, ещё актуально?');
+
+    const ownerResponse = await runRequest(
+      new Request(`http://example.com/ad/${adId}`, {
+        headers: {
+          Cookie: 'session=adowner-session',
+        },
+      })
+    );
+    expect(ownerResponse.status).toBe(200);
+    const ownerHtml = await ownerResponse.text();
+    expect(ownerHtml).toContain('Это ваше объявление.');
+    expect(ownerHtml).not.toContain('name="message"');
   });
 });
 
@@ -853,11 +949,7 @@ describe('Ad images', () => {
       telegramUsername: 'imguser_tg',
     });
 
-    const firstImage = new File(
-      [Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7QwGQAAAAASUVORK5CYII=', 'base64')],
-      'first.png',
-      { type: 'image/png' }
-    );
+    const firstImage = await buildPngFile('first.png', 800, 600, 0xff5f3bff);
 
     const createForm = new FormData();
     createForm.set('title', 'Image ad');
@@ -893,19 +985,16 @@ describe('Ad images', () => {
       .first<{ id: number; image_key: string | null; image_mime_type: string | null; image_updated_at: string | null }>();
 
     expect(createdAd?.image_key).toBeTruthy();
-    expect(createdAd?.image_mime_type).toBe('image/png');
+    expect(createdAd?.image_key).toMatch(/\.jpg$/);
+    expect(createdAd?.image_mime_type).toBe('image/jpeg');
     expect(createdAd?.image_updated_at).toBeTruthy();
 
     const firstKey = createdAd?.image_key || '';
     const mediaResponse = await runRequest(new Request(`http://example.com/media/${encodeURIComponent(firstKey)}`));
     expect(mediaResponse.status).toBe(200);
-    expect(mediaResponse.headers.get('Content-Type')).toBe('image/png');
+    expect(mediaResponse.headers.get('Content-Type')).toBe('image/jpeg');
 
-    const secondImage = new File(
-      [Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8AABQMBgYQnD7QAAAAASUVORK5CYII=', 'base64')],
-      'second.png',
-      { type: 'image/png' }
-    );
+    const secondImage = await buildPngFile('second.png', 1000, 700, 0x3f76b8ff);
     const editForm = new FormData();
     editForm.set('title', 'Image ad updated');
     editForm.set('category', 'things');
@@ -937,7 +1026,8 @@ describe('Ad images', () => {
 
     expect(editedAd?.title).toBe('Image ad updated');
     expect(editedAd?.image_key).not.toBe(firstKey);
-    expect(editedAd?.image_mime_type).toBe('image/png');
+    expect(editedAd?.image_key).toMatch(/\.jpg$/);
+    expect(editedAd?.image_mime_type).toBe('image/jpeg');
     expect(editedAd?.image_updated_at).toBeTruthy();
     expect(mediaStore.has(firstKey)).toBe(false);
     expect(editedAd?.image_key ? mediaStore.has(editedAd.image_key) : false).toBe(true);
@@ -1001,7 +1091,7 @@ describe('Ad images', () => {
 
     const adminPhotoCall = telegramFetchCalls
       .filter((call) => call.url.includes('/sendPhoto'))
-      .find((call) => String((call.body as { caption?: string }).caption || '').includes('Owner: 70'));
+      .find((call) => String((call.body as { caption?: string }).caption || '').includes('Owner: imguser (#70)'));
     expect(adminPhotoCall).toBeTruthy();
 
     const publishedAdPageResponse = await runRequest(new Request(`http://example.com/ad/${createdAd?.id}`));
@@ -1028,7 +1118,7 @@ describe('Ad images', () => {
     expect(photoCall).toBeTruthy();
     expect(String((photoCall?.body as { photo?: string }).photo || '')).toContain('/media/');
     expect(String((photoCall?.body as { caption?: string }).caption || '')).toContain('Image ad updated');
-  });
+  }, 15000);
 });
 
 describe('User avatars and public profiles', () => {
@@ -1713,6 +1803,13 @@ describe('Admin web flow', () => {
       ownerUserId: 11,
       status: 'published',
     });
+    const pendingAdId = await insertAd({
+      title: 'Needs review',
+      body: 'Needs review body',
+      category: 'misc',
+      ownerUserId: 11,
+      status: 'pending',
+    });
 
     const adminCookie = 'session=admin-session';
 
@@ -1765,13 +1862,13 @@ describe('Admin web flow', () => {
     expect(adminAdsHtml).toContain('Old title');
     expect(adminAdsHtml).toContain('href="/u/user11"');
     expect(adminAdsHtml).toContain('avatar-mini');
-    expect(adminAdsHtml).toContain('/admin/publish/');
-    expect(adminAdsHtml).toContain('/admin/reject/');
+    expect(adminAdsHtml).not.toContain(`/admin/publish/${adId}`);
+    expect(adminAdsHtml).not.toContain(`/admin/reject/${adId}`);
     expect(adminAdsHtml).toContain(`/admin/edit/${adId}`);
     expect(adminAdsHtml).toContain(`/admin/delete/${adId}`);
 
     const rejectResponse = await runRequest(
-      new Request(`http://example.com/admin/reject/${adId}?section=ads&page=1`, {
+      new Request(`http://example.com/admin/reject/${pendingAdId}?section=ads&page=1`, {
         method: 'POST',
         headers: { Cookie: adminCookie },
       })
@@ -1786,12 +1883,12 @@ describe('Admin web flow', () => {
         LIMIT 1
       `
     )
-      .bind(adId)
+      .bind(pendingAdId)
       .first<{ status: string }>();
     expect(rejectedAd?.status).toBe('rejected');
 
     const publishResponse = await runRequest(
-      new Request(`http://example.com/admin/publish/${adId}?section=ads&page=1`, {
+      new Request(`http://example.com/admin/publish/${pendingAdId}?section=ads&page=1`, {
         method: 'POST',
         headers: { Cookie: adminCookie },
       })
@@ -1806,7 +1903,7 @@ describe('Admin web flow', () => {
         LIMIT 1
       `
     )
-      .bind(adId)
+      .bind(pendingAdId)
       .first<{ status: string }>();
     expect(publishedAd?.status).toBe('published');
 

@@ -1,3 +1,6 @@
+import { decode as decodePng } from 'fast-png';
+import * as jpeg from 'jpeg-js';
+
 const CATEGORIES = [
   { slug: 'sale', label: 'Продаю' },
   { slug: 'wanted', label: 'Куплю' },
@@ -74,6 +77,7 @@ type PublicAdCardRow = {
   body: string;
   contact: string | null;
   category: string | null;
+  owner_user_id: number | null;
   image_key: string | null;
   image_mime_type: string | null;
   image_updated_at: string | null;
@@ -113,6 +117,12 @@ type AdForm = {
 type AdImageUpload = {
   key: string;
   mimeType: string;
+};
+
+type CompressedAdImageUpload = {
+  key: string;
+  mimeType: string;
+  bytes: ArrayBuffer;
 };
 
 type TelegramCallbackQuery = {
@@ -242,6 +252,8 @@ const AD_SELECT_COLUMNS = `
   deleted_at
 `;
 const USER_AVATAR_MAX_BYTES = 5 * 1024 * 1024;
+const AD_IMAGE_MAX_DIMENSION = 1600;
+const AD_IMAGE_JPEG_QUALITY = 82;
 let cachedTelegramUserBotUsername: string | null = null;
 let cachedTelegramUserBotUsernamePromise: Promise<string | null> | null = null;
 let cachedEnsureAdImageColumnsPromise: Promise<void> | null = null;
@@ -402,7 +414,114 @@ async function putMediaObject(env: Env, key: string, body: ArrayBuffer, mimeType
   });
 }
 
-async function readImageUpload(file: File | null): Promise<AdImageUpload | null> {
+function resizeRgba(source: Uint8Array, sourceWidth: number, sourceHeight: number, targetWidth: number, targetHeight: number): Uint8Array {
+  if (sourceWidth === targetWidth && sourceHeight === targetHeight) {
+    return source;
+  }
+
+  const output = new Uint8Array(targetWidth * targetHeight * 4);
+  const xScale = sourceWidth / targetWidth;
+  const yScale = sourceHeight / targetHeight;
+
+  for (let y = 0; y < targetHeight; y += 1) {
+    const sampleY = (y + 0.5) * yScale - 0.5;
+    const clampedY = Math.max(0, Math.min(sourceHeight - 1, sampleY));
+    const y0 = Math.floor(clampedY);
+    const y1 = Math.min(sourceHeight - 1, y0 + 1);
+    const yLerp = clampedY - y0;
+    const row0 = y0 * sourceWidth * 4;
+    const row1 = y1 * sourceWidth * 4;
+
+    for (let x = 0; x < targetWidth; x += 1) {
+      const sampleX = (x + 0.5) * xScale - 0.5;
+      const clampedX = Math.max(0, Math.min(sourceWidth - 1, sampleX));
+      const x0 = Math.floor(clampedX);
+      const x1 = Math.min(sourceWidth - 1, x0 + 1);
+      const xLerp = clampedX - x0;
+
+      const base00 = row0 + x0 * 4;
+      const base10 = row0 + x1 * 4;
+      const base01 = row1 + x0 * 4;
+      const base11 = row1 + x1 * 4;
+      const outBase = (y * targetWidth + x) * 4;
+
+      for (let channel = 0; channel < 4; channel += 1) {
+        const top = source[base00 + channel] * (1 - xLerp) + source[base10 + channel] * xLerp;
+        const bottom = source[base01 + channel] * (1 - xLerp) + source[base11 + channel] * xLerp;
+        output[outBase + channel] = Math.round(top * (1 - yLerp) + bottom * yLerp);
+      }
+    }
+  }
+
+  return output;
+}
+
+function flattenRgbaToWhite(source: Uint8Array): Uint8Array {
+  const output = new Uint8Array(source);
+
+  for (let index = 0; index < output.length; index += 4) {
+    const alpha = output[index + 3] / 255;
+    const inverseAlpha = 1 - alpha;
+    output[index] = Math.round(output[index] * alpha + 255 * inverseAlpha);
+    output[index + 1] = Math.round(output[index + 1] * alpha + 255 * inverseAlpha);
+    output[index + 2] = Math.round(output[index + 2] * alpha + 255 * inverseAlpha);
+    output[index + 3] = 255;
+  }
+
+  return output;
+}
+
+async function compressAdImage(file: File): Promise<CompressedAdImageUpload> {
+  const sourceBytes = await file.arrayBuffer();
+
+  try {
+    let width = 0;
+    let height = 0;
+    let rgbaPixels: Uint8Array | null = null;
+
+    if (file.type === 'image/png') {
+      const decoded = decodePng(new Uint8Array(sourceBytes));
+      width = decoded.width;
+      height = decoded.height;
+      rgbaPixels = new Uint8Array(decoded.data);
+    } else if (file.type === 'image/jpeg' || file.type === 'image/jpg') {
+      const decoded = jpeg.decode(new Uint8Array(sourceBytes), { useTArray: true });
+      width = decoded.width;
+      height = decoded.height;
+      rgbaPixels = new Uint8Array(decoded.data);
+    } else {
+      throw new Error('Unsupported image type for compression');
+    }
+
+    const scale = Math.min(1, AD_IMAGE_MAX_DIMENSION / Math.max(width, height));
+    const resizedWidth = Math.max(1, Math.round(width * scale));
+    const resizedHeight = Math.max(1, Math.round(height * scale));
+    const resizedPixels = resizeRgba(rgbaPixels, width, height, resizedWidth, resizedHeight);
+    const flattenedPixels = flattenRgbaToWhite(resizedPixels);
+    const encoded = jpeg.encode(
+      {
+        data: flattenedPixels,
+        width: resizedWidth,
+        height: resizedHeight,
+      },
+      AD_IMAGE_JPEG_QUALITY
+    );
+    const outputBytes = encoded.data.buffer.slice(encoded.data.byteOffset, encoded.data.byteOffset + encoded.data.byteLength);
+    return {
+      key: `ads/${crypto.randomUUID()}.jpg`,
+      mimeType: 'image/jpeg',
+      bytes: outputBytes,
+    };
+  } catch {
+    return {
+      key: `ads/${crypto.randomUUID()}.${getImageExtension(file.type)}`,
+      mimeType: file.type,
+      bytes: sourceBytes,
+    };
+  }
+}
+
+async function readImageUpload(file: File | null): Promise<CompressedAdImageUpload | null> {
   if (!file || file.size <= 0) {
     return null;
   }
@@ -415,10 +534,7 @@ async function readImageUpload(file: File | null): Promise<AdImageUpload | null>
     throw new Error('Invalid image type');
   }
 
-  return {
-    key: `ads/${crypto.randomUUID()}.${getImageExtension(file.type)}`,
-    mimeType: file.type,
-  };
+  return compressAdImage(file);
 }
 
 async function readAvatarUpload(file: File | null): Promise<AdImageUpload | null> {
@@ -442,6 +558,10 @@ async function readAvatarUpload(file: File | null): Promise<AdImageUpload | null
 
 async function putAdImage(env: Env, upload: AdImageUpload, file: File): Promise<void> {
   await putMediaObject(env, upload.key, await file.arrayBuffer(), upload.mimeType);
+}
+
+async function putCompressedAdImage(env: Env, upload: CompressedAdImageUpload): Promise<void> {
+  await putMediaObject(env, upload.key, upload.bytes, upload.mimeType);
 }
 
 async function deleteAdImage(env: Env, key: string | null | undefined): Promise<void> {
@@ -1248,6 +1368,14 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       color: #999;
       font-size: 12px;
     }
+    .ad-message-section form {
+      display: grid;
+      gap: 8px;
+    }
+    .ad-message-section textarea {
+      max-width: 720px;
+      min-height: 140px;
+    }
     @media (max-width: 700px) {
       .ad-page {
         grid-template-columns: 1fr;
@@ -1432,7 +1560,46 @@ ${renderSearchForm()}`
   );
 }
 
-function renderPublicAdPage(env: Env, ad: PublicAdCardRow, currentUser: CurrentUser | null = null): Response {
+function renderAdMessageSection(ad: PublicAdCardRow, currentUser: CurrentUser | null, message: string | null = null): string {
+  const title = '<h2>Написать автору</h2>';
+
+  if (!ad.owner_user_id) {
+    return `<div class="section ad-message-section">
+  ${title}
+  <p class="empty">У объявления не указан автор.</p>
+</div>`;
+  }
+
+  if (!currentUser) {
+    return `<div class="section ad-message-section">
+  ${title}
+  <p class="empty">Чтобы написать автору, войди в аккаунт.</p>
+</div>`;
+  }
+
+  if (currentUser.id === ad.owner_user_id) {
+    return `<div class="section ad-message-section">
+  ${title}
+  <p class="empty">Это ваше объявление.</p>
+</div>`;
+  }
+
+  return `<div class="section ad-message-section">
+  ${title}
+  ${message ? `<p class="empty">${htmlEscape(message)}</p>` : ''}
+  <form method="post" action="/ad/${ad.id}/message">
+    <textarea name="message" required maxlength="1000" rows="6" placeholder="Напишите сообщение автору"></textarea>
+    <button type="submit">Отправить</button>
+  </form>
+</div>`;
+}
+
+function renderPublicAdPage(
+  env: Env,
+  ad: PublicAdCardRow,
+  currentUser: CurrentUser | null = null,
+  message: string | null = null
+): Response {
   const media = ad.image_key
     ? `<div class="ad-page-media"><img src="${htmlEscape(buildMediaUrl(env, ad.image_key))}" alt="${htmlEscape(ad.title)}" /></div>`
     : `<div class="ad-page-media"><div class="ad-page-media-placeholder">без фото</div></div>`;
@@ -1461,6 +1628,7 @@ ${nav(currentUser)}
     </div>
   </div>
 </div>
+${renderAdMessageSection(ad, currentUser, message)}
 ${renderSearchForm()}`,
     currentUser
   );
@@ -1881,12 +2049,14 @@ function renderAdminAdsSection(
               : `<div class="meta">owner #${ad.owner_user_id}</div>`
             : '<div class="meta">no owner</div>';
           const category = ad.category ? `${htmlEscape(categoryLabel(ad.category))} · ` : '';
-          const publishAction = `<form method="post" action="${htmlEscape(buildAdminActionUrl(`/admin/publish/${ad.id}`, 'ads', pagination.page))}" style="display:inline">
+          const moderationActions = ad.status === 'pending'
+            ? `<form method="post" action="${htmlEscape(buildAdminActionUrl(`/admin/publish/${ad.id}`, 'ads', pagination.page))}" style="display:inline">
         <button class="link-button" type="submit">Publish</button>
-      </form>`;
-          const rejectAction = `<form method="post" action="${htmlEscape(buildAdminActionUrl(`/admin/reject/${ad.id}`, 'ads', pagination.page))}" style="display:inline">
+      </form>
+      <form method="post" action="${htmlEscape(buildAdminActionUrl(`/admin/reject/${ad.id}`, 'ads', pagination.page))}" style="display:inline">
         <button class="link-button" type="submit">Reject</button>
-      </form>`;
+      </form>`
+            : '';
           return `<div class="ad">
   ${renderAdImage(env, ad.image_key, ad.title, 'ad-image')}
   <div class="ad-content">
@@ -1898,8 +2068,7 @@ function renderAdminAdsSection(
       <form method="post" action="${htmlEscape(buildAdminActionUrl(`/admin/delete/${ad.id}`, 'ads', pagination.page))}" style="display:inline">
         <button class="link-button" type="submit" onclick="return confirm('Удалить объявление?')">Удалить</button>
       </form>
-      ${publishAction}
-      ${rejectAction}
+      ${moderationActions}
     </div>
   </div>
 </div>`;
@@ -3821,6 +3990,7 @@ async function getPublishedAdCardById(env: Env, id: number, category: string | n
              ads.body,
              ads.contact,
              ads.category,
+             ads.owner_user_id,
              ads.image_key,
              ads.image_mime_type,
              ads.image_updated_at,
@@ -4132,12 +4302,12 @@ async function createAd(
   image: File | null = null
 ): Promise<{ id: number; category: CategorySlug }> {
   const category = normalizeCategory(categoryInput);
-  let imageUpload: AdImageUpload | null = null;
+  let imageUpload: CompressedAdImageUpload | null = null;
 
   if (image) {
     imageUpload = await readImageUpload(image);
     if (imageUpload) {
-      await putAdImage(env, imageUpload, image);
+      await putCompressedAdImage(env, imageUpload);
     }
   }
 
@@ -4284,12 +4454,12 @@ async function handleMyEditPost(
 
   const nextStatus = ad.status === 'published' || ad.status === 'rejected' ? 'pending' : ad.status;
   const normalizedCategory = normalizeCategory(category);
-  let newImage: AdImageUpload | null = null;
+  let newImage: CompressedAdImageUpload | null = null;
   try {
     if (image) {
       newImage = await readImageUpload(image);
       if (newImage) {
-        await putAdImage(env, newImage, image);
+        await putCompressedAdImage(env, newImage);
       }
     }
 
@@ -5939,13 +6109,13 @@ async function handleAdminEditRoute(request: Request, env: Env, ctx: ExecutionCo
     return renderEditPage(env, currentUser, ad, 'Заполни заголовок и текст', buildAdminActionUrl(`/admin/edit/${ad.id}`, 'ads', page));
   }
 
-  let newImage: AdImageUpload | null = null;
+  let newImage: CompressedAdImageUpload | null = null;
   try {
     const normalizedCategory = normalizeCategory(category);
     if (image) {
       newImage = await readImageUpload(image);
       if (newImage) {
-        await putAdImage(env, newImage, image);
+        await putCompressedAdImage(env, newImage);
       }
     }
 
@@ -6518,7 +6688,12 @@ async function handleCategoryGet(env: Env, slug: string, currentUser: CurrentUse
   return renderCategoryPage(env, slug, await listPublishedAdsByCategory(env, slug), currentUser);
 }
 
-async function handleAdGet(env: Env, id: string, currentUser: CurrentUser | null = null): Promise<Response> {
+async function handleAdGet(
+  env: Env,
+  id: string,
+  currentUser: CurrentUser | null = null,
+  message: string | null = null
+): Promise<Response> {
   const numericId = Number(id);
   if (!Number.isInteger(numericId) || numericId <= 0) {
     return text('Not Found', 404);
@@ -6529,7 +6704,71 @@ async function handleAdGet(env: Env, id: string, currentUser: CurrentUser | null
     return renderNotFoundPage(currentUser);
   }
 
-  return renderPublicAdPage(env, ad, currentUser);
+  return renderPublicAdPage(env, ad, currentUser, message);
+}
+
+async function handleAdMessagePost(
+  request: Request,
+  env: Env,
+  id: string,
+  currentUser: CurrentUser | null
+): Promise<Response> {
+  if (!currentUser) {
+    return redirect(`/login?next=${encodeURIComponent(`/ad/${id}`)}`);
+  }
+
+  const numericId = Number(id);
+  if (!Number.isInteger(numericId) || numericId <= 0) {
+    return text('Not Found', 404);
+  }
+
+  const ad = await getPublishedAdCardById(env, numericId);
+  if (!ad) {
+    return renderNotFoundPage(currentUser);
+  }
+
+  if (!ad.owner_user_id) {
+    return renderPublicAdPage(env, ad, currentUser, 'У объявления не указан автор');
+  }
+
+  if (ad.owner_user_id === currentUser.id) {
+    return renderPublicAdPage(env, ad, currentUser, 'Нельзя написать самому себе');
+  }
+
+  const form = await request.formData();
+  const message = String(form.get('message') || '').trim();
+  if (!message) {
+    return renderPublicAdPage(env, ad, currentUser, 'Введите текст сообщения');
+  }
+
+  if (message.length > 1000) {
+    return renderPublicAdPage(env, ad, currentUser, 'Сообщение слишком длинное');
+  }
+
+  const telegramIdentity = await findTelegramIdentityByUserId(env, ad.owner_user_id);
+  const chatId = Number(telegramIdentity?.provider_user_id || '');
+  if (!telegramIdentity?.provider_user_id || !Number.isInteger(chatId) || chatId <= 0) {
+    return renderPublicAdPage(env, ad, currentUser, 'У автора не привязан Telegram');
+  }
+
+  try {
+    await sendUserBotMessage(
+      env,
+      chatId,
+      [
+        `Тебе написал пользователь ${currentUser.login}`,
+        `по объявлению: ${ad.title}`,
+        '',
+        'Сообщение:',
+        message,
+      ].join('\n')
+    );
+  } catch (error) {
+    console.error('Failed to send ad message to author', error);
+    return renderPublicAdPage(env, ad, currentUser, 'Не удалось отправить сообщение');
+  }
+
+  return redirectWithMessage(`/ad/${ad.id}`, 'Сообщение отправлено');
 }
 
 async function handlePublicUserGet(env: Env, login: string, currentUser: CurrentUser | null = null): Promise<Response> {
@@ -6695,8 +6934,15 @@ export default {
       return handleCategoryGet(env, path.slice('/category/'.length), await getCurrentUser(request, env));
     }
 
+    if (path.startsWith('/ad/') && path.endsWith('/message')) {
+      if (request.method === 'POST') {
+        return handleAdMessagePost(request, env, path.slice('/ad/'.length, -'/message'.length), await getCurrentUser(request, env));
+      }
+      return text('Method Not Allowed', 405);
+    }
+
     if (path.startsWith('/ad/') && request.method === 'GET') {
-      return handleAdGet(env, path.slice('/ad/'.length), await getCurrentUser(request, env));
+      return handleAdGet(env, path.slice('/ad/'.length), await getCurrentUser(request, env), url.searchParams.get('message'));
     }
 
     if (path.startsWith('/u/') && request.method === 'GET') {
