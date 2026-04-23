@@ -102,6 +102,8 @@ const SCHEMA_STATEMENTS = [
       telegram_user_id TEXT NOT NULL UNIQUE,
       action TEXT NOT NULL,
       step TEXT NOT NULL,
+      ui_chat_id INTEGER,
+      ui_message_id INTEGER,
       ad_id INTEGER,
       login TEXT,
       email TEXT,
@@ -205,6 +207,10 @@ async function sendUserTelegramWebhook(update: unknown): Promise<Response> {
       body: JSON.stringify(update),
     })
   );
+}
+
+function lastTelegramCall(method: 'sendMessage' | 'editMessageText' | 'sendPhoto' | 'editMessageCaption' | 'editMessageMedia') {
+  return telegramFetchCalls.filter((call) => call.url.includes(`/${method}`) && typeof call.body === 'object' && call.body !== null).at(-1);
 }
 
 async function runRequest(request: Request): Promise<Response> {
@@ -656,9 +662,7 @@ describe('User bot browsing flow', () => {
     });
 
     expect(startResponse.status).toBe(200);
-    const startMessage = telegramFetchCalls.filter(
-      (call) => call.url.includes('/sendMessage') && typeof call.body === 'object' && call.body !== null
-    ).at(-1);
+    const startMessage = lastTelegramCall('sendMessage');
     expect(startMessage).toBeTruthy();
 
     const startMarkup = (startMessage?.body as { reply_markup?: { inline_keyboard?: Array<Array<{ text: string }>> } }).reply_markup?.inline_keyboard || [];
@@ -683,9 +687,7 @@ describe('User bot browsing flow', () => {
     });
 
     expect(sectionsResponse.status).toBe(200);
-    const sectionsMessage = telegramFetchCalls.filter(
-      (call) => call.url.includes('/sendMessage') && typeof call.body === 'object' && call.body !== null
-    ).at(-1);
+    const sectionsMessage = lastTelegramCall('editMessageText');
     const sectionsText = String((sectionsMessage?.body as { text?: string }).text || '');
     expect(sectionsText).toContain('Объявления');
     const sectionsMarkup = (sectionsMessage?.body as { reply_markup?: { inline_keyboard?: Array<Array<{ text: string }>> } }).reply_markup?.inline_keyboard || [];
@@ -724,10 +726,7 @@ describe('User bot browsing flow', () => {
     });
 
     expect(categoryResponse.status).toBe(200);
-    const categoryMessage = telegramFetchCalls
-      .filter((call) => call.url.includes('/sendMessage') && typeof call.body === 'object' && call.body !== null)
-      .reverse()
-      .find((call) => String((call.body as { text?: string }).text || '').includes('Вещи'));
+    const categoryMessage = lastTelegramCall('editMessageText');
     const categoryText = String((categoryMessage?.body as { text?: string }).text || '');
     expect(categoryText).toContain('Вещи');
     expect(categoryText).toContain('Published things');
@@ -735,7 +734,7 @@ describe('User bot browsing flow', () => {
 
     const categoryMarkup = (categoryMessage?.body as { reply_markup?: { inline_keyboard?: Array<Array<{ text: string }>> } }).reply_markup?.inline_keyboard || [];
     const categoryButtons = categoryMarkup.flat().map((button) => button.text);
-    expect(categoryButtons).toContain('Подробнее →');
+    expect(categoryButtons).toContain('Published things');
 
     const adResponse = await sendUserTelegramWebhook({
       callback_query: {
@@ -749,9 +748,7 @@ describe('User bot browsing flow', () => {
     });
 
     expect(adResponse.status).toBe(200);
-    const adMessage = telegramFetchCalls.filter(
-      (call) => call.url.includes('/sendMessage') && typeof call.body === 'object' && call.body !== null
-    ).at(-1);
+    const adMessage = lastTelegramCall('editMessageText');
     const adText = String((adMessage?.body as { text?: string }).text || '');
     expect(adText).toContain('Published things');
     expect(adText).toContain('Things body');
@@ -759,8 +756,8 @@ describe('User bot browsing flow', () => {
     expect(adText).toContain('Автор: browser');
     const adMarkup = (adMessage?.body as { reply_markup?: { inline_keyboard?: Array<Array<{ text: string }>> } }).reply_markup?.inline_keyboard || [];
     const adButtons = adMarkup.flat().map((button) => button.text);
-    expect(adButtons).toContain('Назад к разделу');
-    expect(adButtons).toContain('Назад к объявлениям');
+    expect(adButtons).toContain('Назад');
+    expect(adButtons).toContain('В меню');
   });
 });
 
@@ -1441,10 +1438,7 @@ describe('User bot settings', () => {
       },
     });
     expect(settingsResponse.status).toBe(200);
-
-    const settingsMessage = telegramFetchCalls
-      .filter((call) => call.url.includes('/sendMessage') && typeof call.body === 'object' && call.body !== null)
-      .at(-1);
+    const settingsMessage = lastTelegramCall('editMessageText');
     expect(String((settingsMessage?.body as { text?: string }).text || '')).toContain('Настройки');
     expect(String((settingsMessage?.body as { text?: string }).text || '')).toContain('Login: botsettings');
     expect(String((settingsMessage?.body as { text?: string }).text || '')).toContain('Email: botsettings@example.com');
@@ -1462,6 +1456,7 @@ describe('User bot settings', () => {
       },
     });
     expect(loginPromptResponse.status).toBe(200);
+    expect(String((lastTelegramCall('editMessageText')?.body as { text?: string }).text || '')).toContain('Введи новый login');
 
     await sendUserTelegramWebhook({
       message: {
@@ -1494,6 +1489,7 @@ describe('User bot settings', () => {
       },
     });
     expect(emailPromptResponse.status).toBe(200);
+    expect(String((lastTelegramCall('editMessageText')?.body as { text?: string }).text || '')).toContain('Введи новый email');
 
     await sendUserTelegramWebhook({
       message: {
@@ -1553,6 +1549,7 @@ describe('User bot settings', () => {
       },
     });
     expect(avatarPromptResponse.status).toBe(200);
+    expect(String((lastTelegramCall('editMessageText')?.body as { text?: string }).text || '')).toContain('Пришли изображение для аватара');
 
     const avatarUploadResponse = await sendUserTelegramWebhook({
       message: {
@@ -1703,9 +1700,7 @@ describe('User bot search flow', () => {
     });
 
     expect(searchMenuResponse.status).toBe(200);
-    const promptMessage = telegramFetchCalls.filter(
-      (call) => call.url.includes('/sendMessage') && typeof call.body === 'object' && call.body !== null
-    ).at(-1);
+    const promptMessage = lastTelegramCall('editMessageText');
     const promptText = String((promptMessage?.body as { text?: string }).text || '');
     expect(promptText).toContain('Введи текст для поиска');
 
@@ -1718,9 +1713,7 @@ describe('User bot search flow', () => {
     });
 
     expect(searchResponse.status).toBe(200);
-    const resultsMessage = telegramFetchCalls.filter(
-      (call) => call.url.includes('/sendMessage') && typeof call.body === 'object' && call.body !== null
-    ).at(-1);
+    const resultsMessage = lastTelegramCall('editMessageText');
     const resultsText = String((resultsMessage?.body as { text?: string }).text || '');
     expect(resultsText).toContain('Поиск: keyword');
     const resultsMarkup = (resultsMessage?.body as { reply_markup?: { inline_keyboard?: Array<Array<{ text: string }>> } }).reply_markup?.inline_keyboard || [];
@@ -1740,16 +1733,14 @@ describe('User bot search flow', () => {
     });
 
     expect(detailResponse.status).toBe(200);
-    const detailMessage = telegramFetchCalls.filter(
-      (call) => call.url.includes('/sendMessage') && typeof call.body === 'object' && call.body !== null
-    ).at(-1);
+    const detailMessage = lastTelegramCall('editMessageText');
     const detailText = String((detailMessage?.body as { text?: string }).text || '');
     expect(detailText).toContain('Search target');
     expect(detailText).toContain('Автор: botsearch');
     const detailMarkup = (detailMessage?.body as { reply_markup?: { inline_keyboard?: Array<Array<{ text: string }>> } }).reply_markup?.inline_keyboard || [];
     const detailButtons = detailMarkup.flat().map((button) => button.text);
-    expect(detailButtons).toContain('Назад к поиску');
-    expect(detailButtons).toContain('Назад к разделам');
+    expect(detailButtons).toContain('Назад');
+    expect(detailButtons).toContain('В меню');
   });
 });
 

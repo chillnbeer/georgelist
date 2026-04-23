@@ -195,6 +195,8 @@ type BotDraftRow = {
   telegram_user_id: string;
   action: string;
   step: string;
+  ui_chat_id: number | null;
+  ui_message_id: number | null;
   ad_id: number | null;
   login: string | null;
   email: string | null;
@@ -220,6 +222,8 @@ const USER_BOT_MENU_EDIT = 'user:edit';
 const USER_BOT_MENU_DELETE = 'user:delete';
 const USER_BOT_MENU_SETTINGS = 'user:settings';
 const USER_BOT_MENU_MY = 'user:my';
+const USER_BOT_MENU_HOME = 'user:home';
+const USER_BOT_CANCEL_FLOW = 'user:cancel';
 const USER_BOT_MENU_MY_AD = 'user:myad:';
 const USER_BOT_SECTION_PREFIX = 'user:section:';
 const USER_BOT_SECTION_AD_PREFIX = 'user:sectionad:';
@@ -259,6 +263,7 @@ let cachedTelegramUserBotUsernamePromise: Promise<string | null> | null = null;
 let cachedEnsureAdImageColumnsPromise: Promise<void> | null = null;
 let cachedEnsureUserAvatarColumnsPromise: Promise<void> | null = null;
 let cachedEnsureAdContactColumnPromise: Promise<void> | null = null;
+let cachedEnsureBotDraftColumnsPromise: Promise<void> | null = null;
 const NOOP_EXECUTION_CONTEXT = {
   waitUntil(): void {},
   passThroughOnException(): void {},
@@ -506,7 +511,10 @@ async function compressAdImage(file: File): Promise<CompressedAdImageUpload> {
       },
       AD_IMAGE_JPEG_QUALITY
     );
-    const outputBytes = encoded.data.buffer.slice(encoded.data.byteOffset, encoded.data.byteOffset + encoded.data.byteLength);
+    const outputBytes = encoded.data.buffer.slice(
+      encoded.data.byteOffset,
+      encoded.data.byteOffset + encoded.data.byteLength
+    ) as ArrayBuffer;
     return {
       key: `ads/${crypto.randomUUID()}.jpg`,
       mimeType: 'image/jpeg',
@@ -2460,6 +2468,129 @@ async function sendUserBotMessage(
   }
 }
 
+async function sendUserBotMessageWithId(
+  env: Env,
+  chatId: number,
+  text: string,
+  replyMarkup?: Record<string, unknown>
+): Promise<number | null> {
+  const payload: Record<string, unknown> = {
+    chat_id: chatId,
+    text,
+  };
+
+  if (replyMarkup) {
+    payload.reply_markup = replyMarkup;
+  }
+
+  const response = await userBotApi(env, 'sendMessage', payload);
+  if (!response.ok) {
+    throw new Error(`Telegram sendMessage failed with status ${response.status}`);
+  }
+
+  const body = (await response.json().catch(() => null)) as { ok?: boolean; result?: { message_id?: number } } | null;
+  return typeof body?.result?.message_id === 'number' ? body.result.message_id : null;
+}
+
+async function editUserBotMessage(
+  env: Env,
+  chatId: number,
+  messageId: number,
+  text: string,
+  replyMarkup?: Record<string, unknown>
+): Promise<void> {
+  const payload: Record<string, unknown> = {
+    chat_id: chatId,
+    message_id: messageId,
+    text,
+  };
+
+  if (replyMarkup) {
+    payload.reply_markup = replyMarkup;
+  }
+
+  const response = await userBotApi(env, 'editMessageText', payload);
+  if (!response.ok) {
+    throw new Error(`Telegram editMessageText failed with status ${response.status}`);
+  }
+}
+
+type UserBotScreenRef = {
+  chatId: number;
+  messageId: number;
+};
+
+function readBotDraftUiRef(draft: BotDraftRow | null): UserBotScreenRef | null {
+  if (!draft || draft.ui_chat_id === null || draft.ui_message_id === null) {
+    return null;
+  }
+
+  return {
+    chatId: draft.ui_chat_id,
+    messageId: draft.ui_message_id,
+  };
+}
+
+async function rememberUserBotScreen(env: Env, telegramUserId: string, chatId: number, messageId: number): Promise<void> {
+  const existing = await getBotDraft(env, telegramUserId);
+  if (!existing) {
+    await env.DB.prepare(
+      `
+        INSERT INTO bot_drafts (
+          telegram_user_id,
+          action,
+          step,
+          ui_chat_id,
+          ui_message_id,
+          created_at,
+          updated_at
+        )
+        VALUES (?, 'idle', 'menu', ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      `
+    )
+      .bind(telegramUserId, chatId, messageId)
+      .run();
+    return;
+  }
+
+  await env.DB.prepare(
+    `
+      UPDATE bot_drafts
+      SET ui_chat_id = ?,
+          ui_message_id = ?,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE telegram_user_id = ?
+    `
+  )
+    .bind(chatId, messageId, telegramUserId)
+    .run();
+}
+
+async function showUserBotScreen(
+  env: Env,
+  telegramUserId: string,
+  chatId: number,
+  text: string,
+  replyMarkup?: Record<string, unknown>
+): Promise<void> {
+  const draft = await getBotDraft(env, telegramUserId);
+  const uiRef = readBotDraftUiRef(draft);
+
+  if (uiRef && uiRef.chatId === chatId) {
+    try {
+      await editUserBotMessage(env, chatId, uiRef.messageId, text, replyMarkup);
+      return;
+    } catch (error) {
+      console.error('Failed to edit user bot screen', error);
+    }
+  }
+
+  const messageId = await sendUserBotMessageWithId(env, chatId, text, replyMarkup);
+  if (messageId !== null) {
+    await rememberUserBotScreen(env, telegramUserId, chatId, messageId);
+  }
+}
+
 async function answerUserCallbackQuery(env: Env, callbackQueryId: string, text?: string): Promise<void> {
   await userBotApi(env, 'answerCallbackQuery', {
     callback_query_id: callbackQueryId,
@@ -2484,7 +2615,7 @@ function userBotSectionsMarkup(): Record<string, unknown> {
   return {
     inline_keyboard: [
       ...buildCategoryRows(USER_BOT_SECTION_PREFIX),
-      [{ text: 'Назад', callback_data: USER_BOT_MENU_MY }],
+      [{ text: 'Назад', callback_data: USER_BOT_MENU_HOME }],
     ],
   };
 }
@@ -2495,7 +2626,7 @@ function userBotSectionAdsMarkup(category: string, ads: Array<{ id: number; titl
       ...ads.map((ad) => [
         { text: ad.title.slice(0, 40) || `#${ad.id}`, callback_data: `${USER_BOT_SECTION_AD_PREFIX}${category}:${ad.id}` },
       ]),
-      [{ text: 'Назад к объявлениям', callback_data: USER_BOT_MENU_SECTIONS }],
+      [{ text: 'Назад', callback_data: USER_BOT_MENU_SECTIONS }],
     ],
   };
 }
@@ -2503,8 +2634,8 @@ function userBotSectionAdsMarkup(category: string, ads: Array<{ id: number; titl
 function userBotSectionAdMarkup(category: string): Record<string, unknown> {
   return {
     inline_keyboard: [
-      [{ text: 'Назад к разделу', callback_data: `${USER_BOT_SECTION_PREFIX}${category}` }],
-      [{ text: 'Назад к объявлениям', callback_data: USER_BOT_MENU_SECTIONS }],
+      [{ text: 'Назад', callback_data: `${USER_BOT_SECTION_PREFIX}${category}` }],
+      [{ text: 'В меню', callback_data: USER_BOT_MENU_HOME }],
     ],
   };
 }
@@ -2516,7 +2647,7 @@ function userBotSearchMarkup(ads: Array<{ id: number; title: string }>): Record<
         { text: ad.title.slice(0, 40) || `#${ad.id}`, callback_data: `${USER_BOT_SEARCH_AD_PREFIX}${ad.id}` },
       ]),
       [{ text: 'Новый поиск', callback_data: USER_BOT_MENU_SEARCH }],
-      [{ text: 'Назад к объявлениям', callback_data: USER_BOT_MENU_SECTIONS }],
+      [{ text: 'Назад', callback_data: USER_BOT_MENU_SEARCH }],
     ],
   };
 }
@@ -2524,8 +2655,8 @@ function userBotSearchMarkup(ads: Array<{ id: number; title: string }>): Record<
 function userBotSearchAdMarkup(): Record<string, unknown> {
   return {
     inline_keyboard: [
-      [{ text: 'Назад к поиску', callback_data: USER_BOT_SEARCH_RESULTS }],
-      [{ text: 'Назад к объявлениям', callback_data: USER_BOT_MENU_SECTIONS }],
+      [{ text: 'Назад', callback_data: USER_BOT_SEARCH_RESULTS }],
+      [{ text: 'В меню', callback_data: USER_BOT_MENU_HOME }],
     ],
   };
 }
@@ -2536,7 +2667,7 @@ function userBotMyAdsMarkup(ads: Array<{ id: number; title: string }>): Record<s
       ...ads.map((ad) => [
         { text: ad.title.slice(0, 40) || `#${ad.id}`, callback_data: `${USER_BOT_MENU_MY_AD}${ad.id}` },
       ]),
-      [{ text: 'Назад', callback_data: USER_BOT_MENU_MY }],
+      [{ text: 'Назад', callback_data: USER_BOT_MENU_HOME }],
     ],
   };
 }
@@ -2560,14 +2691,26 @@ function userBotSettingsMarkup(): Record<string, unknown> {
       [{ text: 'Изменить email', callback_data: `${USER_BOT_SETTINGS_PREFIX}email` }],
       [{ text: 'Изменить аватар', callback_data: `${USER_BOT_SETTINGS_PREFIX}avatar` }],
       [{ text: 'Удалить аватар', callback_data: `${USER_BOT_SETTINGS_PREFIX}avatar-delete` }],
-      [{ text: 'Назад', callback_data: `${USER_BOT_SETTINGS_PREFIX}back` }],
+      [{ text: 'Назад', callback_data: USER_BOT_MENU_HOME }],
     ],
   };
 }
 
 function userBotCategoryMarkup(): Record<string, unknown> {
   return {
-    inline_keyboard: buildCategoryRows(`${USER_BOT_DRAFT_PREFIX}category:`),
+    inline_keyboard: [...buildCategoryRows(`${USER_BOT_DRAFT_PREFIX}category:`), [{ text: 'Отмена', callback_data: USER_BOT_MENU_HOME }]],
+  };
+}
+
+function userBotCancelHomeMarkup(): Record<string, unknown> {
+  return {
+    inline_keyboard: [[{ text: 'Отмена', callback_data: USER_BOT_CANCEL_FLOW }]],
+  };
+}
+
+function userBotCancelSettingsMarkup(): Record<string, unknown> {
+  return {
+    inline_keyboard: [[{ text: 'Отмена', callback_data: `${USER_BOT_SETTINGS_PREFIX}cancel` }]],
   };
 }
 
@@ -2593,7 +2736,13 @@ function userBotEditConfirmMarkup(): Record<string, unknown> {
   };
 }
 
-async function sendUserBotMenu(env: Env, chatId: number, greeting: string, login: string | null = null): Promise<void> {
+async function sendUserBotMenu(
+  env: Env,
+  telegramUserId: string,
+  chatId: number,
+  greeting: string,
+  login: string | null = null
+): Promise<void> {
   const lines = [greeting];
   if (login) {
     lines.push(`Login: ${login}`);
@@ -2601,28 +2750,28 @@ async function sendUserBotMenu(env: Env, chatId: number, greeting: string, login
   lines.push(`Сайт: ${buildPublicSiteUrl(env, '/')}`);
   lines.push('');
   lines.push('Что делаем?');
-  await sendUserBotMessage(env, chatId, lines.join('\n'), userBotMenuMarkup(env));
+  await showUserBotScreen(env, telegramUserId, chatId, lines.join('\n'), userBotMenuMarkup(env));
 }
 
-async function sendUserBotSections(env: Env, chatId: number): Promise<void> {
-  await sendUserBotMessage(env, chatId, 'Объявления', userBotSectionsMarkup());
+async function sendUserBotSections(env: Env, telegramUserId: string, chatId: number): Promise<void> {
+  await showUserBotScreen(env, telegramUserId, chatId, 'Объявления', userBotSectionsMarkup());
 }
 
 async function sendUserBotSettings(
   env: Env,
-  chatId: number,
   telegramUserId: string,
+  chatId: number,
   message: string | null = null
 ): Promise<void> {
   const telegramIdentity = await findTelegramIdentity(env, telegramUserId);
   if (!telegramIdentity) {
-    await sendUserBotMenu(env, chatId, 'Пользователь не найден');
+    await sendUserBotMenu(env, telegramUserId, chatId, 'Пользователь не найден');
     return;
   }
 
   const user = await findUserById(env, telegramIdentity.user_id);
   if (!user) {
-    await sendUserBotMenu(env, chatId, 'Пользователь не найден');
+    await sendUserBotMenu(env, telegramUserId, chatId, 'Пользователь не найден');
     return;
   }
 
@@ -2639,81 +2788,129 @@ async function sendUserBotSettings(
     `Аватар: ${user.avatar_key ? 'есть' : 'нет'}`,
   ];
 
-  await sendUserBotMessage(env, chatId, lines.join('\n'), userBotSettingsMarkup());
+  await showUserBotScreen(env, telegramUserId, chatId, lines.join('\n'), userBotSettingsMarkup());
 }
 
-async function sendUserBotSettingsLoginPrompt(env: Env, chatId: number): Promise<void> {
-  await sendUserBotMessage(env, chatId, 'Введи новый login');
+async function sendUserBotSettingsLoginPrompt(env: Env, telegramUserId: string, chatId: number, message: string | null = null): Promise<void> {
+  const lines = [...(message ? [message, ''] : []), 'Введи новый login'];
+  await showUserBotScreen(env, telegramUserId, chatId, lines.join('\n'), userBotCancelSettingsMarkup());
 }
 
-async function sendUserBotSettingsEmailPrompt(env: Env, chatId: number): Promise<void> {
-  await sendUserBotMessage(env, chatId, 'Введи новый email');
+async function sendUserBotSettingsEmailPrompt(env: Env, telegramUserId: string, chatId: number, message: string | null = null): Promise<void> {
+  const lines = [...(message ? [message, ''] : []), 'Введи новый email'];
+  await showUserBotScreen(env, telegramUserId, chatId, lines.join('\n'), userBotCancelSettingsMarkup());
 }
 
-async function sendUserBotSettingsAvatarPrompt(env: Env, chatId: number): Promise<void> {
-  await sendUserBotMessage(env, chatId, 'Пришли изображение для аватара');
+async function sendUserBotSettingsAvatarPrompt(env: Env, telegramUserId: string, chatId: number, message: string | null = null): Promise<void> {
+  const lines = [...(message ? [message, ''] : []), 'Пришли изображение для аватара'];
+  await showUserBotScreen(env, telegramUserId, chatId, lines.join('\n'), userBotCancelSettingsMarkup());
 }
 
-async function sendUserBotSearchPrompt(env: Env, chatId: number): Promise<void> {
-  await sendUserBotMessage(env, chatId, 'Введи текст для поиска');
+async function sendUserBotSearchPrompt(env: Env, telegramUserId: string, chatId: number, message: string | null = null): Promise<void> {
+  const lines = [...(message ? [message, ''] : []), 'Введи текст для поиска'];
+  await showUserBotScreen(env, telegramUserId, chatId, lines.join('\n'), userBotCancelHomeMarkup());
+}
+
+function buildUserBotAdListText(
+  title: string,
+  ads: Array<{
+    id: number;
+    title: string;
+    category: string | null;
+    author_login?: string | null;
+    status?: string | null;
+  }>,
+  offset = 0,
+  hasMore = false,
+  moreLabel: string | null = null
+): string {
+  const lines = [title];
+
+  if (!ads.length) {
+    lines.push('', 'Пока ничего нет');
+    return lines.join('\n');
+  }
+
+  for (const [index, ad] of ads.entries()) {
+    const number = offset + index + 1;
+    const meta = [ad.category ? categoryLabel(ad.category) : null, ad.author_login ? `Автор: ${ad.author_login}` : null, ad.status ? `Статус: ${ad.status}` : null]
+      .filter((value): value is string => value !== null)
+      .join(' · ');
+    lines.push('', `${number}. ${ad.title}`);
+    if (meta) {
+      lines.push(meta);
+    }
+  }
+
+  if (hasMore && moreLabel) {
+    lines.push('', moreLabel);
+  }
+
+  return lines.join('\n');
 }
 
 async function sendUserBotAdCards(
   env: Env,
+  telegramUserId: string,
   chatId: number,
+  title: string,
   ads: AdCardRow[],
   hasMore: boolean,
   moreCallbackData: string,
-  backRow: Array<{ text: string; callback_data: string }>
+  backRow: Array<{ text: string; callback_data: string }>,
+  offset = 0
 ): Promise<void> {
-  for (const ad of ads) {
-    const caption = [ad.title, categoryLabel(ad.category), ad.author_login ? `Автор: ${ad.author_login}` : null]
-      .filter(Boolean)
-      .join('\n');
-    const markup = { inline_keyboard: [[{ text: 'Подробнее →', callback_data: `${USER_BOT_SECTION_AD_PREFIX}${ad.category}:${ad.id}` }]] };
+  const markupRows: Array<Array<{ text: string; callback_data: string }>> = [];
 
-    if (ad.image_key) {
-      const res = await userBotApi(env, 'sendPhoto', {
-        chat_id: chatId,
-        photo: buildMediaUrl(env, ad.image_key),
-        caption,
-        reply_markup: markup,
-      });
-      if (!res.ok) {
-        await sendUserBotMessage(env, chatId, `[без фото]\n${caption}`, markup);
-      }
-    } else {
-      await sendUserBotMessage(env, chatId, `[без фото]\n${caption}`, markup);
-    }
+  for (const ad of ads) {
+    markupRows.push([{ text: ad.title.slice(0, 40) || `#${ad.id}`, callback_data: `${USER_BOT_SECTION_AD_PREFIX}${ad.category}:${ad.id}` }]);
   }
 
-  const navRows: Array<Array<{ text: string; callback_data: string }>> = [];
-  if (hasMore) navRows.push([{ text: 'Показать ещё', callback_data: moreCallbackData }]);
-  navRows.push(backRow);
-  await sendUserBotMessage(env, chatId, '—', { inline_keyboard: navRows });
+  if (hasMore) {
+    markupRows.push([{ text: 'Показать ещё', callback_data: moreCallbackData }]);
+  }
+  markupRows.push(backRow);
+
+  await showUserBotScreen(
+    env,
+    telegramUserId,
+    chatId,
+    buildUserBotAdListText(title, ads, offset, hasMore, hasMore ? 'Ещё есть объявления' : null),
+    { inline_keyboard: markupRows }
+  );
 }
 
-async function sendUserBotSearchResults(env: Env, chatId: number, query: string, offset = 0): Promise<void> {
+async function sendUserBotSearchResults(env: Env, telegramUserId: string, chatId: number, query: string, offset = 0): Promise<void> {
   const ads = await searchPublishedAdsPage(env, query, BOT_ADS_PAGE_SIZE + 1, offset);
   const hasMore = ads.length > BOT_ADS_PAGE_SIZE;
   const page = ads.slice(0, BOT_ADS_PAGE_SIZE);
 
   if (!page.length) {
-    await sendUserBotMessage(env, chatId, offset === 0 ? 'Ничего не найдено' : 'Больше объявлений нет', {
-      inline_keyboard: [
-        [{ text: 'Новый поиск', callback_data: USER_BOT_MENU_SEARCH }],
-        [{ text: 'Назад к объявлениям', callback_data: USER_BOT_MENU_SECTIONS }],
-      ],
-    });
+    await showUserBotScreen(
+      env,
+      telegramUserId,
+      chatId,
+      offset === 0 ? `Поиск: ${query.trim()}\n\nНичего не найдено` : `Поиск: ${query.trim()}\n\nБольше объявлений нет`,
+      {
+        inline_keyboard: [
+          [{ text: 'Новый поиск', callback_data: USER_BOT_MENU_SEARCH }],
+          [{ text: 'Назад', callback_data: USER_BOT_MENU_SEARCH }],
+        ],
+      }
+    );
     return;
   }
 
-  if (offset === 0) await sendUserBotMessage(env, chatId, `Поиск: ${query.trim()}`);
-
   await sendUserBotAdCards(
-    env, chatId, page, hasMore,
+    env,
+    telegramUserId,
+    chatId,
+    `Поиск: ${query.trim()}`,
+    page,
+    hasMore,
     `${USER_BOT_SEARCH_MORE_PREFIX}${offset + BOT_ADS_PAGE_SIZE}`,
-    [{ text: 'Новый поиск', callback_data: USER_BOT_MENU_SEARCH }, { text: 'Назад к объявлениям', callback_data: USER_BOT_MENU_SECTIONS }]
+    [{ text: 'Назад', callback_data: USER_BOT_MENU_SEARCH }],
+    offset
   );
 }
 
@@ -2735,78 +2932,70 @@ function buildUserBotPublicAdText(
 
 async function sendUserBotPublicAdCard(
   env: Env,
+  telegramUserId: string,
   chatId: number,
   ad: PublicAdCardRow,
   replyMarkup: Record<string, unknown>
 ): Promise<void> {
   const text = buildUserBotPublicAdText(ad);
-
-  if (ad.image_key) {
-    const response = await userBotApi(env, 'sendPhoto', {
-      chat_id: chatId,
-      photo: buildMediaUrl(env, ad.image_key),
-      caption: text,
-      reply_markup: replyMarkup,
-    });
-
-    if (!response.ok) {
-      throw new Error(`Telegram sendPhoto failed with status ${response.status}`);
-    }
-    return;
-  }
-
-  await sendUserBotMessage(env, chatId, text, replyMarkup);
+  await showUserBotScreen(env, telegramUserId, chatId, text, replyMarkup);
 }
 
-async function sendUserBotSearchAdDetail(env: Env, chatId: number, adId: number): Promise<void> {
+async function sendUserBotSearchAdDetail(env: Env, telegramUserId: string, chatId: number, adId: number): Promise<void> {
   const ad = await getPublishedAdCardById(env, adId);
   if (!ad) {
-    await sendUserBotMessage(env, chatId, 'Объявление не найдено', {
+    await showUserBotScreen(env, telegramUserId, chatId, 'Объявление не найдено', {
       inline_keyboard: [
         [{ text: 'Новый поиск', callback_data: USER_BOT_MENU_SEARCH }],
-        [{ text: 'Назад к объявлениям', callback_data: USER_BOT_MENU_SECTIONS }],
+        [{ text: 'Назад', callback_data: USER_BOT_MENU_SEARCH }],
       ],
     });
     return;
   }
 
-  await sendUserBotPublicAdCard(env, chatId, ad, userBotSearchAdMarkup());
+  await sendUserBotPublicAdCard(env, telegramUserId, chatId, ad, userBotSearchAdMarkup());
 }
 
-async function sendUserBotSectionAds(env: Env, chatId: number, category: string, offset = 0): Promise<void> {
+async function sendUserBotSectionAds(env: Env, telegramUserId: string, chatId: number, category: string, offset = 0): Promise<void> {
   const categoryKey = normalizeCategory(category);
   const ads = await listPublishedAdsByCategoryPage(env, categoryKey, BOT_ADS_PAGE_SIZE + 1, offset);
   const hasMore = ads.length > BOT_ADS_PAGE_SIZE;
   const page = ads.slice(0, BOT_ADS_PAGE_SIZE);
 
   if (!page.length) {
-    await sendUserBotMessage(
-      env, chatId,
-      offset === 0 ? `${categoryLabel(categoryKey)}\n\nОбъявлений пока нет` : 'Больше объявлений нет',
+    await showUserBotScreen(
+      env,
+      telegramUserId,
+      chatId,
+      offset === 0 ? `${categoryLabel(categoryKey)}\n\nОбъявлений пока нет` : `${categoryLabel(categoryKey)}\n\nБольше объявлений нет`,
       userBotSectionsMarkup()
     );
     return;
   }
 
-  if (offset === 0) await sendUserBotMessage(env, chatId, categoryLabel(categoryKey));
-
   await sendUserBotAdCards(
-    env, chatId, page, hasMore,
+    env,
+    telegramUserId,
+    chatId,
+    categoryLabel(categoryKey),
+    page,
+    hasMore,
     `${USER_BOT_SECTION_MORE_PREFIX}${categoryKey}:${offset + BOT_ADS_PAGE_SIZE}`,
-    [{ text: 'К разделам', callback_data: USER_BOT_MENU_SECTIONS }]
+    [{ text: 'Назад', callback_data: USER_BOT_MENU_SECTIONS }],
+    offset
   );
 }
 
-async function sendUserBotSectionAdDetail(env: Env, chatId: number, category: string, adId: number): Promise<void> {
+async function sendUserBotSectionAdDetail(env: Env, telegramUserId: string, chatId: number, category: string, adId: number): Promise<void> {
   const categoryKey = normalizeCategory(category);
   const ad = await getPublishedAdCardById(env, adId, categoryKey);
 
   if (!ad) {
-    await sendUserBotMessage(env, chatId, 'Объявление не найдено', userBotSectionsMarkup());
+    await showUserBotScreen(env, telegramUserId, chatId, 'Объявление не найдено', userBotSectionsMarkup());
     return;
   }
 
-  await sendUserBotPublicAdCard(env, chatId, ad, userBotSectionAdMarkup(categoryKey));
+  await sendUserBotPublicAdCard(env, telegramUserId, chatId, ad, userBotSectionAdMarkup(categoryKey));
 }
 
 function isAdminTelegramChat(env: Env, chatId: number): boolean {
@@ -3144,36 +3333,38 @@ async function deleteAdminUser(env: Env, userId: number): Promise<'deleted' | 's
   return (adsResult.meta.changes ?? 0) >= 0 ? 'deleted' : 'missing';
 }
 
-async function sendUserBotCategoryPrompt(env: Env, chatId: number): Promise<void> {
-  await sendUserBotMessage(env, chatId, 'Выбери категорию', userBotCategoryMarkup());
+async function sendUserBotCategoryPrompt(env: Env, telegramUserId: string, chatId: number): Promise<void> {
+  await showUserBotScreen(env, telegramUserId, chatId, 'Выбери категорию', userBotCategoryMarkup());
 }
 
-async function sendUserBotLoginPrompt(env: Env, chatId: number): Promise<void> {
-  await sendUserBotMessage(env, chatId, 'Придумай login');
+async function sendUserBotLoginPrompt(env: Env, telegramUserId: string, chatId: number, message: string | null = null): Promise<void> {
+  const lines = [...(message ? [message, ''] : []), 'Придумай login'];
+  await showUserBotScreen(env, telegramUserId, chatId, lines.join('\n'), userBotCancelHomeMarkup());
 }
 
-async function sendUserBotEmailPrompt(env: Env, chatId: number): Promise<void> {
-  await sendUserBotMessage(env, chatId, 'Теперь напиши email');
+async function sendUserBotEmailPrompt(env: Env, telegramUserId: string, chatId: number, message: string | null = null): Promise<void> {
+  const lines = [...(message ? [message, ''] : []), 'Теперь напиши email'];
+  await showUserBotScreen(env, telegramUserId, chatId, lines.join('\n'), userBotCancelHomeMarkup());
 }
 
-async function sendUserBotEditCategoryPrompt(env: Env, chatId: number): Promise<void> {
-  await sendUserBotMessage(env, chatId, 'Выбери новую категорию', userBotCategoryMarkup());
+async function sendUserBotEditCategoryPrompt(env: Env, telegramUserId: string, chatId: number): Promise<void> {
+  await showUserBotScreen(env, telegramUserId, chatId, 'Выбери новую категорию', userBotCategoryMarkup());
 }
 
-async function sendUserBotTitlePrompt(env: Env, chatId: number): Promise<void> {
-  await sendUserBotMessage(env, chatId, 'Теперь напиши заголовок');
+async function sendUserBotTitlePrompt(env: Env, telegramUserId: string, chatId: number): Promise<void> {
+  await showUserBotScreen(env, telegramUserId, chatId, 'Теперь напиши заголовок', userBotCancelHomeMarkup());
 }
 
-async function sendUserBotEditTitlePrompt(env: Env, chatId: number): Promise<void> {
-  await sendUserBotMessage(env, chatId, 'Введи новый заголовок');
+async function sendUserBotEditTitlePrompt(env: Env, telegramUserId: string, chatId: number): Promise<void> {
+  await showUserBotScreen(env, telegramUserId, chatId, 'Введи новый заголовок', userBotCancelHomeMarkup());
 }
 
-async function sendUserBotBodyPrompt(env: Env, chatId: number): Promise<void> {
-  await sendUserBotMessage(env, chatId, 'Теперь напиши текст объявления');
+async function sendUserBotBodyPrompt(env: Env, telegramUserId: string, chatId: number): Promise<void> {
+  await showUserBotScreen(env, telegramUserId, chatId, 'Теперь напиши текст объявления', userBotCancelHomeMarkup());
 }
 
-async function sendUserBotEditBodyPrompt(env: Env, chatId: number): Promise<void> {
-  await sendUserBotMessage(env, chatId, 'Введи новый текст объявления');
+async function sendUserBotEditBodyPrompt(env: Env, telegramUserId: string, chatId: number): Promise<void> {
+  await showUserBotScreen(env, telegramUserId, chatId, 'Введи новый текст объявления', userBotCancelHomeMarkup());
 }
 
 async function handleUserBotSettingsLoginUpdate(
@@ -3184,26 +3375,24 @@ async function handleUserBotSettingsLoginUpdate(
 ): Promise<void> {
   const telegramIdentity = await findTelegramIdentity(env, telegramUserId);
   if (!telegramIdentity) {
-    await sendUserBotMenu(env, chatId, 'Пользователь не найден');
+    await sendUserBotMenu(env, telegramUserId, chatId, 'Пользователь не найден');
     return;
   }
 
   const currentUser = await findUserById(env, telegramIdentity.user_id);
   if (!currentUser) {
-    await sendUserBotMenu(env, chatId, 'Пользователь не найден');
+    await sendUserBotMenu(env, telegramUserId, chatId, 'Пользователь не найден');
     return;
   }
 
   if (!isValidLogin(login)) {
-    await sendUserBotSettingsLoginPrompt(env, chatId);
-    await sendUserBotMessage(env, chatId, 'Login должен быть 3-32 символа: латиница, цифры, _');
+    await sendUserBotSettingsLoginPrompt(env, telegramUserId, chatId, 'Login должен быть 3-32 символа: латиница, цифры, _');
     return;
   }
 
   const existingLoginUser = await findUserByLogin(env, login);
   if (existingLoginUser && existingLoginUser.id !== currentUser.id) {
-    await sendUserBotSettingsLoginPrompt(env, chatId);
-    await sendUserBotMessage(env, chatId, 'Этот login уже занят');
+    await sendUserBotSettingsLoginPrompt(env, telegramUserId, chatId, 'Этот login уже занят');
     return;
   }
 
@@ -3219,7 +3408,7 @@ async function handleUserBotSettingsLoginUpdate(
     .run();
 
   await clearBotDraft(env, telegramUserId);
-  await sendUserBotSettings(env, chatId, telegramUserId, 'Login изменён');
+  await sendUserBotSettings(env, telegramUserId, chatId, 'Login изменён');
 }
 
 async function handleUserBotSettingsEmailUpdate(
@@ -3230,26 +3419,24 @@ async function handleUserBotSettingsEmailUpdate(
 ): Promise<void> {
   const telegramIdentity = await findTelegramIdentity(env, telegramUserId);
   if (!telegramIdentity) {
-    await sendUserBotMenu(env, chatId, 'Пользователь не найден');
+    await sendUserBotMenu(env, telegramUserId, chatId, 'Пользователь не найден');
     return;
   }
 
   const currentUser = await findUserById(env, telegramIdentity.user_id);
   if (!currentUser) {
-    await sendUserBotMenu(env, chatId, 'Пользователь не найден');
+    await sendUserBotMenu(env, telegramUserId, chatId, 'Пользователь не найден');
     return;
   }
 
   if (!isValidEmail(email)) {
-    await sendUserBotSettingsEmailPrompt(env, chatId);
-    await sendUserBotMessage(env, chatId, 'Введите корректный email');
+    await sendUserBotSettingsEmailPrompt(env, telegramUserId, chatId, 'Введите корректный email');
     return;
   }
 
   const existingIdentity = await findEmailIdentity(env, email);
   if (existingIdentity && existingIdentity.user_id !== currentUser.id) {
-    await sendUserBotSettingsEmailPrompt(env, chatId);
-    await sendUserBotMessage(env, chatId, 'Этот email уже зарегистрирован');
+    await sendUserBotSettingsEmailPrompt(env, telegramUserId, chatId, 'Этот email уже зарегистрирован');
     return;
   }
 
@@ -3284,7 +3471,7 @@ async function handleUserBotSettingsEmailUpdate(
   }
 
   await clearBotDraft(env, telegramUserId);
-  await sendUserBotSettings(env, chatId, telegramUserId, 'Email изменён');
+  await sendUserBotSettings(env, telegramUserId, chatId, 'Email изменён');
 }
 
 async function handleUserBotSettingsAvatarUpdate(
@@ -3295,13 +3482,13 @@ async function handleUserBotSettingsAvatarUpdate(
 ): Promise<void> {
   const telegramIdentity = await findTelegramIdentity(env, telegramUserId);
   if (!telegramIdentity) {
-    await sendUserBotMenu(env, chatId, 'Пользователь не найден');
+    await sendUserBotMenu(env, telegramUserId, chatId, 'Пользователь не найден');
     return;
   }
 
   const currentUser = await findUserById(env, telegramIdentity.user_id);
   if (!currentUser) {
-    await sendUserBotMenu(env, chatId, 'Пользователь не найден');
+    await sendUserBotMenu(env, telegramUserId, chatId, 'Пользователь не найден');
     return;
   }
 
@@ -3332,13 +3519,12 @@ async function handleUserBotSettingsAvatarUpdate(
       await deleteAvatarImage(env, upload.key);
     }
     console.error('Failed to update user bot avatar', error);
-    await sendUserBotSettingsAvatarPrompt(env, chatId);
-    await sendUserBotMessage(env, chatId, 'Не удалось сохранить аватар');
+    await sendUserBotSettingsAvatarPrompt(env, telegramUserId, chatId, 'Не удалось сохранить аватар');
     return;
   }
 
   await clearBotDraft(env, telegramUserId);
-  await sendUserBotSettings(env, chatId, telegramUserId, 'Аватар обновлён');
+  await sendUserBotSettings(env, telegramUserId, chatId, 'Аватар обновлён');
 }
 
 async function handleUserBotSettingsAvatarDelete(
@@ -3348,18 +3534,18 @@ async function handleUserBotSettingsAvatarDelete(
 ): Promise<void> {
   const telegramIdentity = await findTelegramIdentity(env, telegramUserId);
   if (!telegramIdentity) {
-    await sendUserBotMenu(env, chatId, 'Пользователь не найден');
+    await sendUserBotMenu(env, telegramUserId, chatId, 'Пользователь не найден');
     return;
   }
 
   const currentUser = await findUserById(env, telegramIdentity.user_id);
   if (!currentUser) {
-    await sendUserBotMenu(env, chatId, 'Пользователь не найден');
+    await sendUserBotMenu(env, telegramUserId, chatId, 'Пользователь не найден');
     return;
   }
 
   if (!currentUser.avatar_key) {
-    await sendUserBotSettings(env, chatId, telegramUserId, 'Аватарки нет');
+    await sendUserBotSettings(env, telegramUserId, chatId, 'Аватарки нет');
     return;
   }
 
@@ -3377,7 +3563,7 @@ async function handleUserBotSettingsAvatarDelete(
     .run();
 
   await deleteAvatarImage(env, currentUser.avatar_key);
-  await sendUserBotSettings(env, chatId, telegramUserId, 'Аватар удалён');
+  await sendUserBotSettings(env, telegramUserId, chatId, 'Аватар удалён');
 }
 
 async function sendUserBotConfirmation(env: Env, chatId: number, draft: BotDraftRow): Promise<void> {
@@ -3389,7 +3575,7 @@ async function sendUserBotConfirmation(env: Env, chatId: number, draft: BotDraft
     draft.body || '',
   ].join('\n');
 
-  await sendUserBotMessage(env, chatId, text, userBotConfirmMarkup());
+  await showUserBotScreen(env, draft.telegram_user_id, chatId, text, userBotConfirmMarkup());
 }
 
 async function sendUserBotEditConfirmation(env: Env, chatId: number, draft: BotDraftRow): Promise<void> {
@@ -3401,13 +3587,13 @@ async function sendUserBotEditConfirmation(env: Env, chatId: number, draft: BotD
     draft.body || '',
   ].join('\n');
 
-  await sendUserBotMessage(env, chatId, text, userBotEditConfirmMarkup());
+  await showUserBotScreen(env, draft.telegram_user_id, chatId, text, userBotEditConfirmMarkup());
 }
 
-async function sendUserBotMyAds(env: Env, telegramUserId: string, chatId: number): Promise<void> {
+async function sendUserBotMyAds(env: Env, telegramUserId: string, chatId: number, message: string | null = null): Promise<void> {
   const identity = await findTelegramIdentity(env, telegramUserId);
   if (!identity) {
-    await sendUserBotMenu(env, chatId, 'Пользователь не найден');
+    await sendUserBotMenu(env, telegramUserId, chatId, 'Пользователь не найден');
     return;
   }
 
@@ -3420,15 +3606,33 @@ async function sendUserBotMyAds(env: Env, telegramUserId: string, chatId: number
       ORDER BY created_at DESC
     `
   )
-    .bind(identity.user_id)
-    .all<{ id: number; title: string; category: string | null; status: string; created_at: string }>();
+  .bind(identity.user_id)
+  .all<{ id: number; title: string; category: string | null; status: string; created_at: string }>();
 
   if (!result.results.length) {
-    await sendUserBotMessage(env, chatId, 'У тебя пока нет объявлений', userBotMenuMarkup(env));
+    await showUserBotScreen(
+      env,
+      telegramUserId,
+      chatId,
+      [message, 'У тебя пока нет объявлений'].filter(Boolean).join('\n'),
+      userBotMenuMarkup(env)
+    );
     return;
   }
 
-  await sendUserBotMessage(env, chatId, 'Твои объявления:', userBotMyAdsMarkup(result.results));
+  const text = buildUserBotAdListText(
+    'Твои объявления:',
+    result.results.map((ad) => ({
+      id: ad.id,
+      title: ad.title,
+      category: ad.category || 'misc',
+      status: ad.status,
+    })),
+    0,
+    false,
+    null
+  );
+  await showUserBotScreen(env, telegramUserId, chatId, [message, text].filter(Boolean).join('\n\n'), userBotMyAdsMarkup(result.results));
 }
 
 async function getOwnedAdForTelegramUser(env: Env, telegramUserId: string, adId: number): Promise<AdRow | null> {
@@ -3483,12 +3687,12 @@ async function startUserBotEditFlow(
 ): Promise<boolean> {
   const ad = await getOwnedAdForTelegramUser(env, telegramUserId, adId);
   if (!ad) {
-    await sendUserBotMenu(env, chatId, 'Объявление не найдено');
+    await sendUserBotMenu(env, telegramUserId, chatId, 'Объявление не найдено');
     return false;
   }
 
   await upsertBotDraft(env, telegramUserId, 'edit', 'title', ad.category, ad.title, ad.body, ad.id);
-  await sendUserBotEditTitlePrompt(env, chatId);
+  await sendUserBotEditTitlePrompt(env, telegramUserId, chatId);
   return true;
 }
 
@@ -3506,24 +3710,9 @@ function buildUserBotOwnedAdText(
   ].join('\n');
 }
 
-async function sendUserBotSingleAd(env: Env, chatId: number, ad: AdRow): Promise<void> {
+async function sendUserBotSingleAd(env: Env, telegramUserId: string, chatId: number, ad: AdRow): Promise<void> {
   const text = buildUserBotOwnedAdText(ad);
-
-  if (ad.image_key) {
-    const response = await userBotApi(env, 'sendPhoto', {
-      chat_id: chatId,
-      photo: buildMediaUrl(env, ad.image_key),
-      caption: text,
-      reply_markup: userBotSingleAdMarkup(ad.id),
-    });
-
-    if (!response.ok) {
-      throw new Error(`Telegram sendPhoto failed with status ${response.status}`);
-    }
-    return;
-  }
-
-  await sendUserBotMessage(env, chatId, text, userBotSingleAdMarkup(ad.id));
+  await showUserBotScreen(env, telegramUserId, chatId, text, userBotSingleAdMarkup(ad.id));
 }
 
 function buildTelegramAdText(
@@ -3957,6 +4146,7 @@ async function handleAdminBotCallback(
       login: user.login,
       email: user.email,
       role: user.role,
+      avatar_key: user.avatar_key,
       created_at: user.created_at,
     }, page);
     return json({ ok: true });
@@ -4289,6 +4479,29 @@ async function ensureAdContactColumn(env: Env): Promise<void> {
   });
 
   return cachedEnsureAdContactColumnPromise;
+}
+
+async function ensureBotDraftColumns(env: Env): Promise<void> {
+  if (cachedEnsureBotDraftColumnsPromise) {
+    return cachedEnsureBotDraftColumnsPromise;
+  }
+
+  cachedEnsureBotDraftColumnsPromise = (async () => {
+    const tableInfo = await env.DB.prepare(`PRAGMA table_info(bot_drafts)`).all<{ name: string }>();
+    const columnNames = new Set((tableInfo.results || []).map((row) => row.name));
+
+    if (!columnNames.has('ui_chat_id')) {
+      await env.DB.prepare(`ALTER TABLE bot_drafts ADD COLUMN ui_chat_id INTEGER`).run();
+    }
+
+    if (!columnNames.has('ui_message_id')) {
+      await env.DB.prepare(`ALTER TABLE bot_drafts ADD COLUMN ui_message_id INTEGER`).run();
+    }
+  })().finally(() => {
+    cachedEnsureBotDraftColumnsPromise = null;
+  });
+
+  return cachedEnsureBotDraftColumnsPromise;
 }
 
 async function createAd(
@@ -4900,7 +5113,7 @@ async function findTelegramIdentityByUserId(env: Env, userId: number): Promise<U
 async function getBotDraft(env: Env, telegramUserId: string): Promise<BotDraftRow | null> {
   const result = await env.DB.prepare(
     `
-      SELECT id, telegram_user_id, action, step, ad_id, login, email, category, title, body, created_at, updated_at
+      SELECT id, telegram_user_id, action, step, ui_chat_id, ui_message_id, ad_id, login, email, category, title, body, created_at, updated_at
       FROM bot_drafts
       WHERE telegram_user_id = ?
       LIMIT 1
@@ -4922,7 +5135,9 @@ async function upsertBotDraft(
   body: string | null = null,
   adId: number | null = null,
   login: string | null = null,
-  email: string | null = null
+  email: string | null = null,
+  uiChatId: number | null = null,
+  uiMessageId: number | null = null
 ): Promise<void> {
   await env.DB.prepare(
     `
@@ -4930,6 +5145,8 @@ async function upsertBotDraft(
         telegram_user_id,
         action,
         step,
+        ui_chat_id,
+        ui_message_id,
         ad_id,
         login,
         email,
@@ -4939,10 +5156,18 @@ async function upsertBotDraft(
         created_at,
         updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
       ON CONFLICT(telegram_user_id) DO UPDATE SET
         action = excluded.action,
         step = excluded.step,
+        ui_chat_id = CASE
+          WHEN excluded.ui_chat_id IS NULL THEN ui_chat_id
+          ELSE excluded.ui_chat_id
+        END,
+        ui_message_id = CASE
+          WHEN excluded.ui_message_id IS NULL THEN ui_message_id
+          ELSE excluded.ui_message_id
+        END,
         ad_id = excluded.ad_id,
         login = excluded.login,
         email = excluded.email,
@@ -4952,14 +5177,23 @@ async function upsertBotDraft(
         updated_at = CURRENT_TIMESTAMP
     `
   )
-    .bind(telegramUserId, action, step, adId, login, email, category, title, body)
+    .bind(telegramUserId, action, step, uiChatId, uiMessageId, adId, login, email, category, title, body)
     .run();
 }
 
 async function clearBotDraft(env: Env, telegramUserId: string): Promise<void> {
   await env.DB.prepare(
     `
-      DELETE FROM bot_drafts
+      UPDATE bot_drafts
+      SET action = 'idle',
+          step = 'menu',
+          ad_id = NULL,
+          login = NULL,
+          email = NULL,
+          category = NULL,
+          title = NULL,
+          body = NULL,
+          updated_at = CURRENT_TIMESTAMP
       WHERE telegram_user_id = ?
     `
   )
@@ -4983,12 +5217,12 @@ async function handleUserBotStart(
   const existingIdentity = await findTelegramIdentity(env, telegramUserId);
   if (existingIdentity) {
     const user = await findUserById(env, existingIdentity.user_id);
-    await sendUserBotMenu(env, chatId, 'С возвращением в жоржлист', user?.login || null);
+    await sendUserBotMenu(env, telegramUserId, chatId, 'С возвращением в жоржлист', user?.login || null);
     return;
   }
 
   await upsertBotDraft(env, telegramUserId, 'register', 'login', null, null, null, null, null, null);
-  await sendUserBotLoginPrompt(env, chatId);
+  await sendUserBotLoginPrompt(env, telegramUserId, chatId);
 }
 
 function isValidLogin(login: string): boolean {
@@ -5003,33 +5237,33 @@ async function handleUserBotMenuAction(
 ): Promise<void> {
   if (action === USER_BOT_MENU_CREATE) {
     await upsertBotDraft(env, telegramUserId, 'create', 'category');
-    await sendUserBotCategoryPrompt(env, chatId);
+    await sendUserBotCategoryPrompt(env, telegramUserId, chatId);
     return;
   }
 
   if (action === USER_BOT_MENU_SECTIONS) {
-    await sendUserBotSections(env, chatId);
+    await sendUserBotSections(env, telegramUserId, chatId);
     return;
   }
 
   if (action === USER_BOT_MENU_SEARCH) {
     await upsertBotDraft(env, telegramUserId, 'search', 'query');
-    await sendUserBotSearchPrompt(env, chatId);
+    await sendUserBotSearchPrompt(env, telegramUserId, chatId);
     return;
   }
 
   if (action === USER_BOT_MENU_SETTINGS) {
-    await sendUserBotSettings(env, chatId, telegramUserId);
+    await sendUserBotSettings(env, telegramUserId, chatId);
     return;
   }
 
   if (action === USER_BOT_MENU_EDIT) {
-    await sendUserBotMessage(env, chatId, 'Редактирование скоро будет');
+    await showUserBotScreen(env, telegramUserId, chatId, 'Редактирование скоро будет', userBotMenuMarkup(env));
     return;
   }
 
   if (action === USER_BOT_MENU_DELETE) {
-    await sendUserBotMessage(env, chatId, 'Удаление скоро будет');
+    await showUserBotScreen(env, telegramUserId, chatId, 'Удаление скоро будет', userBotMenuMarkup(env));
     return;
   }
 }
@@ -5044,77 +5278,77 @@ async function handleUserBotDraftAction(
 ): Promise<void> {
   const draft = await getBotDraft(env, telegramUserId);
   if (!draft || (draft.action !== 'create' && draft.action !== 'edit')) {
-    await sendUserBotMenu(env, chatId, 'Начни с /start');
+    await sendUserBotMenu(env, telegramUserId, chatId, 'Начни с /start');
     return;
   }
 
   if (draft.action === 'create' && action === 'category') {
     const category = normalizeCategory(value);
     await upsertBotDraft(env, telegramUserId, 'create', 'title', category, null, null, draft.ad_id);
-    await sendUserBotTitlePrompt(env, chatId);
+    await sendUserBotTitlePrompt(env, telegramUserId, chatId);
     return;
   }
 
   if (draft.action === 'edit' && action === 'category') {
     const category = normalizeCategory(value);
     await upsertBotDraft(env, telegramUserId, 'edit', 'body', category, draft.title, draft.body, draft.ad_id);
-    await sendUserBotEditBodyPrompt(env, chatId);
+    await sendUserBotEditBodyPrompt(env, telegramUserId, chatId);
     return;
   }
 
   if (action === 'confirm') {
     if ((draft.action === 'create' && value === 'cancel') || (draft.action === 'edit' && value === 'cancel')) {
       await clearBotDraft(env, telegramUserId);
-      await sendUserBotMenu(env, chatId, 'Отменено');
+      await sendUserBotMenu(env, telegramUserId, chatId, 'Отменено');
       return;
     }
 
     if (draft.action === 'create') {
       if (value !== 'send') {
-        await sendUserBotMenu(env, chatId, 'Неизвестное действие');
+        await sendUserBotMenu(env, telegramUserId, chatId, 'Неизвестное действие');
         return;
       }
 
       const identity = await findTelegramIdentity(env, telegramUserId);
       if (!identity) {
         await clearBotDraft(env, telegramUserId);
-        await sendUserBotMenu(env, chatId, 'Пользователь не найден');
+        await sendUserBotMenu(env, telegramUserId, chatId, 'Пользователь не найден');
         return;
       }
 
       if (!draft.title || !draft.body) {
         await clearBotDraft(env, telegramUserId);
-        await sendUserBotMenu(env, chatId, 'Черновик пуст');
+        await sendUserBotMenu(env, telegramUserId, chatId, 'Черновик пуст');
         return;
       }
 
       try {
         await createAd(env, ctx, draft.title, draft.body, null, draft.category, identity.user_id);
         await clearBotDraft(env, telegramUserId);
-        await sendUserBotMenu(env, chatId, 'Объявление отправлено на модерацию');
+        await sendUserBotMenu(env, telegramUserId, chatId, 'Объявление отправлено на модерацию');
       } catch (error) {
         console.error('Failed to create ad from user bot', error);
-        await sendUserBotMenu(env, chatId, 'Не удалось отправить объявление');
+        await sendUserBotMenu(env, telegramUserId, chatId, 'Не удалось отправить объявление');
       }
       return;
     }
 
     if (draft.action === 'edit') {
       if (value !== 'save') {
-        await sendUserBotMenu(env, chatId, 'Неизвестное действие');
+        await sendUserBotMenu(env, telegramUserId, chatId, 'Неизвестное действие');
         return;
       }
 
       const identity = await findTelegramIdentity(env, telegramUserId);
       if (!identity || !draft.ad_id) {
         await clearBotDraft(env, telegramUserId);
-        await sendUserBotMenu(env, chatId, 'Пользователь не найден');
+        await sendUserBotMenu(env, telegramUserId, chatId, 'Пользователь не найден');
         return;
       }
 
       if (!draft.title || !draft.body) {
         await clearBotDraft(env, telegramUserId);
-        await sendUserBotMenu(env, chatId, 'Черновик пуст');
+        await sendUserBotMenu(env, telegramUserId, chatId, 'Черновик пуст');
         return;
       }
 
@@ -5122,7 +5356,7 @@ async function handleUserBotDraftAction(
       const ad = await getOwnedAdForTelegramUser(env, telegramUserId, draft.ad_id);
       if (!ad) {
         await clearBotDraft(env, telegramUserId);
-        await sendUserBotMenu(env, chatId, 'Объявление не найдено');
+        await sendUserBotMenu(env, telegramUserId, chatId, 'Объявление не найдено');
         return;
       }
 
@@ -5156,10 +5390,10 @@ async function handleUserBotDraftAction(
         );
 
         await clearBotDraft(env, telegramUserId);
-        await sendUserBotMenu(env, chatId, 'Объявление обновлено и отправлено на модерацию');
+        await sendUserBotMenu(env, telegramUserId, chatId, 'Объявление обновлено и отправлено на модерацию');
       } catch (error) {
         console.error('Failed to update ad from user bot', error);
-        await sendUserBotMenu(env, chatId, 'Не удалось обновить объявление');
+        await sendUserBotMenu(env, telegramUserId, chatId, 'Не удалось обновить объявление');
       }
     }
   }
@@ -5187,12 +5421,12 @@ async function handleUserBotText(
   if (draft.action === 'search') {
     const query = text.trim();
     if (!query) {
-      await sendUserBotSearchPrompt(env, chatId);
+      await sendUserBotSearchPrompt(env, telegramUserId, chatId);
       return;
     }
 
     await upsertBotDraft(env, telegramUserId, 'search', 'results', null, query);
-    await sendUserBotSearchResults(env, chatId, query);
+    await sendUserBotSearchResults(env, telegramUserId, chatId, query);
     return;
   }
 
@@ -5208,12 +5442,12 @@ async function handleUserBotText(
     }
 
     if (draft.step === 'avatar') {
-      await sendUserBotSettingsAvatarPrompt(env, chatId);
+      await sendUserBotSettingsAvatarPrompt(env, telegramUserId, chatId);
       return;
     }
 
     await clearBotDraft(env, telegramUserId);
-    await sendUserBotSettings(env, chatId, telegramUserId);
+    await sendUserBotSettings(env, telegramUserId, chatId);
     return;
   }
 
@@ -5221,47 +5455,47 @@ async function handleUserBotText(
     if (draft.step === 'login') {
       const login = text.trim();
       if (!isValidLogin(login)) {
-        await sendUserBotMessage(env, chatId, 'Login должен быть 3-32 символа: латиница, цифры, _');
+        await sendUserBotLoginPrompt(env, telegramUserId, chatId, 'Login должен быть 3-32 символа: латиница, цифры, _');
         return;
       }
 
       const existingUser = await findUserByLogin(env, login);
       if (existingUser) {
-        await sendUserBotMessage(env, chatId, 'Такой login уже занят');
+        await sendUserBotLoginPrompt(env, telegramUserId, chatId, 'Такой login уже занят');
         return;
       }
 
       await upsertBotDraft(env, telegramUserId, 'register', 'email', null, null, null, null, login, null);
-      await sendUserBotEmailPrompt(env, chatId);
+      await sendUserBotEmailPrompt(env, telegramUserId, chatId);
       return;
     }
 
     if (draft.step === 'email') {
       const email = text.trim().toLowerCase();
       if (!isValidEmail(email)) {
-        await sendUserBotMessage(env, chatId, 'Введите корректный email');
+        await sendUserBotEmailPrompt(env, telegramUserId, chatId, 'Введите корректный email');
         return;
       }
 
       const existingIdentity = await findEmailIdentity(env, email);
       if (existingIdentity && existingIdentity.password_hash) {
-        await sendUserBotMessage(env, chatId, 'Этот email уже зарегистрирован');
+        await sendUserBotEmailPrompt(env, telegramUserId, chatId, 'Этот email уже зарегистрирован');
         return;
       }
 
       if (!draft.login) {
         await clearBotDraft(env, telegramUserId);
-        await sendUserBotMenu(env, chatId, 'Начни сначала');
+        await sendUserBotMenu(env, telegramUserId, chatId, 'Начни сначала');
         return;
       }
 
       try {
         await createTelegramUser(env, draft.login, email, telegramUserId, telegramUsername);
         await clearBotDraft(env, telegramUserId);
-        await sendUserBotMenu(env, chatId, 'Ты зарегистрирован в жоржлист', draft.login);
+        await sendUserBotMenu(env, telegramUserId, chatId, 'Ты зарегистрирован в жоржлист', draft.login);
       } catch (error) {
         console.error('Failed to create user from telegram bot', error);
-        await sendUserBotMenu(env, chatId, 'Не удалось зарегистрировать аккаунт');
+        await sendUserBotMenu(env, telegramUserId, chatId, 'Не удалось зарегистрировать аккаунт');
       }
       return;
     }
@@ -5272,13 +5506,13 @@ async function handleUserBotText(
   if (draft.step === 'title') {
     if (draft.action === 'create') {
       await upsertBotDraft(env, telegramUserId, 'create', 'body', draft.category, text, null, draft.ad_id);
-      await sendUserBotBodyPrompt(env, chatId);
+      await sendUserBotBodyPrompt(env, telegramUserId, chatId);
       return;
     }
 
     if (draft.action === 'edit') {
       await upsertBotDraft(env, telegramUserId, 'edit', 'category', draft.category, text, draft.body, draft.ad_id);
-      await sendUserBotEditCategoryPrompt(env, chatId);
+      await sendUserBotEditCategoryPrompt(env, telegramUserId, chatId);
       return;
     }
 
@@ -5286,7 +5520,7 @@ async function handleUserBotText(
   }
 
   if (draft.action === 'edit' && draft.step === 'category') {
-    await sendUserBotEditCategoryPrompt(env, chatId);
+    await sendUserBotEditCategoryPrompt(env, telegramUserId, chatId);
     return;
   }
 
@@ -5294,7 +5528,7 @@ async function handleUserBotText(
     if (draft.action === 'create') {
       if (!draft.title) {
         await clearBotDraft(env, telegramUserId);
-        await sendUserBotMenu(env, chatId, 'Начни заново');
+        await sendUserBotMenu(env, telegramUserId, chatId, 'Начни заново');
         return;
       }
 
@@ -5309,7 +5543,7 @@ async function handleUserBotText(
     if (draft.action === 'edit') {
       if (!draft.title) {
         await clearBotDraft(env, telegramUserId);
-        await sendUserBotMenu(env, chatId, 'Начни заново');
+        await sendUserBotMenu(env, telegramUserId, chatId, 'Начни заново');
         return;
       }
 
@@ -5336,15 +5570,17 @@ async function handleUserBotCallback(
   const chatId = callbackQuery.message.chat.id;
   const data = callbackQuery.data;
 
+  await rememberUserBotScreen(env, telegramUserId, chatId, callbackQuery.message.message_id);
+
   if (data === USER_BOT_MENU_EDIT) {
     await answerUserCallbackQuery(env, callbackQuery.id, 'Редактирование скоро будет').catch(() => {});
-    await sendUserBotMessage(env, chatId, 'Редактирование скоро будет', userBotMenuMarkup(env));
+    await showUserBotScreen(env, telegramUserId, chatId, 'Редактирование скоро будет', userBotMenuMarkup(env));
     return json({ ok: true });
   }
 
   if (data === USER_BOT_MENU_DELETE) {
     await answerUserCallbackQuery(env, callbackQuery.id, 'Удаление скоро будет').catch(() => {});
-    await sendUserBotMessage(env, chatId, 'Удаление скоро будет', userBotMenuMarkup(env));
+    await showUserBotScreen(env, telegramUserId, chatId, 'Удаление скоро будет', userBotMenuMarkup(env));
     return json({ ok: true });
   }
 
@@ -5369,13 +5605,30 @@ async function handleUserBotCallback(
   if (data === USER_BOT_MENU_SEARCH) {
     await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
     await upsertBotDraft(env, telegramUserId, 'search', 'query');
-    await sendUserBotSearchPrompt(env, chatId);
+    await sendUserBotSearchPrompt(env, telegramUserId, chatId);
     return json({ ok: true });
   }
 
   if (data === USER_BOT_MENU_SETTINGS) {
     await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
-    await sendUserBotSettings(env, chatId, telegramUserId);
+    await sendUserBotSettings(env, telegramUserId, chatId);
+    return json({ ok: true });
+  }
+
+  if (data === USER_BOT_MENU_HOME) {
+    await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
+    const userIdentity = await findTelegramIdentity(env, telegramUserId);
+    const user = userIdentity ? await findUserById(env, userIdentity.user_id) : null;
+    await sendUserBotMenu(env, telegramUserId, chatId, user ? 'С возвращением в жоржлист' : 'Добро пожаловать в жоржлист', user?.login || null);
+    return json({ ok: true });
+  }
+
+  if (data === USER_BOT_CANCEL_FLOW) {
+    await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
+    await clearBotDraft(env, telegramUserId);
+    const userIdentity = await findTelegramIdentity(env, telegramUserId);
+    const user = userIdentity ? await findUserById(env, userIdentity.user_id) : null;
+    await sendUserBotMenu(env, telegramUserId, chatId, user ? 'С возвращением в жоржлист' : 'Добро пожаловать в жоржлист', user?.login || null);
     return json({ ok: true });
   }
 
@@ -5383,12 +5636,12 @@ async function handleUserBotCallback(
     const suffix = data.slice(USER_BOT_SECTION_PREFIX.length);
     if (suffix) {
       await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
-      await sendUserBotSectionAds(env, chatId, suffix);
+      await sendUserBotSectionAds(env, telegramUserId, chatId, suffix);
       return json({ ok: true });
     }
 
     await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
-    await sendUserBotSections(env, chatId);
+    await sendUserBotSections(env, telegramUserId, chatId);
     return json({ ok: true });
   }
 
@@ -5403,7 +5656,7 @@ async function handleUserBotCallback(
     }
 
     await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
-    await sendUserBotSectionAdDetail(env, chatId, category, adId);
+    await sendUserBotSectionAdDetail(env, telegramUserId, chatId, category, adId);
     return json({ ok: true });
   }
 
@@ -5417,7 +5670,7 @@ async function handleUserBotCallback(
       return json({ ok: true });
     }
     await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
-    await sendUserBotSectionAds(env, chatId, category, offset);
+    await sendUserBotSectionAds(env, telegramUserId, chatId, category, offset);
     return json({ ok: true });
   }
 
@@ -5427,10 +5680,10 @@ async function handleUserBotCallback(
     const query = draft?.action === 'search' && draft.title ? draft.title : '';
     await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
     if (!query) {
-      await sendUserBotSearchPrompt(env, chatId);
+      await sendUserBotSearchPrompt(env, telegramUserId, chatId);
       return json({ ok: true });
     }
-    await sendUserBotSearchResults(env, chatId, query, Number.isInteger(offset) && offset >= 0 ? offset : 0);
+    await sendUserBotSearchResults(env, telegramUserId, chatId, query, Number.isInteger(offset) && offset >= 0 ? offset : 0);
     return json({ ok: true });
   }
 
@@ -5439,11 +5692,11 @@ async function handleUserBotCallback(
     const query = draft?.action === 'search' && draft.title ? draft.title : '';
     await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
     if (!query) {
-      await sendUserBotSearchPrompt(env, chatId);
+      await sendUserBotSearchPrompt(env, telegramUserId, chatId);
       return json({ ok: true });
     }
 
-    await sendUserBotSearchResults(env, chatId, query);
+    await sendUserBotSearchResults(env, telegramUserId, chatId, query);
     return json({ ok: true });
   }
 
@@ -5455,7 +5708,7 @@ async function handleUserBotCallback(
     }
 
     await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
-    await sendUserBotSearchAdDetail(env, chatId, adId);
+    await sendUserBotSearchAdDetail(env, telegramUserId, chatId, adId);
     return json({ ok: true });
   }
 
@@ -5473,8 +5726,7 @@ async function handleUserBotCallback(
     }
 
     await answerUserCallbackQuery(env, callbackQuery.id, 'Объявление удалено').catch(() => {});
-    await sendUserBotMessage(env, chatId, 'Объявление удалено');
-    await sendUserBotMyAds(env, telegramUserId, chatId);
+    await sendUserBotMyAds(env, telegramUserId, chatId, 'Объявление удалено');
     return json({ ok: true });
   }
 
@@ -5482,30 +5734,39 @@ async function handleUserBotCallback(
     const action = data.slice(USER_BOT_SETTINGS_PREFIX.length);
 
     if (action === 'back') {
-      await clearBotDraft(env, telegramUserId);
       await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
-      await sendUserBotMenu(env, chatId, 'С возвращением в жоржлист');
+      await clearBotDraft(env, telegramUserId);
+      const userIdentity = await findTelegramIdentity(env, telegramUserId);
+      const user = userIdentity ? await findUserById(env, userIdentity.user_id) : null;
+      await sendUserBotMenu(env, telegramUserId, chatId, user ? 'С возвращением в жоржлист' : 'Добро пожаловать в жоржлист', user?.login || null);
+      return json({ ok: true });
+    }
+
+    if (action === 'cancel') {
+      await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
+      await clearBotDraft(env, telegramUserId);
+      await sendUserBotSettings(env, telegramUserId, chatId, 'Отменено');
       return json({ ok: true });
     }
 
     if (action === 'login') {
       await upsertBotDraft(env, telegramUserId, 'settings', 'login');
       await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
-      await sendUserBotSettingsLoginPrompt(env, chatId);
+      await sendUserBotSettingsLoginPrompt(env, telegramUserId, chatId);
       return json({ ok: true });
     }
 
     if (action === 'email') {
       await upsertBotDraft(env, telegramUserId, 'settings', 'email');
       await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
-      await sendUserBotSettingsEmailPrompt(env, chatId);
+      await sendUserBotSettingsEmailPrompt(env, telegramUserId, chatId);
       return json({ ok: true });
     }
 
     if (action === 'avatar') {
       await upsertBotDraft(env, telegramUserId, 'settings', 'avatar');
       await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
-      await sendUserBotSettingsAvatarPrompt(env, chatId);
+      await sendUserBotSettingsAvatarPrompt(env, telegramUserId, chatId);
       return json({ ok: true });
     }
 
@@ -5545,8 +5806,7 @@ async function handleUserBotCallback(
       }
 
       await answerUserCallbackQuery(env, callbackQuery.id, 'Объявление удалено').catch(() => {});
-      await sendUserBotMessage(env, chatId, 'Объявление удалено');
-      await sendUserBotMyAds(env, telegramUserId, chatId);
+      await sendUserBotMyAds(env, telegramUserId, chatId, 'Объявление удалено');
       return json({ ok: true });
     }
 
@@ -5557,7 +5817,7 @@ async function handleUserBotCallback(
     }
 
     await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
-    await sendUserBotSingleAd(env, chatId, ad);
+    await sendUserBotSingleAd(env, telegramUserId, chatId, ad);
     return json({ ok: true });
   }
 
@@ -6813,6 +7073,7 @@ export default {
     await ensureAdImageColumns(env);
     await ensureUserAvatarColumns(env);
     await ensureAdContactColumn(env);
+    await ensureBotDraftColumns(env);
     const url = new URL(request.url);
     const path = url.pathname;
 
