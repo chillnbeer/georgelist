@@ -286,6 +286,7 @@ type BotDraftRow = {
 
 const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30;
 const PASSWORD_HASH_ITERATIONS = 210000;
+const DUMMY_PASSWORD_HASH = 'pbkdf2_sha256$210000$AAAAAAAAAAAAAAAAAAAAAA==$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=';
 const ADS_HOME_LIMIT = 200;
 const ADS_USER_LIMIT = 100;
 const ADS_SEARCH_LIMIT = 50;
@@ -353,6 +354,11 @@ const AD_IMAGE_JPEG_QUALITY = 82;
 const AD_LOCATION_RADIUS_OPTIONS = [500, 1000, 3000, 5000] as const;
 const AD_LOCATION_DEFAULT_RADIUS = 1000;
 const AD_LOCATION_LABEL_MAX_LENGTH = 120;
+const AD_TITLE_MAX_LENGTH = 200;
+const AD_BODY_MAX_LENGTH = 5000;
+const AD_CONTACT_MAX_LENGTH = 300;
+const AD_MESSAGE_MAX_LENGTH = 1000;
+const USER_DISPLAY_NAME_MAX_LENGTH = 100;
 let cachedTelegramUserBotUsername: string | null = null;
 let cachedTelegramUserBotUsernamePromise: Promise<string | null> | null = null;
 let cachedEnsureAdImageColumnsPromise: Promise<void> | null = null;
@@ -5801,19 +5807,6 @@ async function listPublishedAds(env: Env, city: string | null = null): Promise<A
   return result.results;
 }
 
-async function listAllAds(env: Env): Promise<AdRow[]> {
-  const result = await env.DB.prepare(
-    `
-      SELECT ${AD_SELECT_COLUMNS}
-      FROM ads
-      WHERE deleted_at IS NULL
-      ORDER BY created_at DESC, id DESC
-    `
-  ).all<AdRow>();
-
-  return result.results;
-}
-
 async function listPublishedAdsByCategory(env: Env, category: string, city: string | null = null): Promise<AdCardRow[]> {
   const result = await env.DB.prepare(
     `
@@ -6617,9 +6610,9 @@ async function parseAdForm(request: Request): Promise<AdForm> {
   const locationLabel = parseOptionalTextField(form.get('location_label')).slice(0, AD_LOCATION_LABEL_MAX_LENGTH);
   const hasLocation = locationLat !== null && locationLng !== null;
   return {
-    title: String(form.get('title') || '').trim(),
-    body: String(form.get('body') || '').trim(),
-    contact: String(form.get('contact') || '').trim(),
+    title: String(form.get('title') || '').trim().slice(0, AD_TITLE_MAX_LENGTH),
+    body: String(form.get('body') || '').trim().slice(0, AD_BODY_MAX_LENGTH),
+    contact: String(form.get('contact') || '').trim().slice(0, AD_CONTACT_MAX_LENGTH),
     city: String(form.get('city') || '').trim(),
     category: String(form.get('category') || '').trim(),
     type: String(form.get('type') || '').trim(),
@@ -8583,12 +8576,9 @@ async function handleLoginPost(request: Request, env: Env): Promise<Response> {
   }
 
   const identity = await findEmailIdentity(env, email);
-  if (!identity?.password_hash) {
-    return renderLoginPage('Неверный email или пароль', nextPath, email);
-  }
-
-  const isPasswordValid = await verifyPassword(password, identity.password_hash);
-  if (!isPasswordValid) {
+  const hashToCheck = identity?.password_hash ?? DUMMY_PASSWORD_HASH;
+  const isPasswordValid = await verifyPassword(password, hashToCheck);
+  if (!identity?.password_hash || !isPasswordValid) {
     return renderLoginPage('Неверный email или пароль', nextPath, email);
   }
 
@@ -8607,7 +8597,7 @@ async function handleRegisterPost(request: Request, env: Env): Promise<Response>
   const login = String(form.get('login') || '').trim();
   const email = String(form.get('email') || '').trim().toLowerCase();
   const password = String(form.get('password') || '');
-  const displayName = String(form.get('display_name') || '').trim();
+  const displayName = String(form.get('display_name') || '').trim().slice(0, USER_DISPLAY_NAME_MAX_LENGTH);
   const nextPath = sanitizeNextPath(String(form.get('next') || ''));
   const pendingTelegramAuth = await readPendingTelegramAuthValue(env, request);
 
@@ -9803,7 +9793,7 @@ async function handleAdMessagePost(
     return renderPublicAdPage(env, ad, currentUser, canMessageAuthor, currentUserHasTelegram, 'Введите текст сообщения', currentUser.city, new URL(request.url).pathname);
   }
 
-  if (message.length > 1000) {
+  if (message.length > AD_MESSAGE_MAX_LENGTH) {
     return renderPublicAdPage(env, ad, currentUser, canMessageAuthor, currentUserHasTelegram, 'Сообщение слишком длинное', currentUser.city, new URL(request.url).pathname);
   }
 
@@ -9880,6 +9870,13 @@ export default {
     await ensureBotDraftColumns(env);
     await ensureChatTables(env);
     await ensureChatMessageReadColumn(env);
+
+    if (Math.random() < 0.05) {
+      ctx.waitUntil(
+        env.DB.prepare('DELETE FROM sessions WHERE expires_at < CURRENT_TIMESTAMP').run()
+      );
+    }
+
     const url = new URL(request.url);
     const path = url.pathname;
     let currentUserPromise: Promise<CurrentUser | null> | null = null;
