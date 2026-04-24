@@ -94,6 +94,32 @@ function flattenRgbaToWhite(source: Uint8Array): Uint8Array {
   return output;
 }
 
+function toRgba(data: Uint8Array, channels: number, pixelCount: number): Uint8Array {
+  if (channels === 4) return data;
+  const rgba = new Uint8Array(pixelCount * 4);
+  for (let i = 0; i < pixelCount; i += 1) {
+    const src = i * channels;
+    const dst = i * 4;
+    if (channels === 1) {
+      rgba[dst] = data[src];
+      rgba[dst + 1] = data[src];
+      rgba[dst + 2] = data[src];
+      rgba[dst + 3] = 255;
+    } else if (channels === 2) {
+      rgba[dst] = data[src];
+      rgba[dst + 1] = data[src];
+      rgba[dst + 2] = data[src];
+      rgba[dst + 3] = data[src + 1];
+    } else {
+      rgba[dst] = data[src];
+      rgba[dst + 1] = data[src + 1];
+      rgba[dst + 2] = data[src + 2];
+      rgba[dst + 3] = 255;
+    }
+  }
+  return rgba;
+}
+
 export async function compressAdImage(file: File): Promise<CompressedAdImageUpload> {
   const sourceBytes = await file.arrayBuffer();
 
@@ -106,11 +132,14 @@ export async function compressAdImage(file: File): Promise<CompressedAdImageUplo
       const decoded = decodePng(new Uint8Array(sourceBytes));
       width = decoded.width;
       height = decoded.height;
-      rgbaPixels = new Uint8Array(decoded.data);
+      rgbaPixels = toRgba(new Uint8Array(decoded.data), decoded.channels, width * height);
     } else if (file.type === 'image/jpeg' || file.type === 'image/jpg') {
-      const decoded = jpeg.decode(new Uint8Array(sourceBytes), { useTArray: true });
+      const decoded = jpeg.decode(new Uint8Array(sourceBytes), { useTArray: true, formatAsRGBA: true });
       width = decoded.width;
       height = decoded.height;
+      if (decoded.data.length !== width * height * 4) {
+        throw new Error('Unexpected JPEG pixel format');
+      }
       rgbaPixels = new Uint8Array(decoded.data);
     } else {
       throw new Error('Unsupported image type for compression');
