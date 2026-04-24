@@ -1407,7 +1407,8 @@ describe('Site create flow', () => {
     const publishedAdPageHtml = await publishedAdPageResponse.text();
     expect(publishedAdPageHtml).toContain('Зона встречи');
     expect(publishedAdPageHtml).toContain('location-picker-map');
-    expect(publishedAdPageHtml).toContain('Центр Екатеринбурга');
+    expect(publishedAdPageHtml).toContain('Район');
+    expect(publishedAdPageHtml).not.toContain('Центр Екатеринбурга');
 
     const geocodeResponse = await runRequest(new Request('http://example.com/api/location-search?q=%D0%9B%D0%B5%D0%BD%D0%B8%D0%BD%D0%B0%201&city=ekb'));
     expect(geocodeResponse.status).toBe(200);

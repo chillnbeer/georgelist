@@ -2659,6 +2659,7 @@ function renderPublicAdPage(
   currentPath = '/'
 ): Response {
   const hasLocation = hasAdLocation(ad);
+  const publicLocationBadge = hasLocation ? '<span class="badge badge-location">Район</span>' : '';
   const media = ad.image_key
     ? `<div class="ad-page-media"><img src="${htmlEscape(buildMediaUrl(env, ad.image_key))}" alt="${htmlEscape(ad.title)}" /></div>`
     : `<div class="ad-page-media"><div class="ad-page-media-placeholder">без фото</div></div>`;
@@ -2683,7 +2684,7 @@ ${nav(currentUser, currentCity, currentPath)}
     </div>
     <aside class="ad-page-aside">
       ${author}
-      <div class="ad-page-badges">${renderCityBadge(ad.city)}<span class="badge">${htmlEscape(categoryLabel(ad.category))}</span>${renderLocationBadge(ad)}</div>
+      <div class="ad-page-badges">${renderCityBadge(ad.city)}<span class="badge">${htmlEscape(categoryLabel(ad.category))}</span>${publicLocationBadge}</div>
       ${ad.contact ? `<div class="ad-page-contact"><strong>Контакты:</strong> ${htmlEscape(ad.contact)}</div>` : ''}
       ${ad.city ? `<div class="ad-page-contact"><strong>Город:</strong> ${htmlEscape(cityLabel(ad.city))}</div>` : ''}
       <div class="ad-page-footer">${htmlEscape(ad.created_at)}</div>
