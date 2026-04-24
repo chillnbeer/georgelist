@@ -2659,7 +2659,8 @@ function renderPublicAdPage(
   currentPath = '/'
 ): Response {
   const hasLocation = hasAdLocation(ad);
-  const publicLocationBadge = hasLocation ? '<span class="badge badge-location">Район</span>' : '';
+  const locationLabel = ad.location_label?.trim() || '';
+  const publicLocationBadge = locationLabel ? `<span class="badge badge-location">${htmlEscape(locationLabel)}</span>` : '';
   const media = ad.image_key
     ? `<div class="ad-page-media"><img src="${htmlEscape(buildMediaUrl(env, ad.image_key))}" alt="${htmlEscape(ad.title)}" /></div>`
     : `<div class="ad-page-media"><div class="ad-page-media-placeholder">без фото</div></div>`;
