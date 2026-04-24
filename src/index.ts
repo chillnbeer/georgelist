@@ -2683,7 +2683,7 @@ ${nav(currentUser, currentCity, currentPath)}
     </div>
     <aside class="ad-page-aside">
       ${author}
-      <div class="ad-page-badges">${renderCityBadge(ad.city)}<span class="badge">${htmlEscape(categoryLabel(ad.category))}</span>${renderLocationBadge(ad)}</div>
+      <div class="ad-page-badges">${renderCityBadge(ad.city)}<span class="badge">${htmlEscape(categoryLabel(ad.category))}</span></div>
       ${ad.contact ? `<div class="ad-page-contact"><strong>Контакты:</strong> ${htmlEscape(ad.contact)}</div>` : ''}
       ${ad.city ? `<div class="ad-page-contact"><strong>Город:</strong> ${htmlEscape(cityLabel(ad.city))}</div>` : ''}
       <div class="ad-page-footer">${htmlEscape(ad.created_at)}</div>
