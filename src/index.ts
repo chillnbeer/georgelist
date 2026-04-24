@@ -1263,6 +1263,16 @@ function buildAdLocationSummary(
   return parts.length ? parts.join(' · ') : 'Есть зона встречи';
 }
 
+function buildAdApproximateLocationSummary(
+  ad: Pick<AdRow, 'location_lat' | 'location_lng' | 'location_radius_meters'>
+): string | null {
+  if (!hasAdLocation(ad)) {
+    return null;
+  }
+
+  return `Примерная зона · ${formatLocationRadius(ad.location_radius_meters)}`;
+}
+
 function renderLocationBadge(
   ad: Pick<AdRow | AdCardRow | PublicAdCardRow, 'location_lat' | 'location_lng' | 'location_radius_meters' | 'location_label'>
 ): string {
@@ -1350,7 +1360,7 @@ function renderLocationViewer(location: {
   }
 
   const center = cityMapCenter(currentCity);
-  const summary = buildAdLocationSummary(location as Pick<AdRow, 'location_lat' | 'location_lng' | 'location_radius_meters' | 'location_label'>);
+  const summary = buildAdApproximateLocationSummary(location as Pick<AdRow, 'location_lat' | 'location_lng' | 'location_radius_meters'>);
 
   return `<div class="ad-page-location">
   <div class="ad-page-location-header">
@@ -1362,7 +1372,7 @@ function renderLocationViewer(location: {
     <input type="hidden" name="location_lat" value="${htmlEscape(String(location.location_lat))}" />
     <input type="hidden" name="location_lng" value="${htmlEscape(String(location.location_lng))}" />
     <input type="hidden" name="location_radius_meters" value="${htmlEscape(String(location.location_radius_meters || AD_LOCATION_DEFAULT_RADIUS))}" />
-    <div class="location-picker-status" data-location-status>Зона встречи показана на карте</div>
+    <div class="location-picker-status" data-location-status>Показываем только примерную зону</div>
     <div class="location-picker-map" data-location-map></div>
   </div>
 </div>
@@ -1405,6 +1415,7 @@ function renderLocationPickerScript(): string {
     var statusEl = root.querySelector('[data-location-status]');
     var clearButton = root.querySelector('[data-location-clear]');
     var citySelect = root.querySelector('select[name="city"]');
+    var isViewMode = root.getAttribute('data-location-mode') === 'view';
     var defaultLat = parseNumber(root.getAttribute('data-default-lat')) || 56.8389;
     var defaultLng = parseNumber(root.getAttribute('data-default-lng')) || 60.6057;
     var currentRadius = parseNumber(radiusSelect && radiusSelect.value) || parseNumber(root.getAttribute('data-location-radius')) || 1000;
@@ -1432,6 +1443,12 @@ function renderLocationPickerScript(): string {
     }
 
     function updateStatus() {
+      if (isViewMode) {
+        statusEl.textContent = hasLocation()
+          ? 'Показываем только примерную зону'
+          : 'Зона встречи не задана';
+        return;
+      }
       if (hasLocation()) {
         var label = labelInput ? labelInput.value.trim() : '';
         statusEl.textContent = 'Выбрана зона: ' + (label || 'без подписи') + ' · ' + formatRadius(currentRadius);
@@ -1549,10 +1566,12 @@ function renderLocationPickerScript(): string {
 
     function syncOverlay(lat, lng) {
       var latLng = [lat, lng];
-      if (!marker) {
-        marker = window.L.marker(latLng).addTo(map);
-      } else {
-        marker.setLatLng(latLng);
+      if (!isViewMode) {
+        if (!marker) {
+          marker = window.L.marker(latLng).addTo(map);
+        } else {
+          marker.setLatLng(latLng);
+        }
       }
 
       if (!circle) {
@@ -1610,9 +1629,11 @@ function renderLocationPickerScript(): string {
       syncOverlay(existingLat, existingLng);
     }
 
-    map.on('click', function (event) {
-      setLocation(event.latlng.lat, event.latlng.lng, true);
-    });
+    if (!isViewMode) {
+      map.on('click', function (event) {
+        setLocation(event.latlng.lat, event.latlng.lng, true);
+      });
+    }
 
     if (radiusSelect) {
       radiusSelect.addEventListener('change', function () {
@@ -1654,7 +1675,9 @@ function renderLocationPickerScript(): string {
     }
 
     updateStatus();
-    renderResults([], '');
+    if (!isViewMode) {
+      renderResults([], '');
+    }
   }
 
   function init() {
