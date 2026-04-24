@@ -1,4 +1,4 @@
-import { decode as decodePng } from 'fast-png';
+import { convertIndexedToRgb, decode as decodePng } from 'fast-png';
 import * as jpeg from 'jpeg-js';
 import {
   CITIES,
@@ -588,8 +588,14 @@ async function compressAdImage(file: File): Promise<CompressedAdImageUpload> {
       const decoded = decodePng(new Uint8Array(sourceBytes));
       width = decoded.width;
       height = decoded.height;
-      const channelCount = typeof (decoded as { channels?: number }).channels === 'number' ? (decoded as { channels: number }).channels : 4;
-      const rawPixels = toEightBitPngSamples(decoded.data);
+      const channelCount = decoded.palette?.[0]?.length
+        ? decoded.palette[0].length
+        : typeof (decoded as { channels?: number }).channels === 'number'
+          ? (decoded as { channels: number }).channels
+          : 4;
+      const rawPixels = decoded.palette
+        ? convertIndexedToRgb(decoded)
+        : toEightBitPngSamples(decoded.data);
       if (channelCount === 4) {
         rgbaPixels = rawPixels;
       } else {
