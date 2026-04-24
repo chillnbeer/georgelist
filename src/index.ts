@@ -69,6 +69,8 @@ type Env = {
   MEDIA_BUCKET?: R2Bucket;
   TELEGRAM_BOT_TOKEN: string;
   TELEGRAM_ADMIN_ID: string;
+  TELEGRAM_WEBHOOK_SECRET?: string;
+  TELEGRAM_USER_WEBHOOK_SECRET?: string;
   USER_TELEGRAM_BOT_TOKEN?: string;
   TELEGRAM_USER_BOT_TOKEN?: string;
   USER_TELEGRAM_BOT_USERNAME?: string;
@@ -283,7 +285,11 @@ type BotDraftRow = {
 };
 
 const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30;
-const PASSWORD_HASH_ITERATIONS = 100000;
+const PASSWORD_HASH_ITERATIONS = 210000;
+const DUMMY_PASSWORD_HASH = 'pbkdf2_sha256$210000$AAAAAAAAAAAAAAAAAAAAAA==$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=';
+const ADS_HOME_LIMIT = 200;
+const ADS_USER_LIMIT = 100;
+const ADS_SEARCH_LIMIT = 50;
 const TELEGRAM_AUTH_COOKIE_NAME = 'telegram_auth';
 const TELEGRAM_AUTH_COOKIE_MAX_AGE_SECONDS = 60 * 10;
 const TELEGRAM_AUTH_MAX_AGE_SECONDS = 60 * 60 * 24;
@@ -348,6 +354,11 @@ const AD_IMAGE_JPEG_QUALITY = 82;
 const AD_LOCATION_RADIUS_OPTIONS = [500, 1000, 3000, 5000] as const;
 const AD_LOCATION_DEFAULT_RADIUS = 1000;
 const AD_LOCATION_LABEL_MAX_LENGTH = 120;
+const AD_TITLE_MAX_LENGTH = 200;
+const AD_BODY_MAX_LENGTH = 5000;
+const AD_CONTACT_MAX_LENGTH = 300;
+const AD_MESSAGE_MAX_LENGTH = 1000;
+const USER_DISPLAY_NAME_MAX_LENGTH = 100;
 let cachedTelegramUserBotUsername: string | null = null;
 let cachedTelegramUserBotUsernamePromise: Promise<string | null> | null = null;
 let cachedEnsureAdImageColumnsPromise: Promise<void> | null = null;
@@ -814,6 +825,12 @@ function formatSqliteTimestamp(date: Date): string {
   ].join('');
 }
 
+function verifyTelegramWebhookSecret(request: Request, secret: string | undefined): boolean {
+  if (!secret) return true;
+  const header = request.headers.get('X-Telegram-Bot-Api-Secret-Token');
+  return header === secret;
+}
+
 function generateSessionToken(): string {
   return crypto.randomUUID();
 }
@@ -996,8 +1013,12 @@ function getCurrentCityFromRequest(request: Request, currentUser: CurrentUser | 
   return normalizeCity(currentUser?.city);
 }
 
+function resolveUserBotToken(env: Env): string | undefined {
+  return env.USER_TELEGRAM_BOT_TOKEN || env.TELEGRAM_USER_BOT_TOKEN;
+}
+
 async function getTelegramUserBotToken(env: Env): Promise<string> {
-  const token = env.USER_TELEGRAM_BOT_TOKEN || env.TELEGRAM_USER_BOT_TOKEN;
+  const token = resolveUserBotToken(env);
   if (!token) {
     throw new Error('Missing user Telegram bot token');
   }
@@ -1358,6 +1379,9 @@ function renderLocationPickerScript(): string {
     var marker = null;
     var circle = null;
     var map = window.L.map(mapEl, { scrollWheelZoom: false, zoomControl: true });
+    if (map.attributionControl) {
+      map.attributionControl.setPrefix(false);
+    }
 
     window.L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 19,
@@ -3430,7 +3454,7 @@ async function telegramApi(env: Env, method: string, payload: Record<string, unk
 }
 
 async function userBotApi(env: Env, method: string, payload: Record<string, unknown>): Promise<Response> {
-  const token = env.USER_TELEGRAM_BOT_TOKEN || env.TELEGRAM_USER_BOT_TOKEN;
+  const token = resolveUserBotToken(env);
 
   if (!token) {
     throw new Error('Missing user Telegram bot token');
@@ -3518,7 +3542,7 @@ async function sendUserBotDocument(
     payload.set('reply_markup', JSON.stringify(replyMarkup));
   }
 
-  const token = env.USER_TELEGRAM_BOT_TOKEN || env.TELEGRAM_USER_BOT_TOKEN;
+  const token = resolveUserBotToken(env);
   if (!token) {
     throw new Error('Missing user Telegram bot token');
   }
@@ -5792,9 +5816,10 @@ async function listPublishedAdsByUser(env: Env, userId: number, city: string | n
         AND deleted_at IS NULL
         AND COALESCE(ads.city, ?) = ?
       ORDER BY ads.created_at DESC, ads.id DESC
+      LIMIT ?
     `
   )
-    .bind(CITY_DEFAULT_SLUG, userId, CITY_DEFAULT_SLUG, normalizeCity(city))
+    .bind(CITY_DEFAULT_SLUG, userId, CITY_DEFAULT_SLUG, normalizeCity(city), ADS_USER_LIMIT)
     .all<AdCardRow>();
 
   return result.results ?? [];
@@ -5809,23 +5834,11 @@ async function listPublishedAds(env: Env, city: string | null = null): Promise<A
         AND deleted_at IS NULL
         AND COALESCE(city, ?) = ?
       ORDER BY created_at DESC, id DESC
+      LIMIT ?
     `
   )
-    .bind(CITY_DEFAULT_SLUG, normalizeCity(city))
+    .bind(CITY_DEFAULT_SLUG, normalizeCity(city), ADS_HOME_LIMIT)
     .all<AdRow>();
-
-  return result.results;
-}
-
-async function listAllAds(env: Env): Promise<AdRow[]> {
-  const result = await env.DB.prepare(
-    `
-      SELECT ${AD_SELECT_COLUMNS}
-      FROM ads
-      WHERE deleted_at IS NULL
-      ORDER BY created_at DESC, id DESC
-    `
-  ).all<AdRow>();
 
   return result.results;
 }
@@ -5989,9 +6002,10 @@ async function searchPublishedAds(env: Env, query: string, city: string | null =
           OR LOWER(ads.body) LIKE ? ESCAPE '\\'
         )
       ORDER BY ads.created_at DESC, ads.id DESC
+      LIMIT ?
     `
   )
-    .bind(CITY_DEFAULT_SLUG, CITY_DEFAULT_SLUG, normalizeCity(city), pattern, pattern)
+    .bind(CITY_DEFAULT_SLUG, CITY_DEFAULT_SLUG, normalizeCity(city), pattern, pattern, ADS_SEARCH_LIMIT)
     .all<AdCardRow>();
 
   return result.results;
@@ -6072,8 +6086,9 @@ async function ensureAdImageColumns(env: Env): Promise<void> {
     if (!columnNames.has('image_updated_at')) {
       await env.DB.prepare(`ALTER TABLE ads ADD COLUMN image_updated_at TEXT`).run();
     }
-  })().finally(() => {
+  })().catch((error: unknown) => {
     cachedEnsureAdImageColumnsPromise = null;
+    throw error;
   });
 
   return cachedEnsureAdImageColumnsPromise;
@@ -6099,8 +6114,9 @@ async function ensureUserAvatarColumns(env: Env): Promise<void> {
     if (!columnNames.has('avatar_updated_at')) {
       await env.DB.prepare(`ALTER TABLE users ADD COLUMN avatar_updated_at TEXT`).run();
     }
-  })().finally(() => {
+  })().catch((error: unknown) => {
     cachedEnsureUserAvatarColumnsPromise = null;
+    throw error;
   });
 
   return cachedEnsureUserAvatarColumnsPromise;
@@ -6127,8 +6143,9 @@ async function ensureUserCityColumn(env: Env): Promise<void> {
     )
       .bind(CITY_DEFAULT_SLUG)
       .run();
-  })().finally(() => {
+  })().catch((error: unknown) => {
     cachedEnsureUserCityColumnPromise = null;
+    throw error;
   });
 
   return cachedEnsureUserCityColumnPromise;
@@ -6145,8 +6162,9 @@ async function ensureAdContactColumn(env: Env): Promise<void> {
     if (!columnNames.has('contact')) {
       await env.DB.prepare(`ALTER TABLE ads ADD COLUMN contact TEXT`).run();
     }
-  })().finally(() => {
+  })().catch((error: unknown) => {
     cachedEnsureAdContactColumnPromise = null;
+    throw error;
   });
 
   return cachedEnsureAdContactColumnPromise;
@@ -6173,8 +6191,9 @@ async function ensureAdCityColumn(env: Env): Promise<void> {
     )
       .bind(CITY_DEFAULT_SLUG)
       .run();
-  })().finally(() => {
+  })().catch((error: unknown) => {
     cachedEnsureAdCityColumnPromise = null;
+    throw error;
   });
 
   return cachedEnsureAdCityColumnPromise;
@@ -6204,8 +6223,9 @@ async function ensureAdLocationColumns(env: Env): Promise<void> {
     if (!columnNames.has('location_label')) {
       await env.DB.prepare(`ALTER TABLE ads ADD COLUMN location_label TEXT`).run();
     }
-  })().finally(() => {
+  })().catch((error: unknown) => {
     cachedEnsureAdLocationColumnsPromise = null;
+    throw error;
   });
 
   return cachedEnsureAdLocationColumnsPromise;
@@ -6244,8 +6264,9 @@ async function ensureAdTypeColumn(env: Env): Promise<void> {
            OR category IN ('sale', 'wanted', 'free')
       `
     ).run();
-  })().finally(() => {
+  })().catch((error: unknown) => {
     cachedEnsureAdTypeColumnPromise = null;
+    throw error;
   });
 
   return cachedEnsureAdTypeColumnPromise;
@@ -6287,8 +6308,9 @@ async function ensureBotDraftColumns(env: Env): Promise<void> {
     if (!columnNames.has('password_new')) {
       await env.DB.prepare(`ALTER TABLE bot_drafts ADD COLUMN password_new TEXT`).run();
     }
-  })().finally(() => {
+  })().catch((error: unknown) => {
     cachedEnsureBotDraftColumnsPromise = null;
+    throw error;
   });
 
   return cachedEnsureBotDraftColumnsPromise;
@@ -6355,8 +6377,9 @@ async function ensureChatTables(env: Env): Promise<void> {
     await env.DB.prepare(
       `CREATE INDEX IF NOT EXISTS bot_chat_notifications_conversation_user_idx ON bot_chat_notifications(conversation_id, user_id)`
     ).run();
-  })().finally(() => {
+  })().catch((error: unknown) => {
     cachedEnsureChatTablesPromise = null;
+    throw error;
   });
 
   return cachedEnsureChatTablesPromise;
@@ -6373,8 +6396,9 @@ async function ensureChatMessageReadColumn(env: Env): Promise<void> {
     if (!columnNames.has('is_read')) {
       await env.DB.prepare(`ALTER TABLE bot_chat_messages ADD COLUMN is_read INTEGER NOT NULL DEFAULT 0`).run();
     }
-  })().finally(() => {
+  })().catch((error: unknown) => {
     cachedEnsureChatMessageReadColumnPromise = null;
+    throw error;
   });
 
   return cachedEnsureChatMessageReadColumnPromise;
@@ -6622,9 +6646,9 @@ async function parseAdForm(request: Request): Promise<AdForm> {
   const locationLabel = parseOptionalTextField(form.get('location_label')).slice(0, AD_LOCATION_LABEL_MAX_LENGTH);
   const hasLocation = locationLat !== null && locationLng !== null;
   return {
-    title: String(form.get('title') || '').trim(),
-    body: String(form.get('body') || '').trim(),
-    contact: String(form.get('contact') || '').trim(),
+    title: String(form.get('title') || '').trim().slice(0, AD_TITLE_MAX_LENGTH),
+    body: String(form.get('body') || '').trim().slice(0, AD_BODY_MAX_LENGTH),
+    contact: String(form.get('contact') || '').trim().slice(0, AD_CONTACT_MAX_LENGTH),
     city: String(form.get('city') || '').trim(),
     category: String(form.get('category') || '').trim(),
     type: String(form.get('type') || '').trim(),
@@ -6821,6 +6845,10 @@ async function updateAdStatus(env: Env, id: string, status: 'published' | 'rejec
 }
 
 async function handleTelegramWebhook(request: Request, env: Env): Promise<Response> {
+  if (!verifyTelegramWebhookSecret(request, env.TELEGRAM_WEBHOOK_SECRET)) {
+    return text('Unauthorized', 401);
+  }
+
   let update: TelegramUpdate;
 
   try {
@@ -8464,6 +8492,10 @@ async function handleUserBotCallback(
 }
 
 async function handleUserWebhook(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  if (!verifyTelegramWebhookSecret(request, env.TELEGRAM_USER_WEBHOOK_SECRET)) {
+    return text('Unauthorized', 401);
+  }
+
   let update: TelegramUpdate;
 
   try {
@@ -8533,9 +8565,10 @@ async function listMyAds(env: Env, userId: number): Promise<AdRow[]> {
       WHERE owner_user_id = ?
         AND deleted_at IS NULL
       ORDER BY created_at DESC, id DESC
+      LIMIT ?
     `
   )
-    .bind(userId)
+    .bind(userId, ADS_USER_LIMIT)
     .all<AdRow>();
 
   return result.results;
@@ -8579,12 +8612,9 @@ async function handleLoginPost(request: Request, env: Env): Promise<Response> {
   }
 
   const identity = await findEmailIdentity(env, email);
-  if (!identity?.password_hash) {
-    return renderLoginPage('Неверный email или пароль', nextPath, email);
-  }
-
-  const isPasswordValid = await verifyPassword(password, identity.password_hash);
-  if (!isPasswordValid) {
+  const hashToCheck = identity?.password_hash ?? DUMMY_PASSWORD_HASH;
+  const isPasswordValid = await verifyPassword(password, hashToCheck);
+  if (!identity?.password_hash || !isPasswordValid) {
     return renderLoginPage('Неверный email или пароль', nextPath, email);
   }
 
@@ -8603,7 +8633,7 @@ async function handleRegisterPost(request: Request, env: Env): Promise<Response>
   const login = String(form.get('login') || '').trim();
   const email = String(form.get('email') || '').trim().toLowerCase();
   const password = String(form.get('password') || '');
-  const displayName = String(form.get('display_name') || '').trim();
+  const displayName = String(form.get('display_name') || '').trim().slice(0, USER_DISPLAY_NAME_MAX_LENGTH);
   const nextPath = sanitizeNextPath(String(form.get('next') || ''));
   const pendingTelegramAuth = await readPendingTelegramAuthValue(env, request);
 
@@ -9799,7 +9829,7 @@ async function handleAdMessagePost(
     return renderPublicAdPage(env, ad, currentUser, canMessageAuthor, currentUserHasTelegram, 'Введите текст сообщения', currentUser.city, new URL(request.url).pathname);
   }
 
-  if (message.length > 1000) {
+  if (message.length > AD_MESSAGE_MAX_LENGTH) {
     return renderPublicAdPage(env, ad, currentUser, canMessageAuthor, currentUserHasTelegram, 'Сообщение слишком длинное', currentUser.city, new URL(request.url).pathname);
   }
 
