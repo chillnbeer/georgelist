@@ -1,6 +1,8 @@
 import { env, createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
 import { createHash, createHmac } from 'node:crypto';
+import { encode as encodePng } from 'fast-png';
 import Jimp from 'jimp';
+import * as jpeg from 'jpeg-js';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import worker, { buildConversationExportFilename, buildConversationHistoryExport } from '../src';
 
@@ -387,6 +389,24 @@ async function insertAd(params: {
 async function buildPngFile(name: string, width: number, height: number, color: number): Promise<File> {
   const image = await new Jimp(width, height, color);
   const bytes = await image.getBufferAsync(Jimp.MIME_PNG);
+  return new File([bytes], name, { type: 'image/png' });
+}
+
+function buildIndexedPngFile(name: string, width: number, height: number): File {
+  const pixelCount = width * height;
+  const paletteIndexes = new Uint8Array(pixelCount);
+  paletteIndexes.fill(1);
+  const bytes = encodePng({
+    width,
+    height,
+    channels: 1,
+    depth: 8,
+    data: paletteIndexes,
+    palette: [
+      [0, 0, 0, 255],
+      [255, 64, 16, 255],
+    ],
+  });
   return new File([bytes], name, { type: 'image/png' });
 }
 
@@ -1622,8 +1642,11 @@ describe('Ad images', () => {
     const mediaResponse = await runRequest(new Request(`http://example.com/media/${encodeURIComponent(firstKey)}`));
     expect(mediaResponse.status).toBe(200);
     expect(mediaResponse.headers.get('Content-Type')).toBe('image/jpeg');
+    const firstDecoded = jpeg.decode(new Uint8Array(await mediaResponse.arrayBuffer()), { useTArray: true });
+    expect(firstDecoded.width).toBe(800);
+    expect(firstDecoded.height).toBe(600);
 
-    const secondImage = await buildPngFile('second.png', 1000, 700, 0x3f76b8ff);
+    const secondImage = buildIndexedPngFile('second-indexed.png', 1000, 700);
     const editForm = new FormData();
     editForm.set('title', 'Image ad updated');
     editForm.set('category', 'things');
@@ -1662,6 +1685,17 @@ describe('Ad images', () => {
     expect(editedAd?.image_updated_at).toBeTruthy();
     expect(mediaStore.has(firstKey)).toBe(false);
     expect(editedAd?.image_key ? mediaStore.has(editedAd.image_key) : false).toBe(true);
+    const secondMediaResponse = await runRequest(
+      new Request(`http://example.com/media/${encodeURIComponent(editedAd?.image_key || '')}`)
+    );
+    expect(secondMediaResponse.status).toBe(200);
+    expect(secondMediaResponse.headers.get('Content-Type')).toBe('image/jpeg');
+    const secondDecoded = jpeg.decode(new Uint8Array(await secondMediaResponse.arrayBuffer()), { useTArray: true });
+    expect(secondDecoded.width).toBe(1000);
+    expect(secondDecoded.height).toBe(700);
+    expect(secondDecoded.data[0]).toBeGreaterThan(200);
+    expect(secondDecoded.data[1]).toBeLessThan(120);
+    expect(secondDecoded.data[2]).toBeLessThan(80);
 
     const myPageResponse = await runRequest(
       new Request('http://example.com/my', {
