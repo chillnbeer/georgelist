@@ -29,7 +29,7 @@ import {
   type ChatThreadRow,
   upsertChatNotification,
 } from './chat';
-import { html, json, redirect, redirectWithHeaders, redirectWithMessage, text } from './http';
+import { html, json, methodNotAllowed, redirect, redirectWithHeaders, redirectWithMessage, text } from './http';
 
 const CATEGORIES = [
   { slug: 'auto', label: 'Авто' },
@@ -1379,6 +1379,9 @@ function renderLocationPickerScript(): string {
     var marker = null;
     var circle = null;
     var map = window.L.map(mapEl, { scrollWheelZoom: false, zoomControl: true });
+    if (map.attributionControl) {
+      map.attributionControl.setPrefix(false);
+    }
 
     window.L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 19,
@@ -9931,15 +9934,9 @@ export default {
       }
       return currentUserPromise;
     };
-
-    if (path === '/') {
-      const currentUser = await getCurrentUserCached();
-      const currentUrl = new URL(request.url);
-      return renderHome(currentUser, getCurrentCityFromRequest(request, currentUser), `${currentUrl.pathname}${currentUrl.search}`);
-    }
-
-    if (path === '/about') {
-      return handleAboutGet(request, env);
+    const publicGetRouteResponse = await handlePublicGetRoute(request, env, path, url, getCurrentUserCached);
+    if (publicGetRouteResponse) {
+      return publicGetRouteResponse;
     }
 
     if (path === '/register') {
@@ -10056,10 +10053,6 @@ export default {
       return handleLocationSearchGet(request);
     }
 
-    if (path.startsWith('/category/') && request.method === 'GET') {
-      return handleCategoryGet(request, env, path.slice('/category/'.length), await getCurrentUserCached());
-    }
-
     if (path.startsWith('/ad/') && path.endsWith('/message')) {
       if (request.method === 'POST') {
         return handleAdMessagePost(request, env, path.slice('/ad/'.length, -'/message'.length), await getCurrentUserCached());
@@ -10069,20 +10062,6 @@ export default {
 
     if (path.startsWith('/ad/') && request.method === 'GET') {
       return handleAdGet(request, env, path.slice('/ad/'.length), await getCurrentUserCached(), url.searchParams.get('message'));
-    }
-
-    if (path.startsWith('/u/') && request.method === 'GET') {
-      return handlePublicUserGet(request, env, path.slice('/u/'.length), await getCurrentUserCached());
-    }
-
-    if (path.startsWith('/media/') && request.method === 'GET') {
-      return handleMediaGet(env, path.slice('/media/'.length));
-    }
-
-    if (path === '/search' && request.method === 'GET') {
-      const query = url.searchParams.get('q') || '';
-      const currentUser = await getCurrentUserCached();
-      return renderSearchPage(env, query, await searchPublishedAds(env, query, getCurrentCityFromRequest(request, currentUser)), currentUser, getCurrentCityFromRequest(request, currentUser), `${url.pathname}${url.search}`);
     }
 
     if (path === '/city') {
