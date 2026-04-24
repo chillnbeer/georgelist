@@ -1265,8 +1265,7 @@ function buildAdLocationSummary(
     return null;
   }
 
-  const parts = [ad.location_label?.trim() || '', formatLocationRadius(ad.location_radius_meters)].filter(Boolean);
-  return parts.length ? parts.join(' · ') : 'Есть зона встречи';
+  return formatLocationRadius(ad.location_radius_meters);
 }
 
 function buildAdApproximateLocationSummary(
@@ -1312,7 +1311,7 @@ function renderLocationEditor(location: {
   const latValue = hasLocation ? String(location.location_lat) : '';
   const lngValue = hasLocation ? String(location.location_lng) : '';
   const statusText = hasLocation
-    ? `Выбрана зона: ${location.location_label?.trim() || 'без подписи'} · ${formatLocationRadius(location.location_radius_meters)}`
+    ? `Выбрана зона: ${formatLocationRadius(location.location_radius_meters)}`
     : 'Кликни по карте, чтобы выбрать примерную зону встречи';
   const summary = buildAdLocationSummary(location as Pick<AdRow, 'location_lat' | 'location_lng' | 'location_radius_meters' | 'location_label'>);
 
@@ -1325,10 +1324,6 @@ function renderLocationEditor(location: {
     ${summary ? `<div class="location-picker-summary">${htmlEscape(summary)}</div>` : '<div class="location-picker-summary">Зона не задана</div>'}
   </div>
   <div class="location-picker-fields">
-    <div>
-      <label for="${htmlEscape(prefix)}-label">Подпись зоны</label>
-      <input id="${htmlEscape(prefix)}-label" name="location_label" type="text" maxlength="${AD_LOCATION_LABEL_MAX_LENGTH}" value="${htmlEscape(location.location_label || '')}" placeholder="Район, место встречи, ориентир" />
-    </div>
     <div>
       <label for="${htmlEscape(prefix)}-radius">Радиус</label>
       <select id="${htmlEscape(prefix)}-radius" name="location_radius_meters">
@@ -1414,7 +1409,6 @@ function renderLocationPickerScript(): string {
     var latInput = root.querySelector('input[name="location_lat"]');
     var lngInput = root.querySelector('input[name="location_lng"]');
     var radiusSelect = root.querySelector('select[name="location_radius_meters"]');
-    var labelInput = root.querySelector('input[name="location_label"]');
     var queryInput = root.querySelector('[id$="-query"]');
     var searchButton = root.querySelector('[data-location-search]');
     var resultsEl = root.querySelector('[data-location-results]');
@@ -1456,8 +1450,7 @@ function renderLocationPickerScript(): string {
         return;
       }
       if (hasLocation()) {
-        var label = labelInput ? labelInput.value.trim() : '';
-        statusEl.textContent = 'Выбрана зона: ' + (label || 'без подписи') + ' · ' + formatRadius(currentRadius);
+        statusEl.textContent = 'Выбрана зона: ' + formatRadius(currentRadius);
       } else {
         statusEl.textContent = 'Кликни по карте, чтобы выбрать примерную зону встречи';
       }
@@ -1489,9 +1482,6 @@ function renderLocationPickerScript(): string {
 
         button.addEventListener('click', function () {
           setLocation(item.lat, item.lng, true);
-          if (labelInput && !labelInput.value.trim()) {
-            labelInput.value = item.label;
-          }
           if (queryInput) {
             queryInput.value = item.displayName;
           }
@@ -1556,9 +1546,6 @@ function renderLocationPickerScript(): string {
         renderResults(items, 'Найдено: ' + items.length);
         if (items.length === 1) {
           setLocation(items[0].lat, items[0].lng, true);
-          if (labelInput && !labelInput.value.trim()) {
-            labelInput.value = items[0].label;
-          }
           if (queryInput) {
             queryInput.value = items[0].displayName;
           }
@@ -6707,7 +6694,6 @@ async function parseAdForm(request: Request): Promise<AdForm> {
   const locationLat = parseOptionalNumberField(form.get('location_lat'));
   const locationLng = parseOptionalNumberField(form.get('location_lng'));
   const locationRadius = normalizeLocationRadius(parseOptionalNumberField(form.get('location_radius_meters')));
-  const locationLabel = parseOptionalTextField(form.get('location_label')).slice(0, AD_LOCATION_LABEL_MAX_LENGTH);
   const hasLocation = locationLat !== null && locationLng !== null;
   return {
     title: String(form.get('title') || '').trim().slice(0, AD_TITLE_MAX_LENGTH),
@@ -6719,7 +6705,7 @@ async function parseAdForm(request: Request): Promise<AdForm> {
     location_lat: hasLocation ? locationLat : null,
     location_lng: hasLocation ? locationLng : null,
     location_radius_meters: hasLocation ? locationRadius ?? AD_LOCATION_DEFAULT_RADIUS : null,
-    location_label: hasLocation ? locationLabel : '',
+    location_label: '',
     image: isFileLike(imageValue) && imageValue.size > 0 ? imageValue : null,
   };
 }
