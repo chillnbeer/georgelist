@@ -1656,7 +1656,7 @@ function nav(currentUser: CurrentUser | null = null, city: string | null = null,
     ? `<a href="/u/${encodeURIComponent(currentUser.login)}">мой профиль</a> <a href="/settings">настройки</a>${adminLink} <form method="post" action="/logout" style="display:inline"><button class="link-button" type="submit">выйти</button></form>`
     : `<a href="/login">войти</a> <a href="/register">зарегистрироваться</a>`;
 
-  return `<div class="nav"><div class="nav-links"><a href="/">главная</a> <a href="/new">создать объявление</a> <a href="/about">о проекте</a></div>${cityPicker}<div class="nav-auth">${authLinks}</div></div>`;
+  return `<div class="nav"><div class="nav-links"><a href="/new">создать объявление</a> <a href="/about">о проекте</a></div>${cityPicker}<div class="nav-auth">${authLinks}</div></div>`;
 }
 
 function shell(title: string, body: string, currentUser: CurrentUser | null = null, status = 200, extraHead = ''): Response {
@@ -1670,17 +1670,28 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
   <style>
     body {
       margin: 0;
-      padding: 12px;
+      padding: 10px;
       background: #fff;
       color: #000;
       font-family: Arial, Helvetica, sans-serif;
       line-height: 1.35;
     }
+    .page {
+      max-width: 980px;
+      margin: 0 auto;
+    }
     h1 {
       margin: 0 0 8px;
       font-family: Georgia, "Times New Roman", serif;
-      font-size: 34px;
+      font-size: 33px;
       font-weight: 400;
+    }
+    .site-title {
+      color: #000;
+      text-decoration: none;
+    }
+    .site-title:hover {
+      text-decoration: underline;
     }
     h2 {
       margin: 14px 0 6px;
@@ -1693,11 +1704,11 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       text-decoration: underline;
     }
     .nav {
-      margin: 0 0 12px;
+      margin: 0 0 10px;
       display: flex;
       flex-wrap: wrap;
       align-items: center;
-      gap: 10px 16px;
+      gap: 8px 12px;
     }
     .nav-links,
     .nav-auth {
@@ -2008,15 +2019,25 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
     }
     .ad-page {
       display: grid;
-      grid-template-columns: 380px 1fr;
-      gap: 24px;
+      grid-template-columns: minmax(0, 1fr) 290px;
+      gap: 14px;
       align-items: start;
+    }
+    .ad-page-main {
+      min-width: 0;
+    }
+    .ad-page-aside {
+      min-width: 0;
+      display: grid;
+      gap: 10px;
+      align-content: start;
     }
     .ad-page-media {
       border: 1px solid #ddd;
-      border-radius: 4px;
+      border-radius: 2px;
       overflow: hidden;
       background: #f5f5f5;
+      margin: 0 0 10px;
     }
     .ad-page-media img {
       width: 100%;
@@ -2032,9 +2053,9 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       font-size: 13px;
     }
     .ad-page-title {
-      margin: 0 0 12px;
-      font-size: 22px;
-      line-height: 1.3;
+      margin: 0 0 8px;
+      font-size: 24px;
+      line-height: 1.2;
       font-weight: 700;
     }
     .ad-page-author {
@@ -2047,7 +2068,7 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       display: flex;
       gap: 6px;
       flex-wrap: wrap;
-      margin-bottom: 16px;
+      margin-bottom: 10px;
     }
     .badge {
       background: #eee;
@@ -2058,23 +2079,24 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
     }
     .ad-page-body {
       white-space: pre-wrap;
-      line-height: 1.65;
-      margin-bottom: 16px;
-      font-size: 15px;
-    }
-    .ad-page-contact {
-      margin-bottom: 12px;
-      padding: 10px 12px;
-      background: #f0f4ff;
-      border-radius: 4px;
+      line-height: 1.45;
+      margin-bottom: 0;
       font-size: 14px;
     }
+    .ad-page-contact {
+      margin-bottom: 0;
+      padding: 8px 10px;
+      background: #f7f7f7;
+      border: 1px solid #e3e3e3;
+      border-radius: 2px;
+      font-size: 13px;
+    }
     .ad-page-location {
-      margin: 0 0 16px;
-      padding: 12px;
-      border: 1px solid #d9e2f2;
-      border-radius: 12px;
-      background: #f8fbff;
+      margin: 0;
+      padding: 8px;
+      border: 1px solid #e3e3e3;
+      border-radius: 2px;
+      background: #fafafa;
     }
     .ad-page-location-header {
       display: grid;
@@ -2088,6 +2110,9 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
     .ad-page-location-note {
       font-size: 12px;
       color: #667;
+    }
+    .ad-page-location .location-picker-map {
+      min-height: 180px;
     }
     .location-picker {
       display: grid;
@@ -2185,6 +2210,7 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
     .ad-page-footer {
       color: #999;
       font-size: 12px;
+      margin-top: 2px;
     }
     .ad-message-section form {
       display: grid;
@@ -2194,10 +2220,15 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       max-width: 720px;
       min-height: 140px;
     }
-    @media (max-width: 700px) {
+    @media (max-width: 900px) {
       .ad-page {
         grid-template-columns: 1fr;
       }
+      .ad-page-aside {
+        grid-template-columns: 1fr;
+      }
+    }
+    @media (max-width: 700px) {
       .ad-page-image,
       .image-preview {
         max-width: 100%;
@@ -2212,7 +2243,7 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
   </style>
 </head>
 <body>
-  ${body}
+  <div class="page">${body}</div>
 </body>
 </html>`, status);
 }
@@ -2320,7 +2351,7 @@ function renderAvatar(env: Env, key: string | null, alt: string, className = 'av
 function renderNotFoundPage(currentUser: CurrentUser | null = null, currentCity: string | null = null, currentPath = '/'): Response {
   return shell(
     'страница не найдена - жоржлист',
-    `<h1>жоржлист</h1>
+    `<h1><a class="site-title" href="/">жоржлист</a></h1>
 ${nav(currentUser, currentCity, currentPath)}
 <div class="section">
   <h2>страница не найдена</h2>
@@ -2343,7 +2374,7 @@ function renderHome(currentUser: CurrentUser | null = null, currentCity: string 
 
   return shell(
     'жоржлист',
-    `<h1>жоржлист</h1>
+    `<h1><a class="site-title" href="/">жоржлист</a></h1>
 ${nav(currentUser, currentCity, currentPath)}
 <div class="section">
   <h2>Категории</h2>
@@ -2358,7 +2389,7 @@ ${renderSearchForm()}`
 function renderAboutPage(currentUser: CurrentUser | null = null, currentCity: string | null = null, currentPath = '/about'): Response {
   return shell(
     'о проекте - жоржлист',
-    `<h1>жоржлист</h1>
+    `<h1><a class="site-title" href="/">жоржлист</a></h1>
 ${nav(currentUser, currentCity, currentPath)}
 <div class="section reading-column">
   <h2>О проекте</h2>
@@ -2383,7 +2414,7 @@ function renderSearchPage(env: Env, query: string, ads: AdCardRow[], currentUser
 
   return shell(
     'поиск - жоржлист',
-    `<h1>жоржлист</h1>
+    `<h1><a class="site-title" href="/">жоржлист</a></h1>
 ${nav(currentUser, currentCity, currentPath)}
 <div class="section">
   <h2>Поиск</h2>
@@ -2403,7 +2434,7 @@ function renderCityPage(currentUser: CurrentUser | null = null, currentCity: str
   const city = normalizeCity(currentCity || currentUser?.city || CITY_DEFAULT_SLUG);
   return shell(
     'город - жоржлист',
-    `<h1>жоржлист</h1>
+    `<h1><a class="site-title" href="/">жоржлист</a></h1>
 ${nav(currentUser, city, nextPath)}
 <div class="section">
   <h2>Выбери город</h2>
@@ -2428,7 +2459,7 @@ function renderNewPage(currentUser: CurrentUser | null = null, currentCity: stri
 
   return shell(
     'создать объявление - жоржлист',
-    `<h1>жоржлист</h1>
+    `<h1><a class="site-title" href="/">жоржлист</a></h1>
 ${nav(currentUser, currentCity, currentPath)}
 <div class="section">
   <h2>Создать объявление</h2>
@@ -2489,7 +2520,7 @@ function renderCategoryPage(
 
   return shell(
     `${category.label} - жоржлист`,
-    `<h1>жоржлист</h1>
+    `<h1><a class="site-title" href="/">жоржлист</a></h1>
 ${nav(currentUser, currentCity, currentPath)}
 <div class="section">
   <h2>${htmlEscape(category.label)}</h2>
@@ -2579,21 +2610,23 @@ function renderPublicAdPage(
 
   return shell(
     `${ad.title} - жоржлист`,
-    `<h1>жоржлист</h1>
+    `<h1><a class="site-title" href="/">жоржлист</a></h1>
 ${nav(currentUser, currentCity, currentPath)}
 <div class="section">
   <div class="ad-page">
-    ${media}
-    <div>
+    <div class="ad-page-main">
       <h2 class="ad-page-title">${renderTypeBadge(ad.type)}${htmlEscape(ad.title)}</h2>
+      ${media}
+      <div class="ad-page-body">${htmlEscape(ad.body)}</div>
+    </div>
+    <aside class="ad-page-aside">
       ${author}
       <div class="ad-page-badges">${renderCityBadge(ad.city)}<span class="badge">${htmlEscape(categoryLabel(ad.category))}</span>${renderLocationBadge(ad)}</div>
-      <div class="ad-page-body">${htmlEscape(ad.body)}</div>
-      ${ad.city ? `<div class="ad-page-contact"><strong>Город:</strong> ${htmlEscape(cityLabel(ad.city))}</div>` : ''}
-      ${hasLocation ? renderLocationViewer(ad, currentCity) : ''}
       ${ad.contact ? `<div class="ad-page-contact"><strong>Контакты:</strong> ${htmlEscape(ad.contact)}</div>` : ''}
+      ${ad.city ? `<div class="ad-page-contact"><strong>Город:</strong> ${htmlEscape(cityLabel(ad.city))}</div>` : ''}
       <div class="ad-page-footer">${htmlEscape(ad.created_at)}</div>
-    </div>
+      ${hasLocation ? renderLocationViewer(ad, currentCity) : ''}
+    </aside>
   </div>
 </div>
 ${renderAdMessageSection(ad, currentUser, canMessageAuthor, currentUserHasTelegram, message)}
@@ -2635,7 +2668,7 @@ function renderPublicUserPage(env: Env, user: PublicUserRow, ads: AdCardRow[], c
 
   return shell(
     `${user.login} - жоржлист`,
-    `<h1>жоржлист</h1>
+    `<h1><a class="site-title" href="/">жоржлист</a></h1>
 ${nav(currentUser, currentCity, currentPath)}
 <div class="section">
   ${renderAvatar(env, user.avatar_key, user.login)}
@@ -2654,7 +2687,7 @@ ${renderSearchForm()}`,
 function renderLoginPage(error: string | null = null, nextPath = '/my', email = '', currentPath = '/login'): Response {
   return shell(
     'войти - жоржлист',
-    `<h1>жоржлист</h1>
+    `<h1><a class="site-title" href="/">жоржлист</a></h1>
 ${nav(null, null, currentPath)}
 <div class="section">
   <h2>Войти</h2>
@@ -2690,7 +2723,7 @@ function renderRegisterPage(
     : '';
   return shell(
     'зарегистрироваться - жоржлист',
-    `<h1>жоржлист</h1>
+    `<h1><a class="site-title" href="/">жоржлист</a></h1>
 ${nav(null, null, currentPath)}
 <div class="section">
   <h2>Зарегистрироваться</h2>
@@ -2741,7 +2774,7 @@ function renderMyPage(env: Env, currentUser: CurrentUser, ads: AdRow[], message:
 
   return shell(
     'мои объявления - жоржлист',
-    `<h1>жоржлист</h1>
+    `<h1><a class="site-title" href="/">жоржлист</a></h1>
 ${nav(currentUser, currentCity, currentPath)}
 <div class="section">
   <h2>Мои объявления</h2>
@@ -2772,7 +2805,7 @@ function renderEditPage(
 
   return shell(
     'редактировать объявление - жоржлист',
-    `<h1>жоржлист</h1>
+    `<h1><a class="site-title" href="/">жоржлист</a></h1>
 ${nav(currentUser, currentCity, currentPath)}
 <div class="section">
   <h2>Редактировать объявление</h2>
@@ -3016,7 +3049,7 @@ function renderAdminUsersSection(
 
   return shell(
     'админка - жоржлист',
-    `<h1>жоржлист</h1>
+    `<h1><a class="site-title" href="/">жоржлист</a></h1>
 ${nav(currentUser, currentUser.city, currentPath)}
 <div class="section">
   <h2>Админка</h2>
@@ -3077,7 +3110,7 @@ function renderAdminAdsSection(
 
   return shell(
     'админка - жоржлист',
-    `<h1>жоржлист</h1>
+    `<h1><a class="site-title" href="/">жоржлист</a></h1>
 ${nav(currentUser, currentUser.city, currentPath)}
 <div class="section">
   <h2>Админка</h2>
@@ -3174,7 +3207,7 @@ function renderSettingsPage(
 
   return shell(
     'настройки - жоржлист',
-    `<h1>жоржлист</h1>
+    `<h1><a class="site-title" href="/">жоржлист</a></h1>
 ${nav(currentUser, currentUser.city, currentPath)}
 <div class="section">
   <h2>Настройки</h2>
@@ -3211,7 +3244,7 @@ function renderTelegramWidgetPage(
 ): Response {
   return shell(
     title,
-    `<h1>жоржлист</h1>
+    `<h1><a class="site-title" href="/">жоржлист</a></h1>
 ${nav(currentUser, currentUser?.city || null, currentPath)}
 <div class="section">
   <h2>${htmlEscape(heading)}</h2>
@@ -9918,13 +9951,6 @@ export default {
     await ensureBotDraftColumns(env);
     await ensureChatTables(env);
     await ensureChatMessageReadColumn(env);
-
-    if (Math.random() < 0.05) {
-      ctx.waitUntil(
-        env.DB.prepare('DELETE FROM sessions WHERE expires_at < CURRENT_TIMESTAMP').run()
-      );
-    }
-
     const url = new URL(request.url);
     const path = url.pathname;
     let currentUserPromise: Promise<CurrentUser | null> | null = null;
