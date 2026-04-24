@@ -82,6 +82,19 @@ CREATE TABLE IF NOT EXISTS ads (
   FOREIGN KEY (owner_user_id) REFERENCES users(id)
 );
 
+CREATE TABLE IF NOT EXISTS ad_images (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ad_id INTEGER NOT NULL,
+  image_key TEXT NOT NULL,
+  image_mime_type TEXT NOT NULL,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (ad_id) REFERENCES ads(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS ad_images_ad_id_sort_idx
+  ON ad_images(ad_id, sort_order, id);
+
 CREATE TABLE IF NOT EXISTS bot_conversations (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   ad_id INTEGER NOT NULL,
