@@ -29,6 +29,7 @@ import {
   type ChatThreadRow,
   upsertChatNotification,
 } from './chat';
+import { html, json, methodNotAllowed, redirect, redirectWithHeaders, redirectWithMessage, text } from './http';
 
 const CATEGORIES = [
   { slug: 'auto', label: 'Авто' },
@@ -371,47 +372,6 @@ function htmlEscape(value: string): string {
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#39;');
-}
-
-function text(body: string, status = 200): Response {
-  return new Response(body, {
-    status,
-    headers: { 'Content-Type': 'text/plain; charset=utf-8' },
-  });
-}
-
-function html(body: string, status = 200): Response {
-  return new Response(body, {
-    status,
-    headers: { 'Content-Type': 'text/html; charset=utf-8' },
-  });
-}
-
-function json(data: unknown, init?: ResponseInit): Response {
-  return new Response(JSON.stringify(data), {
-    ...init,
-    headers: {
-      'Content-Type': 'application/json; charset=utf-8',
-      ...(init?.headers || {}),
-    },
-  });
-}
-
-function redirect(location: string, status = 303): Response {
-  return redirectWithHeaders(location, status);
-}
-
-function redirectWithHeaders(location: string, status = 303, headers?: HeadersInit): Response {
-  const responseHeaders = new Headers(headers);
-  responseHeaders.set('Location', location);
-  return new Response(null, {
-    status,
-    headers: responseHeaders,
-  });
-}
-
-function redirectWithMessage(path: string, message: string, status = 303, headers?: HeadersInit): Response {
-  return redirectWithHeaders(`${path}?message=${encodeURIComponent(message)}`, status, headers);
 }
 
 function categoryLabel(slug: string | null): string {
@@ -1672,7 +1632,7 @@ function nav(currentUser: CurrentUser | null = null, city: string | null = null,
     ? `<a href="/u/${encodeURIComponent(currentUser.login)}">мой профиль</a> <a href="/settings">настройки</a>${adminLink} <form method="post" action="/logout" style="display:inline"><button class="link-button" type="submit">выйти</button></form>`
     : `<a href="/login">войти</a> <a href="/register">зарегистрироваться</a>`;
 
-  return `<div class="nav"><div class="nav-links"><a href="/">главная</a> <a href="/new">создать объявление</a> <a href="/about">о проекте</a></div>${cityPicker}<div class="nav-auth">${authLinks}</div></div>`;
+  return `<div class="nav"><div class="nav-links"><a href="/new">создать объявление</a> <a href="/about">о проекте</a></div>${cityPicker}<div class="nav-auth">${authLinks}</div></div>`;
 }
 
 function shell(title: string, body: string, currentUser: CurrentUser | null = null, status = 200, extraHead = ''): Response {
@@ -1686,17 +1646,28 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
   <style>
     body {
       margin: 0;
-      padding: 12px;
+      padding: 10px;
       background: #fff;
       color: #000;
       font-family: Arial, Helvetica, sans-serif;
       line-height: 1.35;
     }
+    .page {
+      max-width: 980px;
+      margin: 0 auto;
+    }
     h1 {
       margin: 0 0 8px;
       font-family: Georgia, "Times New Roman", serif;
-      font-size: 34px;
+      font-size: 33px;
       font-weight: 400;
+    }
+    .site-title {
+      color: #000;
+      text-decoration: none;
+    }
+    .site-title:hover {
+      text-decoration: underline;
     }
     h2 {
       margin: 14px 0 6px;
@@ -1709,11 +1680,11 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       text-decoration: underline;
     }
     .nav {
-      margin: 0 0 12px;
+      margin: 0 0 10px;
       display: flex;
       flex-wrap: wrap;
       align-items: center;
-      gap: 10px 16px;
+      gap: 8px 12px;
     }
     .nav-links,
     .nav-auth {
@@ -2024,15 +1995,25 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
     }
     .ad-page {
       display: grid;
-      grid-template-columns: 380px 1fr;
-      gap: 24px;
+      grid-template-columns: minmax(0, 1fr) 290px;
+      gap: 14px;
       align-items: start;
+    }
+    .ad-page-main {
+      min-width: 0;
+    }
+    .ad-page-aside {
+      min-width: 0;
+      display: grid;
+      gap: 10px;
+      align-content: start;
     }
     .ad-page-media {
       border: 1px solid #ddd;
-      border-radius: 4px;
+      border-radius: 2px;
       overflow: hidden;
       background: #f5f5f5;
+      margin: 0 0 10px;
     }
     .ad-page-media img {
       width: 100%;
@@ -2048,9 +2029,9 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       font-size: 13px;
     }
     .ad-page-title {
-      margin: 0 0 12px;
-      font-size: 22px;
-      line-height: 1.3;
+      margin: 0 0 8px;
+      font-size: 24px;
+      line-height: 1.2;
       font-weight: 700;
     }
     .ad-page-author {
@@ -2063,7 +2044,7 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       display: flex;
       gap: 6px;
       flex-wrap: wrap;
-      margin-bottom: 16px;
+      margin-bottom: 10px;
     }
     .badge {
       background: #eee;
@@ -2074,23 +2055,24 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
     }
     .ad-page-body {
       white-space: pre-wrap;
-      line-height: 1.65;
-      margin-bottom: 16px;
-      font-size: 15px;
-    }
-    .ad-page-contact {
-      margin-bottom: 12px;
-      padding: 10px 12px;
-      background: #f0f4ff;
-      border-radius: 4px;
+      line-height: 1.45;
+      margin-bottom: 0;
       font-size: 14px;
     }
+    .ad-page-contact {
+      margin-bottom: 0;
+      padding: 8px 10px;
+      background: #f7f7f7;
+      border: 1px solid #e3e3e3;
+      border-radius: 2px;
+      font-size: 13px;
+    }
     .ad-page-location {
-      margin: 0 0 16px;
-      padding: 12px;
-      border: 1px solid #d9e2f2;
-      border-radius: 12px;
-      background: #f8fbff;
+      margin: 0;
+      padding: 8px;
+      border: 1px solid #e3e3e3;
+      border-radius: 2px;
+      background: #fafafa;
     }
     .ad-page-location-header {
       display: grid;
@@ -2104,6 +2086,9 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
     .ad-page-location-note {
       font-size: 12px;
       color: #667;
+    }
+    .ad-page-location .location-picker-map {
+      min-height: 180px;
     }
     .location-picker {
       display: grid;
@@ -2201,6 +2186,7 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
     .ad-page-footer {
       color: #999;
       font-size: 12px;
+      margin-top: 2px;
     }
     .ad-message-section form {
       display: grid;
@@ -2210,10 +2196,15 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       max-width: 720px;
       min-height: 140px;
     }
-    @media (max-width: 700px) {
+    @media (max-width: 900px) {
       .ad-page {
         grid-template-columns: 1fr;
       }
+      .ad-page-aside {
+        grid-template-columns: 1fr;
+      }
+    }
+    @media (max-width: 700px) {
       .ad-page-image,
       .image-preview {
         max-width: 100%;
@@ -2228,7 +2219,7 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
   </style>
 </head>
 <body>
-  ${body}
+  <div class="page">${body}</div>
 </body>
 </html>`, status);
 }
@@ -2336,7 +2327,7 @@ function renderAvatar(env: Env, key: string | null, alt: string, className = 'av
 function renderNotFoundPage(currentUser: CurrentUser | null = null, currentCity: string | null = null, currentPath = '/'): Response {
   return shell(
     'страница не найдена - жоржлист',
-    `<h1>жоржлист</h1>
+    `<h1><a class="site-title" href="/">жоржлист</a></h1>
 ${nav(currentUser, currentCity, currentPath)}
 <div class="section">
   <h2>страница не найдена</h2>
@@ -2359,7 +2350,7 @@ function renderHome(currentUser: CurrentUser | null = null, currentCity: string 
 
   return shell(
     'жоржлист',
-    `<h1>жоржлист</h1>
+    `<h1><a class="site-title" href="/">жоржлист</a></h1>
 ${nav(currentUser, currentCity, currentPath)}
 <div class="section">
   <h2>Категории</h2>
@@ -2374,7 +2365,7 @@ ${renderSearchForm()}`
 function renderAboutPage(currentUser: CurrentUser | null = null, currentCity: string | null = null, currentPath = '/about'): Response {
   return shell(
     'о проекте - жоржлист',
-    `<h1>жоржлист</h1>
+    `<h1><a class="site-title" href="/">жоржлист</a></h1>
 ${nav(currentUser, currentCity, currentPath)}
 <div class="section reading-column">
   <h2>О проекте</h2>
@@ -2399,7 +2390,7 @@ function renderSearchPage(env: Env, query: string, ads: AdCardRow[], currentUser
 
   return shell(
     'поиск - жоржлист',
-    `<h1>жоржлист</h1>
+    `<h1><a class="site-title" href="/">жоржлист</a></h1>
 ${nav(currentUser, currentCity, currentPath)}
 <div class="section">
   <h2>Поиск</h2>
@@ -2419,7 +2410,7 @@ function renderCityPage(currentUser: CurrentUser | null = null, currentCity: str
   const city = normalizeCity(currentCity || currentUser?.city || CITY_DEFAULT_SLUG);
   return shell(
     'город - жоржлист',
-    `<h1>жоржлист</h1>
+    `<h1><a class="site-title" href="/">жоржлист</a></h1>
 ${nav(currentUser, city, nextPath)}
 <div class="section">
   <h2>Выбери город</h2>
@@ -2444,7 +2435,7 @@ function renderNewPage(currentUser: CurrentUser | null = null, currentCity: stri
 
   return shell(
     'создать объявление - жоржлист',
-    `<h1>жоржлист</h1>
+    `<h1><a class="site-title" href="/">жоржлист</a></h1>
 ${nav(currentUser, currentCity, currentPath)}
 <div class="section">
   <h2>Создать объявление</h2>
@@ -2505,7 +2496,7 @@ function renderCategoryPage(
 
   return shell(
     `${category.label} - жоржлист`,
-    `<h1>жоржлист</h1>
+    `<h1><a class="site-title" href="/">жоржлист</a></h1>
 ${nav(currentUser, currentCity, currentPath)}
 <div class="section">
   <h2>${htmlEscape(category.label)}</h2>
@@ -2595,21 +2586,23 @@ function renderPublicAdPage(
 
   return shell(
     `${ad.title} - жоржлист`,
-    `<h1>жоржлист</h1>
+    `<h1><a class="site-title" href="/">жоржлист</a></h1>
 ${nav(currentUser, currentCity, currentPath)}
 <div class="section">
   <div class="ad-page">
-    ${media}
-    <div>
+    <div class="ad-page-main">
       <h2 class="ad-page-title">${renderTypeBadge(ad.type)}${htmlEscape(ad.title)}</h2>
+      ${media}
+      <div class="ad-page-body">${htmlEscape(ad.body)}</div>
+    </div>
+    <aside class="ad-page-aside">
       ${author}
       <div class="ad-page-badges">${renderCityBadge(ad.city)}<span class="badge">${htmlEscape(categoryLabel(ad.category))}</span>${renderLocationBadge(ad)}</div>
-      <div class="ad-page-body">${htmlEscape(ad.body)}</div>
-      ${ad.city ? `<div class="ad-page-contact"><strong>Город:</strong> ${htmlEscape(cityLabel(ad.city))}</div>` : ''}
-      ${hasLocation ? renderLocationViewer(ad, currentCity) : ''}
       ${ad.contact ? `<div class="ad-page-contact"><strong>Контакты:</strong> ${htmlEscape(ad.contact)}</div>` : ''}
+      ${ad.city ? `<div class="ad-page-contact"><strong>Город:</strong> ${htmlEscape(cityLabel(ad.city))}</div>` : ''}
       <div class="ad-page-footer">${htmlEscape(ad.created_at)}</div>
-    </div>
+      ${hasLocation ? renderLocationViewer(ad, currentCity) : ''}
+    </aside>
   </div>
 </div>
 ${renderAdMessageSection(ad, currentUser, canMessageAuthor, currentUserHasTelegram, message)}
@@ -2651,7 +2644,7 @@ function renderPublicUserPage(env: Env, user: PublicUserRow, ads: AdCardRow[], c
 
   return shell(
     `${user.login} - жоржлист`,
-    `<h1>жоржлист</h1>
+    `<h1><a class="site-title" href="/">жоржлист</a></h1>
 ${nav(currentUser, currentCity, currentPath)}
 <div class="section">
   ${renderAvatar(env, user.avatar_key, user.login)}
@@ -2670,7 +2663,7 @@ ${renderSearchForm()}`,
 function renderLoginPage(error: string | null = null, nextPath = '/my', email = '', currentPath = '/login'): Response {
   return shell(
     'войти - жоржлист',
-    `<h1>жоржлист</h1>
+    `<h1><a class="site-title" href="/">жоржлист</a></h1>
 ${nav(null, null, currentPath)}
 <div class="section">
   <h2>Войти</h2>
@@ -2706,7 +2699,7 @@ function renderRegisterPage(
     : '';
   return shell(
     'зарегистрироваться - жоржлист',
-    `<h1>жоржлист</h1>
+    `<h1><a class="site-title" href="/">жоржлист</a></h1>
 ${nav(null, null, currentPath)}
 <div class="section">
   <h2>Зарегистрироваться</h2>
@@ -2757,7 +2750,7 @@ function renderMyPage(env: Env, currentUser: CurrentUser, ads: AdRow[], message:
 
   return shell(
     'мои объявления - жоржлист',
-    `<h1>жоржлист</h1>
+    `<h1><a class="site-title" href="/">жоржлист</a></h1>
 ${nav(currentUser, currentCity, currentPath)}
 <div class="section">
   <h2>Мои объявления</h2>
@@ -2788,7 +2781,7 @@ function renderEditPage(
 
   return shell(
     'редактировать объявление - жоржлист',
-    `<h1>жоржлист</h1>
+    `<h1><a class="site-title" href="/">жоржлист</a></h1>
 ${nav(currentUser, currentCity, currentPath)}
 <div class="section">
   <h2>Редактировать объявление</h2>
@@ -3032,7 +3025,7 @@ function renderAdminUsersSection(
 
   return shell(
     'админка - жоржлист',
-    `<h1>жоржлист</h1>
+    `<h1><a class="site-title" href="/">жоржлист</a></h1>
 ${nav(currentUser, currentUser.city, currentPath)}
 <div class="section">
   <h2>Админка</h2>
@@ -3093,7 +3086,7 @@ function renderAdminAdsSection(
 
   return shell(
     'админка - жоржлист',
-    `<h1>жоржлист</h1>
+    `<h1><a class="site-title" href="/">жоржлист</a></h1>
 ${nav(currentUser, currentUser.city, currentPath)}
 <div class="section">
   <h2>Админка</h2>
@@ -3190,7 +3183,7 @@ function renderSettingsPage(
 
   return shell(
     'настройки - жоржлист',
-    `<h1>жоржлист</h1>
+    `<h1><a class="site-title" href="/">жоржлист</a></h1>
 ${nav(currentUser, currentUser.city, currentPath)}
 <div class="section">
   <h2>Настройки</h2>
@@ -3227,7 +3220,7 @@ function renderTelegramWidgetPage(
 ): Response {
   return shell(
     title,
-    `<h1>жоржлист</h1>
+    `<h1><a class="site-title" href="/">жоржлист</a></h1>
 ${nav(currentUser, currentUser?.city || null, currentPath)}
 <div class="section">
   <h2>${htmlEscape(heading)}</h2>
@@ -8752,7 +8745,7 @@ async function handleMyDeleteRoute(request: Request, env: Env, id: string): Prom
   }
 
   if (request.method !== 'POST') {
-    return text('Method Not Allowed', 405);
+    return methodNotAllowed();
   }
 
   return handleMyDeletePost(request, env, currentUser.id, id);
@@ -8772,7 +8765,7 @@ async function handleMyEditRoute(request: Request, env: Env, ctx: ExecutionConte
     return handleMyEditPost(request, env, ctx, currentUser.id, id, currentUser);
   }
 
-  return text('Method Not Allowed', 405);
+  return methodNotAllowed();
 }
 
 async function handleAdminGet(request: Request, env: Env): Promise<Response> {
@@ -8822,7 +8815,7 @@ async function handleAdminDeleteRoute(request: Request, env: Env, id: string): P
   }
 
   if (request.method !== 'POST') {
-    return text('Method Not Allowed', 405);
+    return methodNotAllowed();
   }
 
   const numericId = Number(id);
@@ -8887,7 +8880,7 @@ async function handleAdminAdStatusRoute(
   }
 
   if (request.method !== 'POST') {
-    return text('Method Not Allowed', 405);
+    return methodNotAllowed();
   }
 
   const numericId = Number(id);
@@ -8919,7 +8912,7 @@ async function handleAdminUserActionRoute(request: Request, env: Env, id: string
   }
 
   if (request.method !== 'POST') {
-    return text('Method Not Allowed', 405);
+    return methodNotAllowed();
   }
 
   const numericId = Number(id);
@@ -8994,7 +8987,7 @@ async function handleAdminEditRoute(request: Request, env: Env, ctx: ExecutionCo
   }
 
   if (request.method !== 'POST') {
-    return text('Method Not Allowed', 405);
+    return methodNotAllowed();
   }
 
   const { title, body, contact, category, type, location_lat, location_lng, location_radius_meters, location_label, image } = await parseAdForm(request);
@@ -9080,7 +9073,7 @@ async function handleAdminPromoteUserRoute(request: Request, env: Env, id: strin
   }
 
   if (request.method !== 'POST') {
-    return text('Method Not Allowed', 405);
+    return methodNotAllowed();
   }
 
   const numericId = Number(id);
@@ -9871,6 +9864,51 @@ async function handleMediaGet(env: Env, key: string): Promise<Response> {
   return new Response(object.body, { status: 200, headers });
 }
 
+async function handlePublicGetRoute(
+  request: Request,
+  env: Env,
+  path: string,
+  url: URL,
+  getCurrentUserCached: () => Promise<CurrentUser | null>
+): Promise<Response | null> {
+  if (path === '/') {
+    const currentUser = await getCurrentUserCached();
+    const currentUrl = new URL(request.url);
+    return renderHome(currentUser, getCurrentCityFromRequest(request, currentUser), `${currentUrl.pathname}${currentUrl.search}`);
+  }
+
+  if (path === '/about') {
+    return handleAboutGet(request, env);
+  }
+
+  if (path.startsWith('/category/') && request.method === 'GET') {
+    return handleCategoryGet(request, env, path.slice('/category/'.length), await getCurrentUserCached());
+  }
+
+  if (path.startsWith('/u/') && request.method === 'GET') {
+    return handlePublicUserGet(request, env, path.slice('/u/'.length), await getCurrentUserCached());
+  }
+
+  if (path.startsWith('/media/') && request.method === 'GET') {
+    return handleMediaGet(env, path.slice('/media/'.length));
+  }
+
+  if (path === '/search' && request.method === 'GET') {
+    const query = url.searchParams.get('q') || '';
+    const currentUser = await getCurrentUserCached();
+    return renderSearchPage(
+      env,
+      query,
+      await searchPublishedAds(env, query, getCurrentCityFromRequest(request, currentUser)),
+      currentUser,
+      getCurrentCityFromRequest(request, currentUser),
+      `${url.pathname}${url.search}`
+    );
+  }
+
+  return null;
+}
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     await ensureAdImageColumns(env);
@@ -9885,73 +9923,74 @@ export default {
     await ensureChatMessageReadColumn(env);
     const url = new URL(request.url);
     const path = url.pathname;
-
-    if (path === '/') {
-      const currentUser = await getCurrentUser(request, env);
-      const currentUrl = new URL(request.url);
-      return renderHome(currentUser, getCurrentCityFromRequest(request, currentUser), `${currentUrl.pathname}${currentUrl.search}`);
-    }
-
-    if (path === '/about') {
-      return handleAboutGet(request, env);
+    let currentUserPromise: Promise<CurrentUser | null> | null = null;
+    const getCurrentUserCached = async (): Promise<CurrentUser | null> => {
+      if (!currentUserPromise) {
+        currentUserPromise = getCurrentUser(request, env);
+      }
+      return currentUserPromise;
+    };
+    const publicGetRouteResponse = await handlePublicGetRoute(request, env, path, url, getCurrentUserCached);
+    if (publicGetRouteResponse) {
+      return publicGetRouteResponse;
     }
 
     if (path === '/register') {
       if (request.method === 'GET') return handleRegisterGet(request, env);
       if (request.method === 'POST') return handleRegisterPost(request, env);
-      return text('Method Not Allowed', 405);
+      return methodNotAllowed();
     }
 
     if (path === '/login') {
       if (request.method === 'GET') return handleLoginGet(request, env);
       if (request.method === 'POST') return handleLoginPost(request, env);
-      return text('Method Not Allowed', 405);
+      return methodNotAllowed();
     }
 
     if (path === '/login/telegram') {
       if (request.method === 'GET') return handleLoginTelegramGet(request, env);
-      return text('Method Not Allowed', 405);
+      return methodNotAllowed();
     }
 
     if (path === '/register/telegram') {
       if (request.method === 'GET') return handleRegisterTelegramGet(request, env);
-      return text('Method Not Allowed', 405);
+      return methodNotAllowed();
     }
 
     if (path === '/logout') {
       if (request.method === 'POST') return handleLogoutPost(request, env);
-      return text('Method Not Allowed', 405);
+      return methodNotAllowed();
     }
 
     if (path === '/my') {
       if (request.method === 'GET') return handleMyGet(request, env);
-      return text('Method Not Allowed', 405);
+      return methodNotAllowed();
     }
 
     if (path === '/settings') {
       if (request.method === 'GET') return handleSettingsGet(request, env);
       if (request.method === 'POST') return handleSettingsPost(request, env);
-      return text('Method Not Allowed', 405);
+      return methodNotAllowed();
     }
 
     if (path === '/settings/avatar') {
       if (request.method === 'POST') return handleSettingsAvatarPost(request, env);
-      return text('Method Not Allowed', 405);
+      return methodNotAllowed();
     }
 
     if (path === '/settings/password') {
       if (request.method === 'POST') return handleSettingsPasswordPost(request, env);
-      return text('Method Not Allowed', 405);
+      return methodNotAllowed();
     }
 
     if (path === '/settings/avatar/delete') {
       if (request.method === 'POST') return handleSettingsAvatarDeletePost(request, env);
-      return text('Method Not Allowed', 405);
+      return methodNotAllowed();
     }
 
     if (path === '/admin') {
       if (request.method === 'GET') return handleAdminGet(request, env);
-      return text('Method Not Allowed', 405);
+      return methodNotAllowed();
     }
 
     if (path.startsWith('/admin/publish/')) {
@@ -9964,12 +10003,12 @@ export default {
 
     if (path === '/settings/link-telegram') {
       if (request.method === 'GET') return handleSettingsLinkTelegramGet(request, env);
-      return text('Method Not Allowed', 405);
+      return methodNotAllowed();
     }
 
     if (path === '/settings/link-telegram/confirm') {
       if (request.method === 'POST') return handleSettingsLinkTelegramConfirmPost(request, env);
-      return text('Method Not Allowed', 405);
+      return methodNotAllowed();
     }
 
     if (path.startsWith('/my/delete/')) {
@@ -10003,52 +10042,34 @@ export default {
     if (path === '/new') {
       if (request.method === 'GET') return handleNewGet(request, env);
       if (request.method === 'POST') return handleNewPost(request, env, ctx);
-      return text('Method Not Allowed', 405);
+      return methodNotAllowed();
     }
 
     if (path === '/api/location-search' && request.method === 'GET') {
       return handleLocationSearchGet(request);
     }
 
-    if (path.startsWith('/category/') && request.method === 'GET') {
-      return handleCategoryGet(request, env, path.slice('/category/'.length), await getCurrentUser(request, env));
-    }
-
     if (path.startsWith('/ad/') && path.endsWith('/message')) {
       if (request.method === 'POST') {
-        return handleAdMessagePost(request, env, path.slice('/ad/'.length, -'/message'.length), await getCurrentUser(request, env));
+        return handleAdMessagePost(request, env, path.slice('/ad/'.length, -'/message'.length), await getCurrentUserCached());
       }
-      return text('Method Not Allowed', 405);
+      return methodNotAllowed();
     }
 
     if (path.startsWith('/ad/') && request.method === 'GET') {
-      return handleAdGet(request, env, path.slice('/ad/'.length), await getCurrentUser(request, env), url.searchParams.get('message'));
-    }
-
-    if (path.startsWith('/u/') && request.method === 'GET') {
-      return handlePublicUserGet(request, env, path.slice('/u/'.length), await getCurrentUser(request, env));
-    }
-
-    if (path.startsWith('/media/') && request.method === 'GET') {
-      return handleMediaGet(env, path.slice('/media/'.length));
-    }
-
-    if (path === '/search' && request.method === 'GET') {
-      const query = url.searchParams.get('q') || '';
-      const currentUser = await getCurrentUser(request, env);
-      return renderSearchPage(env, query, await searchPublishedAds(env, query, getCurrentCityFromRequest(request, currentUser)), currentUser, getCurrentCityFromRequest(request, currentUser), `${url.pathname}${url.search}`);
+      return handleAdGet(request, env, path.slice('/ad/'.length), await getCurrentUserCached(), url.searchParams.get('message'));
     }
 
     if (path === '/city') {
       if (request.method === 'GET') return handleCityGet(request, env);
       if (request.method === 'POST') return handleCityPost(request, env);
-      return text('Method Not Allowed', 405);
+      return methodNotAllowed();
     }
 
     if (path === '/api/ads') {
       if (request.method === 'GET') return handleApiAdsGet(env);
       if (request.method === 'POST') return handleApiAdsPost(request, env, ctx);
-      return text('Method Not Allowed', 405);
+      return methodNotAllowed();
     }
 
     if (path === '/telegram/auth' && request.method === 'GET') {
@@ -10079,6 +10100,6 @@ export default {
       }
     }
 
-    return renderNotFoundPage(await getCurrentUser(request, env));
+    return renderNotFoundPage(await getCurrentUserCached());
   },
 } satisfies ExportedHandler<Env>;
