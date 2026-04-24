@@ -1384,7 +1384,7 @@ describe('Site create flow', () => {
     expect(createdAd?.location_lat).toBeCloseTo(56.8389, 4);
     expect(createdAd?.location_lng).toBeCloseTo(60.6057, 4);
     expect(createdAd?.location_radius_meters).toBe(1000);
-    expect(createdAd?.location_label).toBe('Центр Екатеринбурга');
+    expect(createdAd?.location_label).toBeNull();
 
     await env.DB.prepare(
       `
@@ -1400,14 +1400,14 @@ describe('Site create flow', () => {
     expect(filteredCategoryResponse.status).toBe(200);
     const filteredCategoryHtml = await filteredCategoryResponse.text();
     expect(filteredCategoryHtml).toContain('Site buy request');
-    expect(filteredCategoryHtml).toContain('Центр Екатеринбурга');
+    expect(filteredCategoryHtml).toContain('Зона встречи · 1 км');
 
     const publishedAdPageResponse = await runRequest(new Request(`http://example.com/ad/${createdAd?.id}`));
     expect(publishedAdPageResponse.status).toBe(200);
     const publishedAdPageHtml = await publishedAdPageResponse.text();
     expect(publishedAdPageHtml).toContain('Зона встречи');
     expect(publishedAdPageHtml).toContain('location-picker-map');
-    expect(publishedAdPageHtml).toContain('Центр Екатеринбурга');
+    expect(publishedAdPageHtml).toContain('Примерная зона · 1 км');
     expect(publishedAdPageHtml).not.toContain('<span class="badge badge-location">Район</span>');
 
     const geocodeResponse = await runRequest(new Request('http://example.com/api/location-search?q=%D0%9B%D0%B5%D0%BD%D0%B8%D0%BD%D0%B0%201&city=ekb'));
@@ -1482,7 +1482,7 @@ describe('Site create flow', () => {
     expect(editPageResponse.status).toBe(200);
     const editPageHtml = await editPageResponse.text();
     expect(editPageHtml).toContain('Зона встречи');
-    expect(editPageHtml).toContain('Пионерский');
+    expect(editPageHtml).not.toContain('Пионерский');
     expect(editPageHtml).toContain('name="location_lat"');
 
     const changeForm = new FormData();
@@ -1520,7 +1520,7 @@ describe('Site create flow', () => {
     expect(movedAd?.location_lat).toBeCloseTo(55.7558, 4);
     expect(movedAd?.location_lng).toBeCloseTo(37.6173, 4);
     expect(movedAd?.location_radius_meters).toBe(5000);
-    expect(movedAd?.location_label).toBe('Центр Москвы');
+    expect(movedAd?.location_label).toBeNull();
 
     const clearForm = new FormData();
     clearForm.set('title', 'Zone ad');
