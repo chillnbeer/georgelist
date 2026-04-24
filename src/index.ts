@@ -176,7 +176,7 @@ type AdForm = {
   location_lng: number | null;
   location_radius_meters: number | null;
   location_label: string;
-  image: File | null;
+  images: File[];
 };
 
 type AdLocationInput = {
@@ -195,6 +195,15 @@ type CompressedAdImageUpload = {
   key: string;
   mimeType: string;
   bytes: ArrayBuffer;
+};
+
+type AdImageRow = {
+  id: number;
+  ad_id: number;
+  image_key: string;
+  image_mime_type: string;
+  sort_order: number;
+  created_at: string;
 };
 
 type TelegramCallbackQuery = {
@@ -296,6 +305,7 @@ const TELEGRAM_AUTH_MAX_AGE_SECONDS = 60 * 60 * 24;
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 const AD_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
+const AD_IMAGES_MAX_COUNT = 8;
 const USER_BOT_MENU_CREATE = 'user:create';
 const USER_BOT_MENU_SECTIONS = 'user:sections';
 const USER_BOT_MENU_SEARCH = 'user:search';
@@ -362,6 +372,7 @@ const USER_DISPLAY_NAME_MAX_LENGTH = 100;
 let cachedTelegramUserBotUsername: string | null = null;
 let cachedTelegramUserBotUsernamePromise: Promise<string | null> | null = null;
 let cachedEnsureAdImageColumnsPromise: Promise<void> | null = null;
+let cachedEnsureAdImagesTablePromise: Promise<void> | null = null;
 let cachedEnsureUserAvatarColumnsPromise: Promise<void> | null = null;
 let cachedEnsureAdContactColumnPromise: Promise<void> | null = null;
 let cachedEnsureAdCityColumnPromise: Promise<void> | null = null;
@@ -669,6 +680,18 @@ async function readImageUpload(file: File | null): Promise<CompressedAdImageUplo
   }
 
   return compressAdImage(file);
+}
+
+async function readImageUploads(files: File[]): Promise<CompressedAdImageUpload[]> {
+  const normalizedFiles = files.filter((file) => file.size > 0).slice(0, AD_IMAGES_MAX_COUNT);
+  const uploads: CompressedAdImageUpload[] = [];
+  for (const file of normalizedFiles) {
+    const upload = await readImageUpload(file);
+    if (upload) {
+      uploads.push(upload);
+    }
+  }
+  return uploads;
 }
 
 async function readAvatarUpload(file: File | null): Promise<AdImageUpload | null> {
@@ -2093,6 +2116,21 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       display: block;
       object-fit: contain;
     }
+    .ad-page-media-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 8px;
+      margin: 0 0 10px;
+    }
+    .ad-page-media-grid img {
+      width: 100%;
+      max-height: 320px;
+      display: block;
+      object-fit: cover;
+      border: 1px solid #ddd;
+      border-radius: 2px;
+      background: #f5f5f5;
+    }
     .ad-page-media-placeholder {
       display: flex;
       align-items: center;
@@ -2389,6 +2427,16 @@ function renderAdImage(env: Env, key: string | null, alt: string, className: str
   return `<div class="${className}"><img src="${htmlEscape(buildMediaUrl(env, key))}" alt="${htmlEscape(alt)}" loading="lazy" /></div>`;
 }
 
+function renderAdImagesGallery(env: Env, imageKeys: string[], alt: string): string {
+  if (!imageKeys.length) {
+    return `<div class="ad-page-media"><div class="ad-page-media-placeholder">без фото</div></div>`;
+  }
+
+  return `<div class="ad-page-media-grid">${imageKeys
+    .map((key) => `<img src="${htmlEscape(buildMediaUrl(env, key))}" alt="${htmlEscape(alt)}" loading="lazy" />`)
+    .join('')}</div>`;
+}
+
 function renderAvatar(env: Env, key: string | null, alt: string, className = 'avatar'): string {
   if (!key) {
     return `<div class="${className} ${className}-placeholder"><span>${htmlEscape(alt.slice(0, 2).toUpperCase() || 'UA')}</span></div>`;
@@ -2535,8 +2583,8 @@ ${nav(currentUser, currentCity, currentPath)}
     <label for="type">Тип объявления</label>
     ${renderTypeSelect('sell')}
 
-    <label for="image">Картинка</label>
-    <input id="image" name="image" type="file" accept="image/*" />
+    <label for="images">Картинки (до ${AD_IMAGES_MAX_COUNT})</label>
+    <input id="images" name="images" type="file" accept="image/*" multiple />
 
     <label for="body">Текст</label>
     <textarea id="body" name="body" required maxlength="5000"></textarea>
@@ -2638,6 +2686,7 @@ function renderAdMessageSection(
 function renderPublicAdPage(
   env: Env,
   ad: PublicAdCardRow,
+  adImageKeys: string[] = ad.image_key ? [ad.image_key] : [],
   currentUser: CurrentUser | null = null,
   canMessageAuthor = false,
   currentUserHasTelegram = false,
@@ -2648,9 +2697,7 @@ function renderPublicAdPage(
   const hasLocation = hasAdLocation(ad);
   const locationLabel = ad.location_label?.trim() || '';
   const publicLocationBadge = locationLabel ? `<span class="badge badge-location">${htmlEscape(locationLabel)}</span>` : '';
-  const media = ad.image_key
-    ? `<div class="ad-page-media"><img src="${htmlEscape(buildMediaUrl(env, ad.image_key))}" alt="${htmlEscape(ad.title)}" /></div>`
-    : `<div class="ad-page-media"><div class="ad-page-media-placeholder">без фото</div></div>`;
+  const media = renderAdImagesGallery(env, adImageKeys, ad.title);
 
   const author = ad.author_login
     ? `<div class="ad-page-author">
@@ -2840,6 +2887,7 @@ function renderEditPage(
   env: Env,
   currentUser: CurrentUser,
   ad: AdRow,
+  adImageKeys: string[] = ad.image_key ? [ad.image_key] : [],
   error: string | null = null,
   formAction = `/my/edit/${ad.id}`,
   currentCity: string | null = null,
@@ -2848,8 +2896,10 @@ function renderEditPage(
   const options = CATEGORIES.map(
     (category) => `<option value="${category.slug}"${category.slug === ad.category ? ' selected' : ''}>${htmlEscape(category.label)}</option>`
   ).join('');
-  const currentImagePreview = ad.image_key
-    ? `<div class="image-preview"><img src="${htmlEscape(buildMediaUrl(env, ad.image_key))}" alt="${htmlEscape(ad.title)}" /></div>`
+  const currentImagePreview = adImageKeys.length
+    ? `<div class="ad-page-media-grid">${adImageKeys
+        .map((key) => `<img src="${htmlEscape(buildMediaUrl(env, key))}" alt="${htmlEscape(ad.title)}" />`)
+        .join('')}</div>`
     : '<div class="image-preview image-preview-placeholder"><span>Без фото</span></div>';
   const city = ad.city || currentCity || currentUser.city || CITY_DEFAULT_SLUG;
   const extraHead = renderLeafletAssets();
@@ -2886,8 +2936,8 @@ ${nav(currentUser, currentCity, currentPath)}
     <label>Текущая картинка</label>
     ${currentImagePreview}
 
-    <label for="image">Заменить картинку</label>
-    <input id="image" name="image" type="file" accept="image/*" />
+    <label for="images">Заменить картинки (до ${AD_IMAGES_MAX_COUNT})</label>
+    <input id="images" name="images" type="file" accept="image/*" multiple />
 
     <label for="body">Текст</label>
     <textarea id="body" name="body" required maxlength="5000">${htmlEscape(ad.body)}</textarea>
@@ -5768,6 +5818,33 @@ async function getAdById(env: Env, id: number): Promise<AdRow | null> {
   return result ?? null;
 }
 
+async function listAdImagesByAdId(env: Env, adId: number): Promise<AdImageRow[]> {
+  try {
+    const result = await env.DB.prepare(
+      `
+        SELECT id, ad_id, image_key, image_mime_type, sort_order, created_at
+        FROM ad_images
+        WHERE ad_id = ?
+        ORDER BY sort_order ASC, id ASC
+      `
+    )
+      .bind(adId)
+      .all<AdImageRow>();
+    return result.results ?? [];
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes('no such table: ad_images')) {
+      return [];
+    }
+    throw error;
+  }
+}
+
+function isMissingAdImagesTableError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes('no such table: ad_images');
+}
+
 async function getPublishedAdCardById(
   env: Env,
   id: number,
@@ -6143,6 +6220,34 @@ async function ensureAdImageColumns(env: Env): Promise<void> {
   });
 
   return cachedEnsureAdImageColumnsPromise;
+}
+
+async function ensureAdImagesTable(env: Env): Promise<void> {
+  if (cachedEnsureAdImagesTablePromise) {
+    return cachedEnsureAdImagesTablePromise;
+  }
+
+  cachedEnsureAdImagesTablePromise = (async () => {
+    await env.DB.prepare(
+      `
+        CREATE TABLE IF NOT EXISTS ad_images (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          ad_id INTEGER NOT NULL,
+          image_key TEXT NOT NULL,
+          image_mime_type TEXT NOT NULL,
+          sort_order INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (ad_id) REFERENCES ads(id) ON DELETE CASCADE
+        )
+      `
+    ).run();
+    await env.DB.prepare(`CREATE INDEX IF NOT EXISTS ad_images_ad_id_sort_idx ON ad_images(ad_id, sort_order, id)`).run();
+  })().catch((error: unknown) => {
+    cachedEnsureAdImagesTablePromise = null;
+    throw error;
+  });
+
+  return cachedEnsureAdImagesTablePromise;
 }
 
 async function ensureUserAvatarColumns(env: Env): Promise<void> {
@@ -6578,7 +6683,7 @@ async function createAd(
   categoryInput: string | null | undefined,
   typeInput: string | null | undefined,
   ownerUserId: number | null = null,
-  image: File | null = null,
+  images: File[] = [],
   location: AdLocationInput | null = null
 ): Promise<{ id: number; category: CategorySlug }> {
   const category = normalizeCategory(categoryInput);
@@ -6587,14 +6692,15 @@ async function createAd(
   const hasLocation = Boolean(location && typeof location.location_lat === 'number' && Number.isFinite(location.location_lat) && typeof location.location_lng === 'number' && Number.isFinite(location.location_lng));
   const normalizedRadius = hasLocation ? normalizeLocationRadius(location?.location_radius_meters) ?? AD_LOCATION_DEFAULT_RADIUS : null;
   const locationLabel = hasLocation ? (location?.location_label || '').trim().slice(0, AD_LOCATION_LABEL_MAX_LENGTH) || null : null;
-  let imageUpload: CompressedAdImageUpload | null = null;
+  let imageUploads: CompressedAdImageUpload[] = [];
 
-  if (image) {
-    imageUpload = await readImageUpload(image);
-    if (imageUpload) {
+  if (images.length > 0) {
+    imageUploads = await readImageUploads(images);
+    for (const imageUpload of imageUploads) {
       await putCompressedAdImage(env, imageUpload);
     }
   }
+  const coverImage = imageUploads[0];
 
   let result;
   try {
@@ -6635,21 +6741,43 @@ async function createAd(
         hasLocation ? normalizedRadius : null,
         hasLocation ? locationLabel : null,
         ownerUserId,
-        imageUpload?.key || null,
-        imageUpload?.mimeType || null,
-        imageUpload?.key || null
+        coverImage?.key || null,
+        coverImage?.mimeType || null,
+        coverImage?.key || null
       )
       .run();
   } catch (error) {
-    if (imageUpload) {
+    for (const imageUpload of imageUploads) {
       await deleteAdImage(env, imageUpload.key);
     }
     throw error;
   }
 
+  const adId = Number(result.meta.last_row_id);
+  if (imageUploads.length > 0) {
+    try {
+      for (const [index, imageUpload] of imageUploads.entries()) {
+        await env.DB.prepare(
+          `INSERT INTO ad_images (ad_id, image_key, image_mime_type, sort_order, created_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)`
+        )
+          .bind(adId, imageUpload.key, imageUpload.mimeType, index)
+          .run();
+      }
+    } catch (error) {
+      if (isMissingAdImagesTableError(error)) {
+        imageUploads = [];
+      } else {
+        for (const imageUpload of imageUploads) {
+          await deleteAdImage(env, imageUpload.key);
+        }
+        throw error;
+      }
+    }
+  }
+
   ctx.waitUntil(
     sendTelegramMessage(env, {
-      id: Number(result.meta.last_row_id),
+      id: adId,
       title,
       body,
       city,
@@ -6659,14 +6787,14 @@ async function createAd(
       location_lng: hasLocation ? location?.location_lng ?? null : null,
       location_radius_meters: hasLocation ? normalizedRadius : null,
       location_label: hasLocation ? locationLabel : null,
-      image_key: imageUpload?.key ?? null,
+      image_key: coverImage?.key ?? null,
     }, 'New').catch((error: unknown) => {
       console.error('Telegram notification failed', error);
     })
   );
 
   return {
-    id: Number(result.meta.last_row_id),
+    id: adId,
     category,
   };
 }
@@ -6690,7 +6818,12 @@ async function getOwnedAdById(env: Env, id: number, userId: number): Promise<AdR
 
 async function parseAdForm(request: Request): Promise<AdForm> {
   const form = await request.formData();
-  const imageValue = form.get('image');
+  const imageValues = form.getAll('images');
+  const legacyImage = form.get('image');
+  if (legacyImage) {
+    imageValues.push(legacyImage);
+  }
+  const images = imageValues.filter((value): value is File => isFileLike(value) && value.size > 0);
   const locationLat = parseOptionalNumberField(form.get('location_lat'));
   const locationLng = parseOptionalNumberField(form.get('location_lng'));
   const locationRadius = normalizeLocationRadius(parseOptionalNumberField(form.get('location_radius_meters')));
@@ -6706,7 +6839,7 @@ async function parseAdForm(request: Request): Promise<AdForm> {
     location_lng: hasLocation ? locationLng : null,
     location_radius_meters: hasLocation ? locationRadius ?? AD_LOCATION_DEFAULT_RADIUS : null,
     location_label: '',
-    image: isFileLike(imageValue) && imageValue.size > 0 ? imageValue : null,
+    images,
   };
 }
 
@@ -6747,7 +6880,8 @@ async function handleMyEditGet(env: Env, userId: number, id: string, currentUser
     return text('Not Found', 404);
   }
 
-  return renderEditPage(env, currentUser, ad);
+  const adImages = await listAdImagesByAdId(env, ad.id);
+  return renderEditPage(env, currentUser, ad, adImages.map((image) => image.image_key));
 }
 
 async function handleMyEditPost(
@@ -6768,24 +6902,27 @@ async function handleMyEditPost(
     return text('Not Found', 404);
   }
 
-  const { title, body, contact, category, type, location_lat, location_lng, location_radius_meters, location_label, image } = await parseAdForm(request);
+  const adImages = await listAdImagesByAdId(env, ad.id);
+  const adImageKeys = adImages.map((image) => image.image_key);
+  const { title, body, contact, category, type, location_lat, location_lng, location_radius_meters, location_label, images } = await parseAdForm(request);
 
   if (!title || !body) {
-    return renderEditPage(env, currentUser, ad, 'Заполни заголовок и текст');
+    return renderEditPage(env, currentUser, ad, adImageKeys, 'Заполни заголовок и текст');
   }
 
   const nextStatus = ad.status === 'published' || ad.status === 'rejected' ? 'pending' : ad.status;
   const normalizedCategory = normalizeCategory(category);
   const normalizedType = normalizeAdType(type);
-  let newImage: CompressedAdImageUpload | null = null;
+  let newImages: CompressedAdImageUpload[] = [];
   try {
-    if (image) {
-      newImage = await readImageUpload(image);
-      if (newImage) {
+    if (images.length > 0) {
+      newImages = await readImageUploads(images);
+      for (const newImage of newImages) {
         await putCompressedAdImage(env, newImage);
       }
     }
 
+    const nextCoverImage = newImages[0];
     const oldImageKey = ad.image_key;
     await env.DB.prepare(
       `
@@ -6823,23 +6960,42 @@ async function handleMyEditPost(
         location_radius_meters,
         location_label || null,
         nextStatus,
-        newImage?.key ?? ad.image_key,
-        newImage?.mimeType ?? ad.image_mime_type,
-        newImage?.key ?? null,
+        nextCoverImage?.key ?? ad.image_key,
+        nextCoverImage?.mimeType ?? ad.image_mime_type,
+        nextCoverImage?.key ?? null,
         numericId,
         userId
       )
       .run();
 
-    if (newImage && oldImageKey) {
-      await deleteAdImage(env, oldImageKey);
+    if (newImages.length > 0) {
+      try {
+        await env.DB.prepare(`DELETE FROM ad_images WHERE ad_id = ?`).bind(ad.id).run();
+        for (const [index, upload] of newImages.entries()) {
+          await env.DB.prepare(
+            `INSERT INTO ad_images (ad_id, image_key, image_mime_type, sort_order, created_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)`
+          )
+            .bind(ad.id, upload.key, upload.mimeType, index)
+            .run();
+        }
+      } catch (error) {
+        if (!isMissingAdImagesTableError(error)) {
+          throw error;
+        }
+      }
+      for (const image of adImages) {
+        await deleteAdImage(env, image.image_key);
+      }
+      if (oldImageKey && oldImageKey !== nextCoverImage?.key && !adImages.some((image) => image.image_key === oldImageKey)) {
+        await deleteAdImage(env, oldImageKey);
+      }
     }
   } catch (error) {
-    if (newImage) {
+    for (const newImage of newImages) {
       await deleteAdImage(env, newImage.key);
     }
     console.error('Failed to update ad with image', error);
-    return renderEditPage(env, currentUser, ad, 'Не удалось сохранить картинку', `/my/edit/${ad.id}`);
+    return renderEditPage(env, currentUser, ad, adImageKeys, 'Не удалось сохранить картинку', `/my/edit/${ad.id}`);
   }
 
   ctx.waitUntil(
@@ -6854,7 +7010,7 @@ async function handleMyEditPost(
       location_lng: ad.location_lng,
       location_radius_meters: ad.location_radius_meters,
       location_label: ad.location_label,
-      image_key: newImage?.key ?? ad.image_key,
+      image_key: newImages[0]?.key ?? ad.image_key,
     }, 'Edited').catch((error: unknown) => {
       console.error('Telegram notification failed after edit', error);
     })
@@ -7594,7 +7750,7 @@ async function handleUserBotDraftAction(
       }
 
       try {
-        await createAd(env, ctx, draft.title, draft.body, null, userCity, draft.category, draft.ad_type, identity.user_id, null, null);
+        await createAd(env, ctx, draft.title, draft.body, null, userCity, draft.category, draft.ad_type, identity.user_id, [], null);
         await clearBotDraft(env, telegramUserId);
         await sendUserBotMenu(env, telegramUserId, chatId, 'Объявление отправлено на модерацию');
       } catch (error) {
@@ -9063,30 +9219,34 @@ async function handleAdminEditRoute(request: Request, env: Env, ctx: ExecutionCo
   }
 
   if (request.method === 'GET') {
-    return renderEditPage(env, currentUser, ad, null, buildAdminActionUrl(`/admin/edit/${ad.id}`, 'ads', page));
+    const adImages = await listAdImagesByAdId(env, ad.id);
+    return renderEditPage(env, currentUser, ad, adImages.map((image) => image.image_key), null, buildAdminActionUrl(`/admin/edit/${ad.id}`, 'ads', page));
   }
 
   if (request.method !== 'POST') {
     return methodNotAllowed();
   }
 
-  const { title, body, contact, category, type, location_lat, location_lng, location_radius_meters, location_label, image } = await parseAdForm(request);
+  const adImages = await listAdImagesByAdId(env, ad.id);
+  const adImageKeys = adImages.map((image) => image.image_key);
+  const { title, body, contact, category, type, location_lat, location_lng, location_radius_meters, location_label, images } = await parseAdForm(request);
 
   if (!title || !body) {
-    return renderEditPage(env, currentUser, ad, 'Заполни заголовок и текст', buildAdminActionUrl(`/admin/edit/${ad.id}`, 'ads', page));
+    return renderEditPage(env, currentUser, ad, adImageKeys, 'Заполни заголовок и текст', buildAdminActionUrl(`/admin/edit/${ad.id}`, 'ads', page));
   }
 
-  let newImage: CompressedAdImageUpload | null = null;
+  let newImages: CompressedAdImageUpload[] = [];
   try {
     const normalizedCategory = normalizeCategory(category);
     const normalizedType = normalizeAdType(type);
-    if (image) {
-      newImage = await readImageUpload(image);
-      if (newImage) {
+    if (images.length > 0) {
+      newImages = await readImageUploads(images);
+      for (const newImage of newImages) {
         await putCompressedAdImage(env, newImage);
       }
     }
 
+    const nextCoverImage = newImages[0];
     const oldImageKey = ad.image_key;
     await env.DB.prepare(
       `
@@ -9121,22 +9281,41 @@ async function handleAdminEditRoute(request: Request, env: Env, ctx: ExecutionCo
         location_lng,
         location_radius_meters,
         location_label || null,
-        newImage?.key ?? ad.image_key,
-        newImage?.mimeType ?? ad.image_mime_type,
-        newImage?.key ?? null,
+        nextCoverImage?.key ?? ad.image_key,
+        nextCoverImage?.mimeType ?? ad.image_mime_type,
+        nextCoverImage?.key ?? null,
         numericId
       )
       .run();
 
-    if (newImage && oldImageKey) {
-      await deleteAdImage(env, oldImageKey);
+    if (newImages.length > 0) {
+      try {
+        await env.DB.prepare(`DELETE FROM ad_images WHERE ad_id = ?`).bind(ad.id).run();
+        for (const [index, upload] of newImages.entries()) {
+          await env.DB.prepare(
+            `INSERT INTO ad_images (ad_id, image_key, image_mime_type, sort_order, created_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)`
+          )
+            .bind(ad.id, upload.key, upload.mimeType, index)
+            .run();
+        }
+      } catch (error) {
+        if (!isMissingAdImagesTableError(error)) {
+          throw error;
+        }
+      }
+      for (const image of adImages) {
+        await deleteAdImage(env, image.image_key);
+      }
+      if (oldImageKey && oldImageKey !== nextCoverImage?.key && !adImages.some((image) => image.image_key === oldImageKey)) {
+        await deleteAdImage(env, oldImageKey);
+      }
     }
   } catch (error) {
-    if (newImage) {
+    for (const newImage of newImages) {
       await deleteAdImage(env, newImage.key);
     }
     console.error('Failed to update admin ad with image', error);
-    return renderEditPage(env, currentUser, ad, 'Не удалось сохранить картинку', buildAdminActionUrl(`/admin/edit/${ad.id}`, 'ads', page));
+    return renderEditPage(env, currentUser, ad, adImageKeys, 'Не удалось сохранить картинку', buildAdminActionUrl(`/admin/edit/${ad.id}`, 'ads', page));
   }
 
   return redirectWithHeaders(buildAdminUrl('ads', page, 'Объявление сохранено'));
@@ -9728,7 +9907,7 @@ async function handleApiAdsPost(request: Request, env: Env, ctx: ExecutionContex
     return json({ error: 'title and body are required' }, { status: 400 });
   }
 
-  const ad = await createAd(env, ctx, title, body, null, CITY_DEFAULT_SLUG, category, type, null, null, null);
+  const ad = await createAd(env, ctx, title, body, null, CITY_DEFAULT_SLUG, category, type, null, [], null);
   return json(
     {
       ok: true,
@@ -9756,7 +9935,7 @@ async function handleNewPost(request: Request, env: Env, ctx: ExecutionContext):
     return redirect('/login?next=/new');
   }
 
-  const { title, body, contact, city, category, type, location_lat, location_lng, location_radius_meters, location_label, image } = await parseAdForm(request);
+  const { title, body, contact, city, category, type, location_lat, location_lng, location_radius_meters, location_label, images } = await parseAdForm(request);
   const currentCity = normalizeCity(getCurrentCityFromRequest(request, currentUser));
 
   if (!title || !body) {
@@ -9774,7 +9953,7 @@ async function handleNewPost(request: Request, env: Env, ctx: ExecutionContext):
       category,
       type,
       currentUser.id,
-      image,
+      images,
       {
         location_lat,
         location_lng,
@@ -9822,11 +10001,13 @@ async function handleAdGet(
     return renderNotFoundPage(currentUser, getCurrentCityFromRequest(request, currentUser), new URL(request.url).pathname);
   }
 
+  const adImageKeysRaw = (await listAdImagesByAdId(env, ad.id)).map((image) => image.image_key);
+  const adImageKeys = adImageKeysRaw.length > 0 ? adImageKeysRaw : ad.image_key ? [ad.image_key] : [];
   const canMessageAuthor = Boolean(ad.owner_user_id && (await findTelegramIdentityByUserId(env, ad.owner_user_id)));
   const currentUserHasTelegram = currentUser ? Boolean(await findTelegramIdentityByUserId(env, currentUser.id)) : false;
   const currentCity = getCurrentCityFromRequest(request, currentUser);
   const url = new URL(request.url);
-  return renderPublicAdPage(env, ad, currentUser, canMessageAuthor, currentUserHasTelegram, message, currentCity, `${url.pathname}${url.search}`);
+  return renderPublicAdPage(env, ad, adImageKeys, currentUser, canMessageAuthor, currentUserHasTelegram, message, currentCity, `${url.pathname}${url.search}`);
 }
 
 async function handleAdMessagePost(
@@ -9849,21 +10030,24 @@ async function handleAdMessagePost(
     return renderNotFoundPage(currentUser, currentUser ? currentUser.city : CITY_DEFAULT_SLUG, new URL(request.url).pathname);
   }
 
+  const adImageKeysRaw = (await listAdImagesByAdId(env, ad.id)).map((image) => image.image_key);
+  const adImageKeys = adImageKeysRaw.length > 0 ? adImageKeysRaw : ad.image_key ? [ad.image_key] : [];
   const canMessageAuthor = Boolean(ad.owner_user_id && (await findTelegramIdentityByUserId(env, ad.owner_user_id)));
   const currentUserHasTelegram = Boolean(await findTelegramIdentityByUserId(env, currentUser.id));
 
   if (!ad.owner_user_id) {
-    return renderPublicAdPage(env, ad, currentUser, canMessageAuthor, currentUserHasTelegram, 'У объявления не указан автор', currentUser.city, new URL(request.url).pathname);
+    return renderPublicAdPage(env, ad, adImageKeys, currentUser, canMessageAuthor, currentUserHasTelegram, 'У объявления не указан автор', currentUser.city, new URL(request.url).pathname);
   }
 
   if (ad.owner_user_id === currentUser.id) {
-    return renderPublicAdPage(env, ad, currentUser, canMessageAuthor, currentUserHasTelegram, 'Нельзя написать самому себе', currentUser.city, new URL(request.url).pathname);
+    return renderPublicAdPage(env, ad, adImageKeys, currentUser, canMessageAuthor, currentUserHasTelegram, 'Нельзя написать самому себе', currentUser.city, new URL(request.url).pathname);
   }
 
   if (!currentUserHasTelegram) {
     return renderPublicAdPage(
       env,
       ad,
+      adImageKeys,
       currentUser,
       canMessageAuthor,
       currentUserHasTelegram,
@@ -9876,17 +10060,17 @@ async function handleAdMessagePost(
   const form = await request.formData();
   const message = String(form.get('message') || '').trim();
   if (!message) {
-    return renderPublicAdPage(env, ad, currentUser, canMessageAuthor, currentUserHasTelegram, 'Введите текст сообщения', currentUser.city, new URL(request.url).pathname);
+    return renderPublicAdPage(env, ad, adImageKeys, currentUser, canMessageAuthor, currentUserHasTelegram, 'Введите текст сообщения', currentUser.city, new URL(request.url).pathname);
   }
 
   if (message.length > AD_MESSAGE_MAX_LENGTH) {
-    return renderPublicAdPage(env, ad, currentUser, canMessageAuthor, currentUserHasTelegram, 'Сообщение слишком длинное', currentUser.city, new URL(request.url).pathname);
+    return renderPublicAdPage(env, ad, adImageKeys, currentUser, canMessageAuthor, currentUserHasTelegram, 'Сообщение слишком длинное', currentUser.city, new URL(request.url).pathname);
   }
 
   const telegramIdentity = await findTelegramIdentityByUserId(env, ad.owner_user_id);
   const chatId = Number(telegramIdentity?.provider_user_id || '');
   if (!telegramIdentity?.provider_user_id || !Number.isInteger(chatId) || chatId <= 0) {
-    return renderPublicAdPage(env, ad, currentUser, false, currentUserHasTelegram, 'У продавца не подключён Telegram-бот', currentUser.city, new URL(request.url).pathname);
+    return renderPublicAdPage(env, ad, adImageKeys, currentUser, false, currentUserHasTelegram, 'У продавца не подключён Telegram-бот', currentUser.city, new URL(request.url).pathname);
   }
 
   try {
@@ -9900,7 +10084,7 @@ async function handleAdMessagePost(
     );
   } catch (error) {
     console.error('Failed to send ad message to author', error);
-    return renderPublicAdPage(env, ad, currentUser, canMessageAuthor, currentUserHasTelegram, 'Не удалось отправить сообщение', currentUser.city, new URL(request.url).pathname);
+    return renderPublicAdPage(env, ad, adImageKeys, currentUser, canMessageAuthor, currentUserHasTelegram, 'Не удалось отправить сообщение', currentUser.city, new URL(request.url).pathname);
   }
 
   return redirectWithMessage(`/ad/${ad.id}`, 'Сообщение отправлено в Telegram продавцу');
@@ -9992,6 +10176,7 @@ async function handlePublicGetRoute(
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     await ensureAdImageColumns(env);
+    await ensureAdImagesTable(env);
     await ensureUserAvatarColumns(env);
     await ensureUserCityColumn(env);
     await ensureAdContactColumn(env);
