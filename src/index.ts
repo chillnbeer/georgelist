@@ -564,6 +564,18 @@ function flattenRgbaToWhite(source: Uint8Array): Uint8Array {
   return output;
 }
 
+function toEightBitPngSamples(samples: Uint8Array | Uint16Array): Uint8Array {
+  if (samples instanceof Uint8Array) {
+    return samples;
+  }
+
+  const output = new Uint8Array(samples.length);
+  for (let index = 0; index < samples.length; index += 1) {
+    output[index] = samples[index] > 255 ? Math.round(samples[index] / 257) : samples[index];
+  }
+  return output;
+}
+
 async function compressAdImage(file: File): Promise<CompressedAdImageUpload> {
   const sourceBytes = await file.arrayBuffer();
 
@@ -576,7 +588,27 @@ async function compressAdImage(file: File): Promise<CompressedAdImageUpload> {
       const decoded = decodePng(new Uint8Array(sourceBytes));
       width = decoded.width;
       height = decoded.height;
-      rgbaPixels = new Uint8Array(decoded.data);
+      const channelCount = typeof (decoded as { channels?: number }).channels === 'number' ? (decoded as { channels: number }).channels : 4;
+      const rawPixels = toEightBitPngSamples(decoded.data);
+      if (channelCount === 4) {
+        rgbaPixels = rawPixels;
+      } else {
+        const pixelCount = width * height;
+        const normalized = new Uint8Array(pixelCount * 4);
+        for (let index = 0; index < pixelCount; index += 1) {
+          const sourceIndex = index * channelCount;
+          const targetIndex = index * 4;
+          const r = rawPixels[sourceIndex] ?? 0;
+          const g = channelCount > 1 ? (rawPixels[sourceIndex + 1] ?? r) : r;
+          const b = channelCount > 2 ? (rawPixels[sourceIndex + 2] ?? r) : r;
+          const a = channelCount > 3 ? (rawPixels[sourceIndex + 3] ?? 255) : 255;
+          normalized[targetIndex] = r;
+          normalized[targetIndex + 1] = g;
+          normalized[targetIndex + 2] = b;
+          normalized[targetIndex + 3] = a;
+        }
+        rgbaPixels = normalized;
+      }
     } else if (file.type === 'image/jpeg' || file.type === 'image/jpg') {
       const decoded = jpeg.decode(new Uint8Array(sourceBytes), { useTArray: true });
       width = decoded.width;
@@ -2041,6 +2073,7 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
     }
     .ad-page-media img {
       width: 100%;
+      max-height: min(70vh, 680px);
       display: block;
       object-fit: contain;
     }
