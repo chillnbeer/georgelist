@@ -2139,6 +2139,7 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       margin: 0 0 10px;
     }
     .ad-gallery-main {
+      position: relative;
       border: 1px solid #ddd;
       border-radius: 6px;
       overflow: hidden;
@@ -2150,10 +2151,56 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       display: block;
       object-fit: contain;
     }
+    .ad-gallery-nav {
+      position: absolute;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 36px;
+      height: 36px;
+      border-radius: 999px;
+      border: 1px solid rgba(0, 0, 0, 0.25);
+      background: rgba(255, 255, 255, 0.9);
+      color: #222;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 20px;
+      line-height: 1;
+      margin: 0;
+      padding: 0;
+      cursor: pointer;
+      z-index: 2;
+    }
+    .ad-gallery-nav[disabled] {
+      opacity: 0.4;
+      cursor: default;
+    }
+    .ad-gallery-nav-prev {
+      left: 8px;
+    }
+    .ad-gallery-nav-next {
+      right: 8px;
+    }
+    .ad-gallery-meta {
+      font-size: 12px;
+      color: #667;
+      margin-top: 6px;
+    }
     .ad-gallery-thumbs {
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(92px, 1fr));
       gap: 8px;
+    }
+    .ad-gallery-thumb {
+      border: 1px solid transparent;
+      border-radius: 8px;
+      background: transparent;
+      padding: 0;
+      margin: 0;
+      cursor: pointer;
+    }
+    .ad-gallery-thumb.is-active {
+      border-color: #4d79ff;
     }
     .ad-gallery-thumbs img {
       width: 100%;
@@ -2493,17 +2540,118 @@ function renderAdImagesGallery(env: Env, imageKeys: string[], alt: string): stri
     return `<div class="ad-page-media"><div class="ad-page-media-placeholder">без фото</div></div>`;
   }
 
-  const [mainImageKey, ...thumbs] = imageKeys;
+  const imageUrls = imageKeys.map((key) => buildMediaUrl(env, key));
+  const [mainImageUrl] = imageUrls;
   return `<div class="ad-gallery">
-  <a class="ad-gallery-main" href="${htmlEscape(buildMediaUrl(env, mainImageKey))}" target="_blank" rel="noopener">
-    <img src="${htmlEscape(buildMediaUrl(env, mainImageKey))}" alt="${htmlEscape(alt)}" loading="eager" />
-  </a>
-  ${thumbs.length > 0 ? `<div class="ad-gallery-thumbs">${thumbs
+  <div class="ad-gallery-main" data-ad-gallery-main>
+    <a href="${htmlEscape(mainImageUrl)}" target="_blank" rel="noopener" data-ad-gallery-main-link>
+      <img src="${htmlEscape(mainImageUrl)}" alt="${htmlEscape(alt)}" loading="eager" data-ad-gallery-main-image />
+    </a>
+    ${
+      imageUrls.length > 1
+        ? `<button type="button" class="ad-gallery-nav ad-gallery-nav-prev" data-ad-gallery-prev aria-label="Предыдущее фото">‹</button>
+    <button type="button" class="ad-gallery-nav ad-gallery-nav-next" data-ad-gallery-next aria-label="Следующее фото">›</button>`
+        : ''
+    }
+  </div>
+  ${
+    imageUrls.length > 1
+      ? `<div class="ad-gallery-meta"><span data-ad-gallery-counter>1 / ${imageUrls.length}</span></div>
+  <div class="ad-gallery-thumbs">${imageUrls
       .map(
-        (key) => `<a href="${htmlEscape(buildMediaUrl(env, key))}" target="_blank" rel="noopener"><img src="${htmlEscape(buildMediaUrl(env, key))}" alt="${htmlEscape(alt)}" loading="lazy" /></a>`
+        (url, index) => `<button type="button" class="ad-gallery-thumb${index === 0 ? ' is-active' : ''}" data-ad-gallery-thumb data-index="${index}" data-full="${htmlEscape(url)}" aria-label="Фото ${index + 1}">
+      <img src="${htmlEscape(url)}" alt="${htmlEscape(alt)}" loading="lazy" />
+    </button>`
       )
-      .join('')}</div>` : ''}
+      .join('')}</div>`
+      : ''
+  }
 </div>`;
+}
+
+function renderAdGalleryScript(): string {
+  return `<script>
+  (function () {
+    function init(root) {
+      var mainImage = root.querySelector('[data-ad-gallery-main-image]');
+      var mainLink = root.querySelector('[data-ad-gallery-main-link]');
+      var counter = root.querySelector('[data-ad-gallery-counter]');
+      var thumbs = Array.prototype.slice.call(root.querySelectorAll('[data-ad-gallery-thumb]'));
+      var prevButton = root.querySelector('[data-ad-gallery-prev]');
+      var nextButton = root.querySelector('[data-ad-gallery-next]');
+      if (!mainImage || !mainLink || thumbs.length < 2) {
+        return;
+      }
+
+      var activeIndex = 0;
+
+      function apply(index) {
+        if (index < 0 || index >= thumbs.length) {
+          return;
+        }
+        activeIndex = index;
+        var thumb = thumbs[index];
+        var nextUrl = thumb.getAttribute('data-full');
+        if (!nextUrl) {
+          return;
+        }
+        mainImage.setAttribute('src', nextUrl);
+        mainLink.setAttribute('href', nextUrl);
+        thumbs.forEach(function (node, nodeIndex) {
+          node.classList.toggle('is-active', nodeIndex === activeIndex);
+        });
+        if (counter) {
+          counter.textContent = String(activeIndex + 1) + ' / ' + String(thumbs.length);
+        }
+        if (prevButton) {
+          prevButton.disabled = activeIndex === 0;
+        }
+        if (nextButton) {
+          nextButton.disabled = activeIndex === thumbs.length - 1;
+        }
+      }
+
+      thumbs.forEach(function (thumb, index) {
+        thumb.addEventListener('click', function () {
+          apply(index);
+        });
+      });
+
+      if (prevButton) {
+        prevButton.addEventListener('click', function () {
+          apply(activeIndex - 1);
+        });
+      }
+      if (nextButton) {
+        nextButton.addEventListener('click', function () {
+          apply(activeIndex + 1);
+        });
+      }
+      document.addEventListener('keydown', function (event) {
+        if (!root.contains(document.activeElement)) {
+          return;
+        }
+        if (event.key === 'ArrowLeft') {
+          apply(activeIndex - 1);
+        } else if (event.key === 'ArrowRight') {
+          apply(activeIndex + 1);
+        }
+      });
+
+      apply(0);
+    }
+
+    function bootstrap() {
+      document.querySelectorAll('.ad-gallery').forEach(init);
+    }
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', bootstrap);
+    } else {
+      bootstrap();
+    }
+  })();
+  </script>`;
 }
 
 function renderAvatar(env: Env, key: string | null, alt: string, className = 'avatar'): string {
@@ -2800,7 +2948,7 @@ ${renderAdMessageSection(ad, currentUser, canMessageAuthor, currentUserHasTelegr
 ${renderSearchForm()}`,
     currentUser,
     200,
-    hasLocation ? renderLeafletAssets() : ''
+    `${hasLocation ? renderLeafletAssets() : ''}${renderAdGalleryScript()}`
   );
 }
 
