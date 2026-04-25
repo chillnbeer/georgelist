@@ -177,6 +177,8 @@ type AdForm = {
   location_radius_meters: number | null;
   location_label: string;
   images: File[];
+  keep_image_keys: string[];
+  cover_image_key: string | null;
 };
 
 type AdLocationInput = {
@@ -2131,6 +2133,65 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       border-radius: 2px;
       background: #f5f5f5;
     }
+    .ad-gallery {
+      display: grid;
+      gap: 8px;
+      margin: 0 0 10px;
+    }
+    .ad-gallery-main {
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      overflow: hidden;
+      background: #f5f5f5;
+    }
+    .ad-gallery-main img {
+      width: 100%;
+      max-height: min(70vh, 680px);
+      display: block;
+      object-fit: contain;
+    }
+    .ad-gallery-thumbs {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(92px, 1fr));
+      gap: 8px;
+    }
+    .ad-gallery-thumbs img {
+      width: 100%;
+      aspect-ratio: 1 / 1;
+      object-fit: cover;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      background: #f5f5f5;
+      display: block;
+    }
+    .edit-image-list {
+      display: grid;
+      gap: 10px;
+      margin: 6px 0 12px;
+    }
+    .edit-image-item {
+      border: 1px solid #ddd;
+      border-radius: 10px;
+      padding: 8px;
+      display: grid;
+      gap: 8px;
+      background: #fafafa;
+      max-width: 560px;
+    }
+    .edit-image-controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: center;
+    }
+    .edit-image-controls label {
+      margin: 0;
+      display: inline-flex;
+      gap: 6px;
+      align-items: center;
+      font-size: 13px;
+      color: #334;
+    }
     .ad-page-media-placeholder {
       display: flex;
       align-items: center;
@@ -2432,9 +2493,17 @@ function renderAdImagesGallery(env: Env, imageKeys: string[], alt: string): stri
     return `<div class="ad-page-media"><div class="ad-page-media-placeholder">без фото</div></div>`;
   }
 
-  return `<div class="ad-page-media-grid">${imageKeys
-    .map((key) => `<img src="${htmlEscape(buildMediaUrl(env, key))}" alt="${htmlEscape(alt)}" loading="lazy" />`)
-    .join('')}</div>`;
+  const [mainImageKey, ...thumbs] = imageKeys;
+  return `<div class="ad-gallery">
+  <a class="ad-gallery-main" href="${htmlEscape(buildMediaUrl(env, mainImageKey))}" target="_blank" rel="noopener">
+    <img src="${htmlEscape(buildMediaUrl(env, mainImageKey))}" alt="${htmlEscape(alt)}" loading="eager" />
+  </a>
+  ${thumbs.length > 0 ? `<div class="ad-gallery-thumbs">${thumbs
+      .map(
+        (key) => `<a href="${htmlEscape(buildMediaUrl(env, key))}" target="_blank" rel="noopener"><img src="${htmlEscape(buildMediaUrl(env, key))}" alt="${htmlEscape(alt)}" loading="lazy" /></a>`
+      )
+      .join('')}</div>` : ''}
+</div>`;
 }
 
 function renderAvatar(env: Env, key: string | null, alt: string, className = 'avatar'): string {
@@ -2887,7 +2956,16 @@ function renderEditPage(
   env: Env,
   currentUser: CurrentUser,
   ad: AdRow,
-  adImageKeys: string[] = ad.image_key ? [ad.image_key] : [],
+  adImages: AdImageRow[] = ad.image_key
+    ? [{
+        id: 0,
+        ad_id: ad.id,
+        image_key: ad.image_key,
+        image_mime_type: ad.image_mime_type || 'image/jpeg',
+        sort_order: 0,
+        created_at: ad.created_at,
+      }]
+    : [],
   error: string | null = null,
   formAction = `/my/edit/${ad.id}`,
   currentCity: string | null = null,
@@ -2896,9 +2974,15 @@ function renderEditPage(
   const options = CATEGORIES.map(
     (category) => `<option value="${category.slug}"${category.slug === ad.category ? ' selected' : ''}>${htmlEscape(category.label)}</option>`
   ).join('');
-  const currentImagePreview = adImageKeys.length
-    ? `<div class="ad-page-media-grid">${adImageKeys
-        .map((key) => `<img src="${htmlEscape(buildMediaUrl(env, key))}" alt="${htmlEscape(ad.title)}" />`)
+  const currentImagePreview = adImages.length
+    ? `<div class="edit-image-list">${adImages
+        .map((image, index) => `<div class="edit-image-item">
+      <img src="${htmlEscape(buildMediaUrl(env, image.image_key))}" alt="${htmlEscape(ad.title)}" />
+      <div class="edit-image-controls">
+        <label><input type="checkbox" name="keep_image_keys" value="${htmlEscape(image.image_key)}" checked /> Оставить</label>
+        <label><input type="radio" name="cover_image_key" value="${htmlEscape(image.image_key)}"${index === 0 ? ' checked' : ''} /> Главная</label>
+      </div>
+    </div>`)
         .join('')}</div>`
     : '<div class="image-preview image-preview-placeholder"><span>Без фото</span></div>';
   const city = ad.city || currentCity || currentUser.city || CITY_DEFAULT_SLUG;
@@ -2933,10 +3017,10 @@ ${nav(currentUser, currentCity, currentPath)}
     <label for="type">Тип объявления</label>
     ${renderTypeSelect(normalizeAdType(ad.type).toString())}
 
-    <label>Текущая картинка</label>
+    <label>Текущие картинки</label>
     ${currentImagePreview}
 
-    <label for="images">Заменить картинки (до ${AD_IMAGES_MAX_COUNT})</label>
+    <label for="images">Добавить картинки (до ${AD_IMAGES_MAX_COUNT})</label>
     <input id="images" name="images" type="file" accept="image/*" multiple />
 
     <label for="body">Текст</label>
@@ -5840,6 +5924,23 @@ async function listAdImagesByAdId(env: Env, adId: number): Promise<AdImageRow[]>
   }
 }
 
+function effectiveAdImages(ad: Pick<AdRow, 'id' | 'image_key' | 'image_mime_type' | 'created_at'>, images: AdImageRow[]): AdImageRow[] {
+  if (images.length > 0) {
+    return images;
+  }
+  if (!ad.image_key) {
+    return [];
+  }
+  return [{
+    id: 0,
+    ad_id: ad.id,
+    image_key: ad.image_key,
+    image_mime_type: ad.image_mime_type || 'image/jpeg',
+    sort_order: 0,
+    created_at: ad.created_at,
+  }];
+}
+
 function isMissingAdImagesTableError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return message.includes('no such table: ad_images');
@@ -6824,6 +6925,11 @@ async function parseAdForm(request: Request): Promise<AdForm> {
     imageValues.push(legacyImage);
   }
   const images = imageValues.filter((value): value is File => isFileLike(value) && value.size > 0);
+  const keep_image_keys = form
+    .getAll('keep_image_keys')
+    .map((value) => String(value || '').trim())
+    .filter((value) => value.length > 0);
+  const coverImageKeyRaw = String(form.get('cover_image_key') || '').trim();
   const locationLat = parseOptionalNumberField(form.get('location_lat'));
   const locationLng = parseOptionalNumberField(form.get('location_lng'));
   const locationRadius = normalizeLocationRadius(parseOptionalNumberField(form.get('location_radius_meters')));
@@ -6840,6 +6946,8 @@ async function parseAdForm(request: Request): Promise<AdForm> {
     location_radius_meters: hasLocation ? locationRadius ?? AD_LOCATION_DEFAULT_RADIUS : null,
     location_label: '',
     images,
+    keep_image_keys,
+    cover_image_key: coverImageKeyRaw || null,
   };
 }
 
@@ -6880,8 +6988,8 @@ async function handleMyEditGet(env: Env, userId: number, id: string, currentUser
     return text('Not Found', 404);
   }
 
-  const adImages = await listAdImagesByAdId(env, ad.id);
-  return renderEditPage(env, currentUser, ad, adImages.map((image) => image.image_key));
+  const adImages = effectiveAdImages(ad, await listAdImagesByAdId(env, ad.id));
+  return renderEditPage(env, currentUser, ad, adImages);
 }
 
 async function handleMyEditPost(
@@ -6902,18 +7010,22 @@ async function handleMyEditPost(
     return text('Not Found', 404);
   }
 
-  const adImages = await listAdImagesByAdId(env, ad.id);
-  const adImageKeys = adImages.map((image) => image.image_key);
-  const { title, body, contact, category, type, location_lat, location_lng, location_radius_meters, location_label, images } = await parseAdForm(request);
+  const adImages = effectiveAdImages(ad, await listAdImagesByAdId(env, ad.id));
+  const { title, body, contact, category, type, location_lat, location_lng, location_radius_meters, location_label, images, keep_image_keys, cover_image_key } = await parseAdForm(request);
+  const uniqueKeptImageKeys = [...new Set(keep_image_keys)];
+  if (uniqueKeptImageKeys.length + images.length > AD_IMAGES_MAX_COUNT) {
+    return renderEditPage(env, currentUser, ad, adImages, `Можно сохранить максимум ${AD_IMAGES_MAX_COUNT} картинок`);
+  }
 
   if (!title || !body) {
-    return renderEditPage(env, currentUser, ad, adImageKeys, 'Заполни заголовок и текст');
+    return renderEditPage(env, currentUser, ad, adImages, 'Заполни заголовок и текст');
   }
 
   const nextStatus = ad.status === 'published' || ad.status === 'rejected' ? 'pending' : ad.status;
   const normalizedCategory = normalizeCategory(category);
   const normalizedType = normalizeAdType(type);
   let newImages: CompressedAdImageUpload[] = [];
+  let nextCoverImageKey: string | null = ad.image_key;
   try {
     if (images.length > 0) {
       newImages = await readImageUploads(images);
@@ -6922,7 +7034,21 @@ async function handleMyEditPost(
       }
     }
 
-    const nextCoverImage = newImages[0];
+    const keptImages = adImages.filter((image) => uniqueKeptImageKeys.includes(image.image_key));
+    const combinedImages = [
+      ...keptImages,
+      ...newImages.map((image, index): AdImageRow => ({
+        id: 0 - (index + 1),
+        ad_id: ad.id,
+        image_key: image.key,
+        image_mime_type: image.mimeType,
+        sort_order: keptImages.length + index,
+        created_at: ad.updated_at,
+      })),
+    ];
+    const explicitCoverImage = combinedImages.find((image) => image.image_key === cover_image_key);
+    const nextCoverImage = explicitCoverImage ?? combinedImages[0] ?? null;
+    nextCoverImageKey = nextCoverImage?.image_key ?? null;
     const oldImageKey = ad.image_key;
     await env.DB.prepare(
       `
@@ -6960,22 +7086,22 @@ async function handleMyEditPost(
         location_radius_meters,
         location_label || null,
         nextStatus,
-        nextCoverImage?.key ?? ad.image_key,
-        nextCoverImage?.mimeType ?? ad.image_mime_type,
-        nextCoverImage?.key ?? null,
+        nextCoverImage?.image_key ?? null,
+        nextCoverImage?.image_mime_type ?? null,
+        nextCoverImage?.image_key ?? null,
         numericId,
         userId
       )
       .run();
 
-    if (newImages.length > 0) {
+    if (newImages.length > 0 || keptImages.length !== adImages.length) {
       try {
         await env.DB.prepare(`DELETE FROM ad_images WHERE ad_id = ?`).bind(ad.id).run();
-        for (const [index, upload] of newImages.entries()) {
+        for (const [index, image] of combinedImages.entries()) {
           await env.DB.prepare(
             `INSERT INTO ad_images (ad_id, image_key, image_mime_type, sort_order, created_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)`
           )
-            .bind(ad.id, upload.key, upload.mimeType, index)
+            .bind(ad.id, image.image_key, image.image_mime_type, index)
             .run();
         }
       } catch (error) {
@@ -6984,9 +7110,12 @@ async function handleMyEditPost(
         }
       }
       for (const image of adImages) {
+        if (uniqueKeptImageKeys.includes(image.image_key)) {
+          continue;
+        }
         await deleteAdImage(env, image.image_key);
       }
-      if (oldImageKey && oldImageKey !== nextCoverImage?.key && !adImages.some((image) => image.image_key === oldImageKey)) {
+      if (oldImageKey && oldImageKey !== nextCoverImage?.image_key && !combinedImages.some((image) => image.image_key === oldImageKey)) {
         await deleteAdImage(env, oldImageKey);
       }
     }
@@ -6995,7 +7124,7 @@ async function handleMyEditPost(
       await deleteAdImage(env, newImage.key);
     }
     console.error('Failed to update ad with image', error);
-    return renderEditPage(env, currentUser, ad, adImageKeys, 'Не удалось сохранить картинку', `/my/edit/${ad.id}`);
+    return renderEditPage(env, currentUser, ad, adImages, 'Не удалось сохранить картинку', `/my/edit/${ad.id}`);
   }
 
   ctx.waitUntil(
@@ -7010,7 +7139,7 @@ async function handleMyEditPost(
       location_lng: ad.location_lng,
       location_radius_meters: ad.location_radius_meters,
       location_label: ad.location_label,
-      image_key: newImages[0]?.key ?? ad.image_key,
+      image_key: nextCoverImageKey,
     }, 'Edited').catch((error: unknown) => {
       console.error('Telegram notification failed after edit', error);
     })
@@ -9219,20 +9348,30 @@ async function handleAdminEditRoute(request: Request, env: Env, ctx: ExecutionCo
   }
 
   if (request.method === 'GET') {
-    const adImages = await listAdImagesByAdId(env, ad.id);
-    return renderEditPage(env, currentUser, ad, adImages.map((image) => image.image_key), null, buildAdminActionUrl(`/admin/edit/${ad.id}`, 'ads', page));
+    const adImages = effectiveAdImages(ad, await listAdImagesByAdId(env, ad.id));
+    return renderEditPage(env, currentUser, ad, adImages, null, buildAdminActionUrl(`/admin/edit/${ad.id}`, 'ads', page));
   }
 
   if (request.method !== 'POST') {
     return methodNotAllowed();
   }
 
-  const adImages = await listAdImagesByAdId(env, ad.id);
-  const adImageKeys = adImages.map((image) => image.image_key);
-  const { title, body, contact, category, type, location_lat, location_lng, location_radius_meters, location_label, images } = await parseAdForm(request);
+  const adImages = effectiveAdImages(ad, await listAdImagesByAdId(env, ad.id));
+  const { title, body, contact, category, type, location_lat, location_lng, location_radius_meters, location_label, images, keep_image_keys, cover_image_key } = await parseAdForm(request);
+  const uniqueKeptImageKeys = [...new Set(keep_image_keys)];
+  if (uniqueKeptImageKeys.length + images.length > AD_IMAGES_MAX_COUNT) {
+    return renderEditPage(
+      env,
+      currentUser,
+      ad,
+      adImages,
+      `Можно сохранить максимум ${AD_IMAGES_MAX_COUNT} картинок`,
+      buildAdminActionUrl(`/admin/edit/${ad.id}`, 'ads', page)
+    );
+  }
 
   if (!title || !body) {
-    return renderEditPage(env, currentUser, ad, adImageKeys, 'Заполни заголовок и текст', buildAdminActionUrl(`/admin/edit/${ad.id}`, 'ads', page));
+    return renderEditPage(env, currentUser, ad, adImages, 'Заполни заголовок и текст', buildAdminActionUrl(`/admin/edit/${ad.id}`, 'ads', page));
   }
 
   let newImages: CompressedAdImageUpload[] = [];
@@ -9246,7 +9385,20 @@ async function handleAdminEditRoute(request: Request, env: Env, ctx: ExecutionCo
       }
     }
 
-    const nextCoverImage = newImages[0];
+    const keptImages = adImages.filter((image) => uniqueKeptImageKeys.includes(image.image_key));
+    const combinedImages = [
+      ...keptImages,
+      ...newImages.map((image, index): AdImageRow => ({
+        id: 0 - (index + 1),
+        ad_id: ad.id,
+        image_key: image.key,
+        image_mime_type: image.mimeType,
+        sort_order: keptImages.length + index,
+        created_at: ad.updated_at,
+      })),
+    ];
+    const explicitCoverImage = combinedImages.find((image) => image.image_key === cover_image_key);
+    const nextCoverImage = explicitCoverImage ?? combinedImages[0] ?? null;
     const oldImageKey = ad.image_key;
     await env.DB.prepare(
       `
@@ -9281,21 +9433,21 @@ async function handleAdminEditRoute(request: Request, env: Env, ctx: ExecutionCo
         location_lng,
         location_radius_meters,
         location_label || null,
-        nextCoverImage?.key ?? ad.image_key,
-        nextCoverImage?.mimeType ?? ad.image_mime_type,
-        nextCoverImage?.key ?? null,
+        nextCoverImage?.image_key ?? null,
+        nextCoverImage?.image_mime_type ?? null,
+        nextCoverImage?.image_key ?? null,
         numericId
       )
       .run();
 
-    if (newImages.length > 0) {
+    if (newImages.length > 0 || keptImages.length !== adImages.length) {
       try {
         await env.DB.prepare(`DELETE FROM ad_images WHERE ad_id = ?`).bind(ad.id).run();
-        for (const [index, upload] of newImages.entries()) {
+        for (const [index, image] of combinedImages.entries()) {
           await env.DB.prepare(
             `INSERT INTO ad_images (ad_id, image_key, image_mime_type, sort_order, created_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)`
           )
-            .bind(ad.id, upload.key, upload.mimeType, index)
+            .bind(ad.id, image.image_key, image.image_mime_type, index)
             .run();
         }
       } catch (error) {
@@ -9304,9 +9456,12 @@ async function handleAdminEditRoute(request: Request, env: Env, ctx: ExecutionCo
         }
       }
       for (const image of adImages) {
+        if (uniqueKeptImageKeys.includes(image.image_key)) {
+          continue;
+        }
         await deleteAdImage(env, image.image_key);
       }
-      if (oldImageKey && oldImageKey !== nextCoverImage?.key && !adImages.some((image) => image.image_key === oldImageKey)) {
+      if (oldImageKey && oldImageKey !== nextCoverImage?.image_key && !combinedImages.some((image) => image.image_key === oldImageKey)) {
         await deleteAdImage(env, oldImageKey);
       }
     }
@@ -9315,7 +9470,7 @@ async function handleAdminEditRoute(request: Request, env: Env, ctx: ExecutionCo
       await deleteAdImage(env, newImage.key);
     }
     console.error('Failed to update admin ad with image', error);
-    return renderEditPage(env, currentUser, ad, adImageKeys, 'Не удалось сохранить картинку', buildAdminActionUrl(`/admin/edit/${ad.id}`, 'ads', page));
+    return renderEditPage(env, currentUser, ad, adImages, 'Не удалось сохранить картинку', buildAdminActionUrl(`/admin/edit/${ad.id}`, 'ads', page));
   }
 
   return redirectWithHeaders(buildAdminUrl('ads', page, 'Объявление сохранено'));
