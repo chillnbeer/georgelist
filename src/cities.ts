@@ -10,6 +10,8 @@ export type CitySlug = (typeof CITIES)[number]['slug'];
 
 export const CITY_LABELS = Object.fromEntries(CITIES.map((city) => [city.slug, city.label])) as Record<CitySlug, string>;
 
+const CITY_SLUG_SET = new Set<CitySlug>(CITIES.map((city) => city.slug));
+
 export const CITY_COOKIE_NAME = 'city';
 export const CITY_DEFAULT_SLUG: CitySlug = 'ekb';
 
@@ -23,7 +25,7 @@ export const CITY_MAP_CENTERS = {
 
 export function normalizeCity(city: string | null | undefined): CitySlug {
   const value = (city || '').trim().toLowerCase();
-  return (CITIES.find((item) => item.slug === value)?.slug || CITY_DEFAULT_SLUG) as CitySlug;
+  return CITY_SLUG_SET.has(value as CitySlug) ? (value as CitySlug) : CITY_DEFAULT_SLUG;
 }
 
 export function cityLabel(city: string | null | undefined): string {
@@ -36,7 +38,11 @@ export function cityMapCenter(city: string | null | undefined): { lat: number; l
 }
 
 export function isValidCity(city: string | null | undefined): boolean {
-  return Boolean(city && CITIES.some((item) => item.slug === city));
+  if (!city) {
+    return false;
+  }
+
+  return CITY_SLUG_SET.has(city.trim().toLowerCase() as CitySlug);
 }
 
 export function buildCityCookie(city: string, secure: boolean): string {

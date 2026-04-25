@@ -145,16 +145,20 @@ export async function listConversationMessages(env: { DB: D1Database }, conversa
   const result = await env.DB.prepare(
     `
       SELECT id, conversation_id, sender_user_id, body, is_read, created_at
-      FROM bot_chat_messages
-      WHERE conversation_id = ?
-      ORDER BY id DESC
-      LIMIT ? OFFSET ?
+      FROM (
+        SELECT id, conversation_id, sender_user_id, body, is_read, created_at
+        FROM bot_chat_messages
+        WHERE conversation_id = ?
+        ORDER BY id DESC
+        LIMIT ? OFFSET ?
+      )
+      ORDER BY id ASC
     `
   )
     .bind(conversationId, limit, offset)
     .all<ChatMessageRow>();
 
-  return result.results.reverse();
+  return result.results;
 }
 
 export async function listAllConversationMessages(env: { DB: D1Database }, conversationId: number): Promise<ChatMessageRow[]> {
