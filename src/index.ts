@@ -29,7 +29,7 @@ import {
 } from './chat';
 import { html, json, redirect, redirectWithHeaders, redirectWithMessage, text } from './http';
 import type { Env, CurrentUser, AdRow, PublicAdCardRow, AdCardRow, PublicUserRow, AdForm, AdLocationInput, AdImageUpload, CompressedAdImageUpload, TelegramCallbackQuery, TelegramUpdate, UserIdentityRow, SessionRow, TelegramAuthPayload, BotDraftRow, AdminUserRow, AdminSection, AdminPagination, UserBotScreenRef, LocationSearchResult } from './types';
-import { CATEGORIES, AD_TYPES, CATEGORY_LABELS, AD_TYPE_LABELS, type CategorySlug, type AdTypeSlug, SESSION_MAX_AGE_SECONDS, PASSWORD_HASH_ITERATIONS, DUMMY_PASSWORD_HASH, ADS_HOME_LIMIT, ADS_USER_LIMIT, ADS_SEARCH_LIMIT, TELEGRAM_AUTH_COOKIE_NAME, TELEGRAM_AUTH_COOKIE_MAX_AGE_SECONDS, TELEGRAM_AUTH_MAX_AGE_SECONDS, AD_IMAGE_MAX_BYTES, USER_BOT_MENU_CREATE, USER_BOT_MENU_SECTIONS, USER_BOT_MENU_SEARCH, USER_BOT_MENU_EDIT, USER_BOT_MENU_DELETE, USER_BOT_MENU_SETTINGS, USER_BOT_MENU_MY, USER_BOT_MENU_HOME, USER_BOT_CANCEL_FLOW, USER_BOT_MENU_MY_AD, USER_BOT_SECTION_PREFIX, USER_BOT_SECTION_AD_PREFIX, USER_BOT_SECTION_MORE_PREFIX, USER_BOT_SEARCH_RESULTS, USER_BOT_SEARCH_AD_PREFIX, USER_BOT_SEARCH_MORE_PREFIX, BOT_ADS_PAGE_SIZE, USER_BOT_DELETE_PREFIX, USER_BOT_SETTINGS_PREFIX, USER_BOT_CHAT_PREFIX, USER_BOT_CHAT_DOWNLOAD_PREFIX, USER_BOT_CHAT_HIDE_PREFIX, USER_BOT_CHAT_START_PREFIX, USER_BOT_CHAT_LIST, USER_BOT_DRAFT_PREFIX, USER_BOT_DRAFT_TYPE_PREFIX, USER_BOT_DRAFT_CANCEL, USER_BOT_DRAFT_SEND, USER_BOT_EDIT_DRAFT_CANCEL, USER_BOT_EDIT_DRAFT_SAVE, ADMIN_BOT_MENU_HOME, USER_AVATAR_MAX_BYTES, AD_IMAGE_MAX_DIMENSION, AD_IMAGE_JPEG_QUALITY, AD_LOCATION_RADIUS_OPTIONS, AD_LOCATION_DEFAULT_RADIUS, AD_LOCATION_LABEL_MAX_LENGTH, AD_TITLE_MAX_LENGTH, AD_BODY_MAX_LENGTH, AD_CONTACT_MAX_LENGTH, AD_MESSAGE_MAX_LENGTH, USER_DISPLAY_NAME_MAX_LENGTH, ADMIN_PAGE_SIZE, ALLOWED_IMAGE_MIME_TYPES } from './constants';
+import { CATEGORIES, AD_TYPES, CATEGORY_LABELS, AD_TYPE_LABELS, type CategorySlug, type AdTypeSlug, SESSION_MAX_AGE_SECONDS, PASSWORD_HASH_ITERATIONS, DUMMY_PASSWORD_HASH, ADS_HOME_LIMIT, ADS_USER_LIMIT, ADS_SEARCH_LIMIT, TELEGRAM_AUTH_COOKIE_NAME, TELEGRAM_AUTH_COOKIE_MAX_AGE_SECONDS, TELEGRAM_AUTH_MAX_AGE_SECONDS, AD_IMAGE_MAX_BYTES, USER_BOT_MENU_CREATE, USER_BOT_MENU_SECTIONS, USER_BOT_MENU_SEARCH, USER_BOT_MENU_EDIT, USER_BOT_MENU_DELETE, USER_BOT_MENU_SETTINGS, USER_BOT_MENU_MY, USER_BOT_MENU_HOME, USER_BOT_CANCEL_FLOW, USER_BOT_MENU_MY_AD, USER_BOT_SECTION_PREFIX, USER_BOT_SECTION_AD_PREFIX, USER_BOT_SECTION_MORE_PREFIX, USER_BOT_SEARCH_RESULTS, USER_BOT_SEARCH_AD_PREFIX, USER_BOT_SEARCH_MORE_PREFIX, BOT_ADS_PAGE_SIZE, USER_BOT_DELETE_PREFIX, USER_BOT_SETTINGS_PREFIX, USER_BOT_CHAT_PREFIX, USER_BOT_CHAT_DOWNLOAD_PREFIX, USER_BOT_CHAT_HIDE_PREFIX, USER_BOT_CHAT_START_PREFIX, USER_BOT_CHAT_LIST, USER_BOT_DRAFT_PREFIX, USER_BOT_DRAFT_TYPE_PREFIX, USER_BOT_DRAFT_CANCEL, USER_BOT_DRAFT_SEND, USER_BOT_EDIT_DRAFT_CANCEL, USER_BOT_EDIT_DRAFT_SAVE, USER_BOT_DRAFT_IMAGE_SKIP, ADMIN_BOT_MENU_HOME, USER_AVATAR_MAX_BYTES, AD_IMAGE_MAX_DIMENSION, AD_IMAGE_JPEG_QUALITY, AD_LOCATION_RADIUS_OPTIONS, AD_LOCATION_DEFAULT_RADIUS, AD_LOCATION_LABEL_MAX_LENGTH, AD_TITLE_MAX_LENGTH, AD_BODY_MAX_LENGTH, AD_CONTACT_MAX_LENGTH, AD_MESSAGE_MAX_LENGTH, USER_DISPLAY_NAME_MAX_LENGTH, ADMIN_PAGE_SIZE, ALLOWED_IMAGE_MIME_TYPES } from './constants';
 import { textEncoder, textDecoder, htmlEscape, categoryLabel, normalizeCategory, typeLabel, normalizeAdType, buildCategoryRows, buildTypeRows, escapeLikePattern, isImageMimeType, getImageExtension, normalizeMimeType, getImageMimeTypeFromPath, isFileLike, truncateText, bytesToBase64, base64ToBytes, bytesToHex, constantTimeEqual, hexToBytes, formatSqliteTimestamp, base64UrlEncode, base64UrlDecode, isValidEmail, isValidLogin, isSecureRequest, sanitizeNextPath, parseOptionalNumberField, parseOptionalTextField, normalizeLocationRadius, formatLocationRadius } from './utils';
 import { sha256Hex, sha256Bytes, hmacSha256Hex, hashPassword, verifyPassword, generateSessionToken, hashSessionToken } from './crypto';
 import { buildPublicSiteUrl, buildMediaUrl, putMediaObject, compressAdImage, readImageUpload, readAvatarUpload, putAdImage, putCompressedAdImage, deleteAdImage, deleteAvatarImage, downloadTelegramImage, putTelegramAvatar } from './images';
@@ -83,6 +83,7 @@ let cachedEnsureAdLocationColumnsPromise: Promise<void> | null = null;
 let cachedEnsureUserCityColumnPromise: Promise<void> | null = null;
 let cachedEnsureAdTypeColumnPromise: Promise<void> | null = null;
 let cachedEnsureBotDraftColumnsPromise: Promise<void> | null = null;
+let cachedEnsureBotDraftImageColumnPromise: Promise<void> | null = null;
 let cachedEnsureChatTablesPromise: Promise<void> | null = null;
 let cachedEnsureChatMessageReadColumnPromise: Promise<void> | null = null;
 const NOOP_EXECUTION_CONTEXT = {
@@ -3637,6 +3638,15 @@ async function sendUserBotEditBodyPrompt(env: Env, telegramUserId: string, chatI
   await showUserBotScreen(env, telegramUserId, chatId, 'Введи новый текст объявления', userBotCancelHomeMarkup());
 }
 
+async function sendUserBotImagePrompt(env: Env, telegramUserId: string, chatId: number): Promise<void> {
+  await showUserBotScreen(env, telegramUserId, chatId, 'Пришли фото объявления или пропусти', {
+    inline_keyboard: [
+      [{ text: 'Пропустить →', callback_data: USER_BOT_DRAFT_IMAGE_SKIP }],
+      [{ text: '🏠 Отмена', callback_data: USER_BOT_CANCEL_FLOW }],
+    ],
+  });
+}
+
 async function handleUserBotSettingsLoginUpdate(
   env: Env,
   telegramUserId: string,
@@ -4700,6 +4710,25 @@ async function ensureBotDraftColumns(env: Env): Promise<void> {
   return cachedEnsureBotDraftColumnsPromise;
 }
 
+async function ensureBotDraftImageColumn(env: Env): Promise<void> {
+  if (cachedEnsureBotDraftImageColumnPromise) {
+    return cachedEnsureBotDraftImageColumnPromise;
+  }
+
+  cachedEnsureBotDraftImageColumnPromise = (async () => {
+    const tableInfo = await env.DB.prepare(`PRAGMA table_info(bot_drafts)`).all<{ name: string }>();
+    const columnNames = new Set((tableInfo.results || []).map((row) => row.name));
+    if (!columnNames.has('image_file_id')) {
+      await env.DB.prepare(`ALTER TABLE bot_drafts ADD COLUMN image_file_id TEXT`).run();
+    }
+  })().catch((error: unknown) => {
+    cachedEnsureBotDraftImageColumnPromise = null;
+    throw error;
+  });
+
+  return cachedEnsureBotDraftImageColumnPromise;
+}
+
 async function ensureChatTables(env: Env): Promise<void> {
   if (cachedEnsureChatTablesPromise) {
     return cachedEnsureChatTablesPromise;
@@ -5302,7 +5331,8 @@ async function upsertBotDraft(
   replyUserId: number | null = null,
   replyAdId: number | null = null,
   passwordCurrent: string | null = null,
-  passwordNew: string | null = null
+  passwordNew: string | null = null,
+  imageFileId: string | null = null
 ): Promise<void> {
   await env.DB.prepare(
     `
@@ -5323,10 +5353,11 @@ async function upsertBotDraft(
         password_new,
         title,
         body,
+        image_file_id,
         created_at,
         updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
       ON CONFLICT(telegram_user_id) DO UPDATE SET
         action = excluded.action,
         step = excluded.step,
@@ -5349,6 +5380,10 @@ async function upsertBotDraft(
         password_new = excluded.password_new,
         title = excluded.title,
         body = excluded.body,
+        image_file_id = CASE
+          WHEN excluded.image_file_id IS NULL THEN image_file_id
+          ELSE excluded.image_file_id
+        END,
         updated_at = CURRENT_TIMESTAMP
     `
   )
@@ -5368,7 +5403,8 @@ async function upsertBotDraft(
       passwordCurrent,
       passwordNew,
       title,
-      body
+      body,
+      imageFileId
     )
     .run();
 }
@@ -5549,6 +5585,18 @@ async function handleUserBotDraftAction(
     return;
   }
 
+  if (action === 'image') {
+    if (draft.action !== 'create') {
+      return;
+    }
+    await upsertBotDraft(env, telegramUserId, 'create', 'confirm', draft.category, draft.title, draft.body, draft.ad_id, null, null, null, null, draft.ad_type);
+    const nextDraft = await getBotDraft(env, telegramUserId);
+    if (nextDraft) {
+      await sendUserBotConfirmation(env, chatId, nextDraft);
+    }
+    return;
+  }
+
   if (action === 'confirm') {
     if ((draft.action === 'create' && value === 'cancel') || (draft.action === 'edit' && value === 'cancel')) {
       await clearBotDraft(env, telegramUserId);
@@ -5577,8 +5625,18 @@ async function handleUserBotDraftAction(
         return;
       }
 
+      let imageFile: File | null = null;
+      if (draft.image_file_id) {
+        try {
+          const { bytes, mimeType } = await downloadTelegramImage(env, draft.image_file_id, userBotApi, getTelegramUserBotToken);
+          imageFile = new File([bytes], `image.${getImageExtension(mimeType)}`, { type: mimeType });
+        } catch (error) {
+          console.error('Failed to download ad image from Telegram', error);
+        }
+      }
+
       try {
-        await createAd(env, ctx, draft.title, draft.body, null, userCity, draft.category, draft.ad_type, identity.user_id, null, null);
+        await createAd(env, ctx, draft.title, draft.body, null, userCity, draft.category, draft.ad_type, identity.user_id, imageFile, null);
         await clearBotDraft(env, telegramUserId);
         await sendUserBotMenu(env, telegramUserId, chatId, 'Объявление отправлено на модерацию');
       } catch (error) {
@@ -6002,11 +6060,8 @@ async function handleUserBotText(
         return;
       }
 
-      await upsertBotDraft(env, telegramUserId, 'create', 'confirm', draft.category, draft.title, text, draft.ad_id, null, null, null, null, draft.ad_type);
-      const nextDraft = await getBotDraft(env, telegramUserId);
-      if (nextDraft) {
-        await sendUserBotConfirmation(env, chatId, nextDraft);
-      }
+      await upsertBotDraft(env, telegramUserId, 'create', 'image', draft.category, draft.title, text, draft.ad_id, null, null, null, null, draft.ad_type);
+      await sendUserBotImagePrompt(env, telegramUserId, chatId);
       return;
     }
 
@@ -6497,6 +6552,12 @@ async function handleUserBotCallback(
     return json({ ok: true });
   }
 
+  if (data === USER_BOT_DRAFT_IMAGE_SKIP) {
+    await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
+    await handleUserBotDraftAction(env, telegramUserId, chatId, 'image', 'skip', ctx);
+    return json({ ok: true });
+  }
+
   if (data === USER_BOT_DRAFT_SEND) {
     await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
     await handleUserBotDraftAction(env, telegramUserId, chatId, 'confirm', 'send', ctx);
@@ -6560,6 +6621,20 @@ async function handleUserWebhook(request: Request, env: Env, ctx: ExecutionConte
       if (messageId !== null) {
         await deleteTelegramMessage(env, chatId, messageId).catch((error: unknown) => {
           console.error('Failed to delete avatar message from Telegram', error);
+        });
+      }
+      return json({ ok: true });
+    }
+
+    if (draft?.action === 'create' && draft.step === 'image') {
+      await upsertBotDraft(env, telegramUserId, 'create', 'confirm', draft.category, draft.title, draft.body, draft.ad_id, null, null, null, null, draft.ad_type, null, null, null, null, avatarFileId);
+      const nextDraft = await getBotDraft(env, telegramUserId);
+      if (nextDraft) {
+        await sendUserBotConfirmation(env, chatId, nextDraft);
+      }
+      if (messageId !== null) {
+        await deleteTelegramMessage(env, chatId, messageId).catch((error: unknown) => {
+          console.error('Failed to delete ad image message from Telegram', error);
         });
       }
       return json({ ok: true });
@@ -7914,6 +7989,7 @@ export default {
     await ensureAdLocationColumns(env);
     await ensureAdTypeColumn(env);
     await ensureBotDraftColumns(env);
+    await ensureBotDraftImageColumn(env);
     await ensureChatTables(env);
     await ensureChatMessageReadColumn(env);
 

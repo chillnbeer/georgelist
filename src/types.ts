@@ -214,6 +214,7 @@ export type BotDraftRow = {
   password_new: string | null;
   title: string | null;
   body: string | null;
+  image_file_id: string | null;
   created_at: string;
   updated_at: string;
 };

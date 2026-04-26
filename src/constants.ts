@@ -71,6 +71,7 @@ export const USER_BOT_DRAFT_CANCEL = 'draft:confirm:cancel';
 export const USER_BOT_DRAFT_SEND = 'draft:confirm:send';
 export const USER_BOT_EDIT_DRAFT_CANCEL = 'draft:edit:cancel';
 export const USER_BOT_EDIT_DRAFT_SAVE = 'draft:edit:save';
+export const USER_BOT_DRAFT_IMAGE_SKIP = 'draft:image:skip';
 export const ADMIN_BOT_MENU_HOME = 'admin:home';
 export const USER_AVATAR_MAX_BYTES = 5 * 1024 * 1024;
 export const AD_IMAGE_MAX_DIMENSION = 1600;
