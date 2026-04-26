@@ -10406,36 +10406,37 @@ async function handlePublicGetRoute(
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    await ensureAdImageColumns(env);
-    await ensureAdImagesTable(env);
-    await ensureUserAvatarColumns(env);
-    await ensureUserCityColumn(env);
-    await ensureAdContactColumn(env);
-    await ensureAdCityColumn(env);
-    await ensureAdLocationColumns(env);
-    await ensureAdTypeColumn(env);
-    await ensureBotDraftColumns(env);
-    await ensureChatTables(env);
-    await ensureChatMessageReadColumn(env);
-    const url = new URL(request.url);
-    const path = url.pathname;
-    let currentUserPromise: Promise<CurrentUser | null> | null = null;
-    const getCurrentUserCached = async (): Promise<CurrentUser | null> => {
-      if (!currentUserPromise) {
-        currentUserPromise = getCurrentUser(request, env);
+    try {
+      await ensureAdImageColumns(env);
+      await ensureAdImagesTable(env);
+      await ensureUserAvatarColumns(env);
+      await ensureUserCityColumn(env);
+      await ensureAdContactColumn(env);
+      await ensureAdCityColumn(env);
+      await ensureAdLocationColumns(env);
+      await ensureAdTypeColumn(env);
+      await ensureBotDraftColumns(env);
+      await ensureChatTables(env);
+      await ensureChatMessageReadColumn(env);
+      const url = new URL(request.url);
+      const path = url.pathname;
+      let currentUserPromise: Promise<CurrentUser | null> | null = null;
+      const getCurrentUserCached = async (): Promise<CurrentUser | null> => {
+        if (!currentUserPromise) {
+          currentUserPromise = getCurrentUser(request, env);
+        }
+        return currentUserPromise;
+      };
+      const publicGetRouteResponse = await handlePublicGetRoute(request, env, path, url, getCurrentUserCached);
+      if (publicGetRouteResponse) {
+        return publicGetRouteResponse;
       }
-      return currentUserPromise;
-    };
-    const publicGetRouteResponse = await handlePublicGetRoute(request, env, path, url, getCurrentUserCached);
-    if (publicGetRouteResponse) {
-      return publicGetRouteResponse;
-    }
 
-    if (path === '/register') {
-      if (request.method === 'GET') return handleRegisterGet(request, env);
-      if (request.method === 'POST') return handleRegisterPost(request, env);
-      return methodNotAllowed();
-    }
+      if (path === '/register') {
+        if (request.method === 'GET') return handleRegisterGet(request, env);
+        if (request.method === 'POST') return handleRegisterPost(request, env);
+        return methodNotAllowed();
+      }
 
     if (path === '/login') {
       if (request.method === 'GET') return handleLoginGet(request, env);
@@ -10596,6 +10597,10 @@ export default {
       }
     }
 
-    return renderNotFoundPage(await getCurrentUserCached());
+      return renderNotFoundPage(await getCurrentUserCached());
+    } catch (error) {
+      console.error('Unhandled worker error', error);
+      return text('Internal Server Error', 500);
+    }
   },
 } satisfies ExportedHandler<Env>;
