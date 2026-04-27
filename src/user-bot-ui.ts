@@ -27,16 +27,8 @@ import {
   USER_BOT_SECTION_PREFIX,
   USER_BOT_SETTINGS_PREFIX,
 } from './constants';
+import { buildPublicSiteUrl } from './site-url';
 import type { Env } from './types';
-
-function getPublicSiteUrl(env: Env): string {
-  return (env.PUBLIC_SITE_URL || env.SITE_URL || 'https://georgelist.chillnbeer.workers.dev').replace(/\/+$/, '');
-}
-
-function buildPublicSiteUrl(env: Env, path = '/'): string {
-  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
-  return `${getPublicSiteUrl(env)}${normalizedPath}`;
-}
 
 export function userBotMenuMarkup(env: Env): Record<string, unknown> {
   return {
