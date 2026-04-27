@@ -84,6 +84,7 @@ import {
   TELEGRAM_AUTH_COOKIE_NAME,
   TELEGRAM_AUTH_MAX_AGE_SECONDS,
   USER_AVATAR_MAX_BYTES,
+  USER_BOT_BROWSE_SECTIONS_PREFIX,
   USER_BOT_CANCEL_FLOW,
   USER_BOT_CHAT_DOWNLOAD_PREFIX,
   USER_BOT_CHAT_HIDE_PREFIX,
@@ -212,6 +213,7 @@ export { buildConversationExportFilename, buildConversationHistoryExport } from 
 import { clearBotDraft, getBotDraft, upsertBotDraft } from './bot-drafts';
 import {
   buildUserBotAdListText,
+  sendUserBotBrowseSection,
   sendUserBotSearchAdDetail,
   sendUserBotSearchPrompt,
   sendUserBotSearchResults,
@@ -5710,6 +5712,19 @@ async function handleUserBotCallback(
     const userIdentity = await findTelegramIdentity(env, telegramUserId);
     const user = userIdentity ? await findUserById(env, userIdentity.user_id) : null;
     await sendUserBotMenu(env, telegramUserId, chatId, user ? 'С возвращением в жоржлист' : 'Добро пожаловать в жоржлист', user?.login || null);
+    return json({ ok: true });
+  }
+
+  if (data.startsWith(USER_BOT_BROWSE_SECTIONS_PREFIX)) {
+    const sectionSlug = data.slice(USER_BOT_BROWSE_SECTIONS_PREFIX.length);
+    if (sectionSlug) {
+      await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
+      await sendUserBotBrowseSection(env, telegramUserId, chatId, sectionSlug);
+      return json({ ok: true });
+    }
+
+    await answerUserCallbackQuery(env, callbackQuery.id).catch(() => {});
+    await sendUserBotSections(env, telegramUserId, chatId);
     return json({ ok: true });
   }
 
