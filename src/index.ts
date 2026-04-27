@@ -1117,6 +1117,40 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       line-height: 1.6;
       color: #333;
     }
+    .sections-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 14px;
+      margin: 14px 0;
+    }
+    .section-card {
+      border: 1px solid #ddd;
+      background: #fafafa;
+      padding: 12px;
+      border-radius: 0;
+    }
+    .section-card-title {
+      font-weight: 700;
+      color: #5757a3;
+      margin: 0 0 12px;
+      font-size: 14px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid #ddd;
+    }
+    .section-card-categories {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 6px 12px;
+    }
+    .section-card-categories a {
+      color: #4444bb;
+      text-decoration: none;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+    .section-card-categories a:hover {
+      text-decoration: underline;
+    }
     .categories-list {
       font-size: 13px;
       line-height: 1.6;
@@ -2184,18 +2218,23 @@ ${nav(currentUser, currentCity, currentPath)}
 
 function renderHome(currentUser: CurrentUser | null = null, currentCity: string | null = null, currentPath = '/'): Response {
   const sectionsHtml = SECTIONS.map((section) => {
-    const categoriesLinks = section.categories
+    const categoriesHtml = section.categories
       .map((category) => `<a href="/category/${htmlEscape(category.slug)}">${htmlEscape(category.label)}</a>`)
-      .join(' · ');
+      .join('');
 
-    return `<p><strong>${htmlEscape(section.emoji)} ${htmlEscape(section.label)}</strong><br>${categoriesLinks}</p>`;
+    return `<div class="section-card">
+  <div class="section-card-title">${htmlEscape(section.emoji)} ${htmlEscape(section.label)}</div>
+  <div class="section-card-categories">
+    ${categoriesHtml}
+  </div>
+</div>`;
   }).join('');
 
   return shell(
     'жоржлист',
     `<h1><a class="site-title" href="/">жоржлист</a></h1>
 ${nav(currentUser, currentCity, currentPath)}
-<div class="home-content">
+<div class="sections-grid">
   ${sectionsHtml}
 </div>`
   );
