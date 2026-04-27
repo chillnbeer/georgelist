@@ -1452,6 +1452,7 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       border-radius: 6px;
       overflow: hidden;
       background: #f5f5f5;
+      height: min(55vh, 520px);
     }
     .ad-gallery-main img {
       width: 100%;
