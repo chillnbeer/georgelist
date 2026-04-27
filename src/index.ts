@@ -2351,6 +2351,25 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
         grid-template-columns: 1fr;
       }
     }
+    .search-form {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      align-items: center;
+    }
+    .search-form input[type=search] {
+      flex: 1;
+      min-width: 160px;
+      margin: 0;
+    }
+    .search-form-cat {
+      width: auto;
+      margin: 0;
+    }
+    .search-form button {
+      margin: 0;
+      white-space: nowrap;
+    }
     @media (max-width: 700px) {
       .ad-page-image,
       .image-preview {
@@ -2361,6 +2380,10 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       }
       .location-picker-search-row {
         grid-template-columns: 1fr;
+      }
+      .search-form input[type=search],
+      .search-form-cat {
+        width: 100%;
       }
     }
   </style>
@@ -2397,11 +2420,18 @@ function renderAdList(env: Env, ads: AdCardRow[]): string {
     .join('')}</div>`;
 }
 
-function renderSearchForm(query = ''): string {
+function renderSearchForm(query = '', category = ''): string {
+  const categoryOptions = [
+    `<option value="">Все категории</option>`,
+    ...CATEGORIES.map((c) => `<option value="${c.slug}"${c.slug === category ? ' selected' : ''}>${htmlEscape(c.label)}</option>`),
+  ].join('');
+
   return `<div class="section">
-  <h2>Поиск</h2>
-  <form method="get" action="/search">
-    <input name="q" type="search" value="${htmlEscape(query)}" placeholder="Искать объявления" />
+  <form method="get" action="/search" class="search-form">
+    <input name="q" type="search" value="${htmlEscape(query)}" placeholder="Поиск по объявлениям" />
+    <select name="cat" class="search-form-cat">
+      ${categoryOptions}
+    </select>
     <button type="submit">Найти</button>
   </form>
 </div>`;
@@ -2618,13 +2648,13 @@ function renderHome(currentUser: CurrentUser | null = null, currentCity: string 
     'жоржлист',
     `<h1><a class="site-title" href="/">жоржлист</a></h1>
 ${nav(currentUser, currentCity, currentPath)}
+${renderSearchForm()}
 <div class="section">
   <h2>Категории</h2>
   <ul>
     ${categories}
   </ul>
-</div>
-${renderSearchForm()}`
+</div>`
   );
 }
 
@@ -2646,7 +2676,7 @@ ${nav(currentUser, currentCity, currentPath)}
   );
 }
 
-function renderSearchPage(env: Env, query: string, ads: AdCardRow[], currentUser: CurrentUser | null = null, currentCity: string | null = null, currentPath = '/search'): Response {
+function renderSearchPage(env: Env, query: string, category: string, ads: AdCardRow[], currentUser: CurrentUser | null = null, currentCity: string | null = null, currentPath = '/search'): Response {
   const hasQuery = query.trim().length > 0;
   const content = hasQuery
     ? ads.length
@@ -2658,13 +2688,7 @@ function renderSearchPage(env: Env, query: string, ads: AdCardRow[], currentUser
     'поиск - жоржлист',
     `<h1><a class="site-title" href="/">жоржлист</a></h1>
 ${nav(currentUser, currentCity, currentPath)}
-<div class="section">
-  <h2>Поиск</h2>
-  <form method="get" action="/search">
-    <input name="q" type="search" value="${htmlEscape(query)}" placeholder="Искать объявления" />
-    <button type="submit">Найти</button>
-  </form>
-</div>
+${renderSearchForm(query, category)}
 <div class="section">
   ${content}
 </div>`,
@@ -6279,7 +6303,7 @@ async function listPublishedAdsByCategoryPage(
   return result.results;
 }
 
-async function searchPublishedAds(env: Env, query: string, city: string | null = null): Promise<AdCardRow[]> {
+async function searchPublishedAds(env: Env, query: string, city: string | null = null, category: string | null = null): Promise<AdCardRow[]> {
   const trimmed = query.trim();
   if (!trimmed) {
     return [];
@@ -6302,6 +6326,7 @@ async function searchPublishedAds(env: Env, query: string, city: string | null =
       WHERE ads.status = 'published'
         AND ads.deleted_at IS NULL
         AND COALESCE(ads.city, ?) = ?
+        AND (? IS NULL OR ads.category = ?)
         AND (
           LOWER(ads.title) LIKE ? ESCAPE '\\'
           OR LOWER(ads.body) LIKE ? ESCAPE '\\'
@@ -6310,7 +6335,7 @@ async function searchPublishedAds(env: Env, query: string, city: string | null =
       LIMIT ?
     `
   )
-    .bind(CITY_DEFAULT_SLUG, CITY_DEFAULT_SLUG, normalizeCity(city), pattern, pattern, ADS_SEARCH_LIMIT)
+    .bind(CITY_DEFAULT_SLUG, CITY_DEFAULT_SLUG, normalizeCity(city), category, category, pattern, pattern, ADS_SEARCH_LIMIT)
     .all<AdCardRow>();
 
   return result.results;
@@ -10390,13 +10415,17 @@ async function handlePublicGetRoute(
 
   if (path === '/search' && request.method === 'GET') {
     const query = url.searchParams.get('q') || '';
+    const rawCategory = url.searchParams.get('cat') || '';
+    const category = CATEGORIES.some((c) => c.slug === rawCategory) ? rawCategory : '';
     const currentUser = await getCurrentUserCached();
+    const currentCity = getCurrentCityFromRequest(request, currentUser);
     return renderSearchPage(
       env,
       query,
-      await searchPublishedAds(env, query, getCurrentCityFromRequest(request, currentUser)),
+      category,
+      await searchPublishedAds(env, query, currentCity, category || null),
       currentUser,
-      getCurrentCityFromRequest(request, currentUser),
+      currentCity,
       `${url.pathname}${url.search}`
     );
   }
