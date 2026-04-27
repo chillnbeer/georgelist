@@ -168,3 +168,4 @@ dist
 
 # local / sensitive
 .DS_Store
+.claude/
