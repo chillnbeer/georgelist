@@ -1111,28 +1111,56 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       cursor: wait;
     }
     .section { margin: 0 0 14px; }
-    .home-content {
-      margin: 14px 0;
+    .page-container {
+      max-width: 1200px;
+      margin: 0 auto;
+      display: flex;
+      gap: 20px;
     }
-    .sections-list {
+    .sidebar-left {
+      width: 120px;
+      flex-shrink: 0;
+      font-size: 12px;
+    }
+    .sidebar-left p {
+      margin: 2px 0;
+      line-height: 1.3;
+    }
+    .sidebar-left a {
+      display: block;
+      margin: 2px 0;
+      font-size: 11px;
+      line-height: 1.3;
+    }
+    .home-content {
+      flex: 1;
+      min-width: 0;
+    }
+    .sections-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      grid-template-columns: repeat(3, 1fr);
       gap: 0;
       margin: 0;
     }
     .section-block {
       margin: 0;
-      padding: 0;
+      padding: 4px 12px;
+      border-right: 1px solid #ddd;
+      border-bottom: 1px solid #ddd;
+    }
+    .section-block:nth-child(3n) {
+      border-right: none;
     }
     .section-title {
       font-weight: 700;
-      font-size: 14px;
-      margin: 0;
+      font-size: 12px;
+      margin: 4px 0 2px;
       padding: 0;
+      color: #000;
     }
     .section-categories {
-      font-size: 13px;
-      line-height: 1.8;
+      font-size: 11px;
+      line-height: 1.4;
       margin: 0;
       padding: 0;
     }
@@ -1140,6 +1168,27 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       display: block;
       margin: 0;
       padding: 0;
+      color: #0066cc;
+      text-decoration: none;
+      line-height: 1.4;
+    }
+    .section-categories a:hover {
+      text-decoration: underline;
+    }
+    .sidebar-right {
+      width: 140px;
+      flex-shrink: 0;
+      font-size: 11px;
+    }
+    .sidebar-right p {
+      margin: 4px 0;
+      line-height: 1.3;
+    }
+    .sidebar-right a {
+      display: block;
+      margin: 2px 0;
+      font-size: 11px;
+      line-height: 1.3;
     }
     .categories-list {
       font-size: 13px;
@@ -2241,8 +2290,25 @@ async function renderHome(env: Env, currentUser: CurrentUser | null = null, curr
     'жоржлист',
     `<h1><a class="site-title" href="/">жоржлист</a></h1>
 ${nav(currentUser, currentCity, currentPath)}
-<div class="sections-list">
-  ${sectionsHtml}
+<div class="page-container">
+  <div class="sidebar-left">
+    <p><strong>жоржлист</strong></p>
+    <a href="/new">создать объявление</a>
+    <a href="/about">о проекте</a>
+    <a href="/search">поиск</a>
+  </div>
+  <div class="home-content">
+    <div class="sections-grid">
+      ${sectionsHtml}
+    </div>
+  </div>
+  <div class="sidebar-right">
+    <p><strong>города</strong></p>
+    <a href="/?city=msk">Москва</a>
+    <a href="/?city=spb">Санкт-Петербург</a>
+    <a href="/?city=ekb">Екатеринбург</a>
+    <a href="/?city=nsk">Новосибирск</a>
+  </div>
 </div>`
   );
 }
