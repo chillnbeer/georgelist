@@ -1137,6 +1137,20 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
       gap: 16px;
     }
+    .categories-list {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+      gap: 0;
+      padding: 0;
+      list-style: none;
+    }
+    .categories-list li {
+      margin: 0;
+      padding: 0;
+    }
+    .categories-list a {
+      color: inherit;
+    }
     .ad-actions {
       display: flex;
       flex-wrap: wrap;
@@ -1920,7 +1934,7 @@ ${nav(currentUser, currentCity, currentPath)}
 ${renderSearchForm()}
 <div class="section">
   <h2>Категории</h2>
-  <ul>
+  <ul class="categories-list">
     ${categories}
   </ul>
 </div>`
