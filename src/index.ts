@@ -1117,55 +1117,43 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
     .category-grid {
       display: grid;
       grid-template-columns: 1fr 1.25fr 1fr;
-      gap: 18px;
-      max-width: 760px;
+      gap: 20px;
+      max-width: none;
       margin: 20px 0;
     }
     .category-column {
       display: flex;
       flex-direction: column;
-      gap: 10px;
-    }
-    .category-column:nth-child(1) {
-      border-left: 2px solid #999;
-      padding-left: 12px;
+      gap: 12px;
     }
     .category-section {
       padding: 0;
       margin: 0;
     }
     .category-section h2 {
-      font-size: 15px;
-      line-height: 1;
-      margin: 0 0 3px;
+      font-size: 16px;
+      line-height: 1.1;
+      margin: 0 0 4px;
       padding: 2px 4px;
-      text-align: left;
-      background: #f0f0f0;
+      background: #eee;
       font-weight: bold;
-      border-bottom: 1px solid #ccc;
     }
     .category-links {
       columns: 2;
-      column-gap: 16px;
-      font-size: 12px;
-      line-height: 1.4;
-      margin-top: 2px;
+      column-gap: 20px;
+      font-size: inherit;
+      line-height: inherit;
     }
     .category-section.discussions .category-links {
       columns: 3;
     }
     .category-links a {
       display: block;
-      font-size: 12px;
-      line-height: 1.4;
+      white-space: nowrap;
+      word-break: normal;
+      overflow-wrap: normal;
       margin: 0;
       padding: 0;
-      color: #0066cc;
-      text-decoration: none;
-      word-break: break-word;
-    }
-    .category-links a:hover {
-      text-decoration: underline;
     }
     .categories-list {
       font-size: 13px;
