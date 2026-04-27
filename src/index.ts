@@ -1110,6 +1110,29 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       cursor: wait;
     }
     .section { margin: 0 0 14px; }
+    .ads-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+    .ad-row {
+      padding: 8px 0;
+      border-bottom: 1px solid #eee;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+    .ad-row a {
+      color: #0066cc;
+      text-decoration: none;
+    }
+    .ad-row a:hover {
+      text-decoration: underline;
+    }
+    .ad-row-date {
+      color: #666;
+      font-size: 12px;
+      margin-left: 8px;
+    }
     .ad {
       display: flex;
       flex-direction: column;
@@ -1308,6 +1331,20 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       border: 0;
       border-top: 1px solid #ddd;
       margin: 10px 0;
+    }
+    .ad-page-simple {
+      max-width: 600px;
+      line-height: 1.6;
+    }
+    .ad-page-simple h2 {
+      margin: 0 0 8px;
+      font-size: 20px;
+      font-weight: bold;
+    }
+    .ad-meta-line {
+      color: #666;
+      font-size: 13px;
+      margin-bottom: 16px;
     }
     .ad-page {
       display: grid;
@@ -1691,23 +1728,11 @@ function renderAdList(env: Env, ads: AdCardRow[]): string {
     return '<div class="empty">Пока нет объявлений.</div>';
   }
 
-  return `<div class="ad-grid">${ads
+  return `<div class="ads-list">${ads
     .map((ad) => {
-      const city = ad.city ? `${htmlEscape(cityLabel(ad.city))} · ` : '';
-      const category = ad.category ? `${htmlEscape(categoryLabel(ad.category))} · ` : '';
-      const type = renderTypeBadge(ad.type);
-      const author = ad.author_login
-        ? `<div class="ad-author">${renderAvatar(env, ad.author_avatar_key, ad.author_login, 'avatar-mini')}<a href="/u/${encodeURIComponent(ad.author_login)}">${htmlEscape(ad.author_login)}</a></div>`
-        : '';
-      return `<div class="ad">
-  ${renderAdImage(env, ad.image_key, ad.title, 'ad-image')}
-  <div class="ad-content">
-    <div class="title">${type}<a href="/ad/${ad.id}">${htmlEscape(ad.title)}</a></div>
-    <div class="meta">${city}${category}${htmlEscape(ad.created_at)}</div>
-    ${renderLocationBadge(ad)}
-    ${author}
-  </div>
-</div>`;
+      const city = ad.city ? ` (${htmlEscape(cityLabel(ad.city))})` : '';
+      const dateStr = new Date(ad.created_at).toLocaleDateString('ru-RU', { month: 'short', day: 'numeric' });
+      return `<div class="ad-row"><a href="/ad/${ad.id}">${htmlEscape(ad.title)}</a> ${city} <span class="ad-row-date">${dateStr}</span></div>`;
     })
     .join('')}</div>`;
 }
@@ -1787,35 +1812,18 @@ function renderAdImage(env: Env, key: string | null, alt: string, className: str
 
 function renderAdImagesGallery(env: Env, imageKeys: string[], alt: string): string {
   if (!imageKeys.length) {
-    return `<div class="ad-page-media"><div class="ad-page-media-placeholder">без фото</div></div>`;
+    return '';
   }
 
   const imageUrls = imageKeys.map((key) => buildMediaUrl(env, key));
-  const [mainImageUrl] = imageUrls;
-  return `<div class="ad-gallery">
-  <div class="ad-gallery-main" data-ad-gallery-main>
-    <a href="${htmlEscape(mainImageUrl)}" target="_blank" rel="noopener" data-ad-gallery-main-link>
-      <img src="${htmlEscape(mainImageUrl)}" alt="${htmlEscape(alt)}" loading="eager" data-ad-gallery-main-image />
-    </a>
-    ${
-      imageUrls.length > 1
-        ? `<button type="button" class="ad-gallery-nav ad-gallery-nav-prev" data-ad-gallery-prev aria-label="Предыдущее фото">‹</button>
-    <button type="button" class="ad-gallery-nav ad-gallery-nav-next" data-ad-gallery-next aria-label="Следующее фото">›</button>`
-        : ''
-    }
-  </div>
-  ${
-    imageUrls.length > 1
-      ? `<div class="ad-gallery-meta"><span data-ad-gallery-counter>1 / ${imageUrls.length}</span></div>
-  <div class="ad-gallery-thumbs">${imageUrls
-      .map(
-        (url, index) => `<button type="button" class="ad-gallery-thumb${index === 0 ? ' is-active' : ''}" data-ad-gallery-thumb data-index="${index}" data-full="${htmlEscape(url)}" aria-label="Фото ${index + 1}">
-      <img src="${htmlEscape(url)}" alt="${htmlEscape(alt)}" loading="lazy" />
-    </button>`
-      )
-      .join('')}</div>`
-      : ''
-  }
+  return `<div class="ad-images-simple">
+${imageUrls
+  .map(
+    (url) => `<a href="${htmlEscape(url)}" target="_blank" rel="noopener">
+    <img src="${htmlEscape(url)}" alt="${htmlEscape(alt)}" loading="lazy" style="max-width: 100%; margin-bottom: 8px;" />
+  </a>`
+  )
+  .join('')}
 </div>`;
 }
 
@@ -2167,24 +2175,18 @@ function renderPublicAdPage(
     `<h1><a class="site-title" href="/">жоржлист</a></h1>
 ${nav(currentUser, currentCity, currentPath)}
 <div class="section">
-  <div class="ad-page">
-    <div class="ad-page-main">
-      <h2 class="ad-page-title">${renderTypeBadge(ad.type)}${htmlEscape(ad.title)}</h2>
-      ${media}
-      <div class="ad-page-body">${htmlEscape(ad.body)}</div>
+  <div class="ad-page-simple">
+    <h2>${htmlEscape(ad.title)}</h2>
+    <div class="ad-meta-line">
+      ${ad.city ? `<strong>${htmlEscape(cityLabel(ad.city))}</strong> · ` : ''}
+      ${htmlEscape(ad.created_at)}
     </div>
-    <aside class="ad-page-aside">
-      ${author}
-      <div class="ad-page-badges">${renderCityBadge(ad.city)}<span class="badge">${htmlEscape(categoryLabel(ad.category))}</span>${publicLocationBadge}</div>
-      ${ad.contact ? `<div class="ad-page-contact"><strong>Контакты:</strong> ${htmlEscape(ad.contact)}</div>` : ''}
-      ${ad.city ? `<div class="ad-page-contact"><strong>Город:</strong> ${htmlEscape(cityLabel(ad.city))}</div>` : ''}
-      <div class="ad-page-footer">${htmlEscape(ad.created_at)}</div>
-      ${hasLocation ? renderLocationViewer(ad, currentCity) : ''}
-    </aside>
+    <div class="ad-page-body">${htmlEscape(ad.body)}</div>
+    ${ad.contact ? `<div style="margin-top: 12px; padding: 8px; background: #f5f5f5;"><strong>Контакты:</strong> ${htmlEscape(ad.contact)}</div>` : ''}
+    ${media}
+    ${hasLocation ? renderLocationViewer(ad, currentCity) : ''}
   </div>
-</div>
-${renderAdMessageSection(ad, currentUser, canMessageAuthor, currentUserHasTelegram, message)}
-${renderSearchForm()}`,
+</div>`,
     currentUser,
     200,
     `${hasLocation ? renderLeafletAssets() : ''}${renderAdGalleryScript()}`
@@ -2194,28 +2196,17 @@ ${renderSearchForm()}`,
 function renderPublicUserPage(env: Env, user: PublicUserRow, ads: AdCardRow[], currentUser: CurrentUser | null = null, currentCity: string | null = null, currentPath = '/'): Response {
   const isOwner = currentUser?.login === user.login;
   const adItems = ads.length
-    ? `<div class="ad-grid">${ads
+    ? `<div class="ads-list">${ads
         .map((ad) => {
-          const city = ad.city ? `${htmlEscape(cityLabel(ad.city))} · ` : '';
-          const category = ad.category ? `${htmlEscape(categoryLabel(ad.category))} · ` : '';
-          const type = renderTypeBadge(ad.type);
+          const city = ad.city ? ` (${htmlEscape(cityLabel(ad.city))})` : '';
+          const dateStr = new Date(ad.created_at).toLocaleDateString('ru-RU', { month: 'short', day: 'numeric' });
           const actions = isOwner
-            ? `<div class="ad-actions">
-      <a href="/my/edit/${ad.id}">Редактировать</a>
-      <form method="post" action="/my/delete/${ad.id}" style="display:inline">
-        <button class="link-button" type="submit" onclick="return confirm('Удалить объявление?')">Удалить</button>
-      </form>
-    </div>`
+            ? ` <span style="color: #666; font-size: 12px;">
+      [<a href="/my/edit/${ad.id}">редактировать</a> ·
+      <a href="#" onclick="return confirm('Удалить объявление?') && fetch('/my/delete/${ad.id}', {method: 'POST'})">удалить</a>]
+    </span>`
             : '';
-          return `<div class="ad">
-  ${renderAdImage(env, ad.image_key, ad.title, 'ad-image')}
-  <div class="ad-content">
-    <div class="title">${type}<a href="/ad/${ad.id}">${htmlEscape(ad.title)}</a></div>
-    <div class="meta">${city}${category}${htmlEscape(ad.created_at)}</div>
-    ${renderLocationBadge(ad)}
-    ${actions}
-  </div>
-</div>`;
+          return `<div class="ad-row"><a href="/ad/${ad.id}">${htmlEscape(ad.title)}</a> ${city} <span class="ad-row-date">${dateStr}</span>${actions}</div>`;
         })
         .join('')}</div>`
     : '<div class="empty">Пока нет объявлений.</div>';
@@ -2304,26 +2295,13 @@ ${nav(null, null, currentPath)}
 
 function renderMyPage(env: Env, currentUser: CurrentUser, ads: AdRow[], message: string | null = null, currentCity: string | null = null, currentPath = '/my'): Response {
   const items = ads.length
-    ? ads
+    ? `<div class="ads-list">${ads
         .map((ad) => {
-          const city = `${htmlEscape(cityLabel(ad.city))} · `;
-          const category = ad.category ? `${htmlEscape(categoryLabel(ad.category))} · ` : '';
-          const type = renderTypeBadge(ad.type);
-          return `<div class="ad">
-  ${renderAdImage(env, ad.image_key, ad.title, 'ad-image')}
-  <div class="ad-content">
-    <div class="title">${type}<a href="/ad/${ad.id}">${htmlEscape(ad.title)}</a></div>
-    <div class="meta">${htmlEscape(ad.status)} · ${city}${category}${htmlEscape(ad.created_at)}</div>
-    <div class="ad-actions">
-      <a href="/my/edit/${ad.id}">Редактировать</a>
-      <form method="post" action="/my/delete/${ad.id}" style="display:inline">
-        <button class="link-button" type="submit" onclick="return confirm('Удалить объявление?')">Удалить</button>
-      </form>
-    </div>
-  </div>
-</div>`;
+          const status = `[${htmlEscape(ad.status)}]`;
+          const dateStr = new Date(ad.created_at).toLocaleDateString('ru-RU', { month: 'short', day: 'numeric' });
+          return `<div class="ad-row">${status} <a href="/ad/${ad.id}">${htmlEscape(ad.title)}</a> <span class="ad-row-date">${dateStr}</span> [<a href="/my/edit/${ad.id}">ред</a> · <a href="#" onclick="return confirm('Удалить?') && fetch('/my/delete/${ad.id}', {method: 'POST'})">del</a>]</div>`;
         })
-        .join('')
+        .join('')}</div>`
     : '<div class="empty">Пока нет твоих объявлений.</div>';
 
   return shell(
@@ -2333,7 +2311,7 @@ ${nav(currentUser, currentCity, currentPath)}
 <div class="section">
   <h2>Мои объявления</h2>
   ${message ? `<p class="empty">${htmlEscape(message)}</p>` : ''}
-  <div class="ad-grid">${items}</div>
+  ${items}
 </div>`,
     currentUser
   );
