@@ -1110,6 +1110,122 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       cursor: wait;
     }
     .section { margin: 0 0 14px; }
+    .home-layout {
+      display: grid;
+      grid-template-columns: 120px 1fr;
+      gap: 20px;
+      margin: 14px 0;
+    }
+    .home-sidebar {
+      font-size: 13px;
+    }
+    .sidebar-section {
+      margin-bottom: 14px;
+    }
+    .btn-primary {
+      display: block;
+      padding: 6px 8px;
+      border: 1px solid #999;
+      background: #f0f0f0;
+      color: #000;
+      text-decoration: none;
+      text-align: center;
+      font-size: 12px;
+      border-radius: 2px;
+    }
+    .btn-primary:hover {
+      background: #e0e0e0;
+    }
+    .sidebar-search input {
+      width: 100% !important;
+      max-width: 100% !important;
+      padding: 4px 4px !important;
+      font-size: 12px !important;
+      margin-bottom: 0 !important;
+    }
+    .sidebar-links {
+      font-size: 11px;
+      line-height: 1.8;
+    }
+    .sidebar-links a {
+      display: block;
+      color: #0066cc;
+      text-decoration: none;
+    }
+    .sidebar-links a:hover {
+      text-decoration: underline;
+    }
+    .categories-craigslist {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 12px;
+    }
+    .cat-link {
+      padding: 6px 8px;
+      border: 1px solid #ddd;
+      background: #fff;
+      color: #0066cc;
+      text-decoration: none;
+      font-size: 12px;
+      display: block;
+      border-radius: 2px;
+    }
+    .cat-link:hover {
+      background: #f9f9f9;
+      border-color: #999;
+    }
+    .ad-cards-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: 12px;
+    }
+    .ad-card {
+      border: 1px solid #ddd;
+      background: #fff;
+      border-radius: 2px;
+      overflow: hidden;
+      font-size: 13px;
+    }
+    .card-image {
+      width: 100%;
+      aspect-ratio: 1 / 1;
+      overflow: hidden;
+      background: #f5f5f5;
+    }
+    .card-image img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+    .card-image-empty {
+      width: 100%;
+      aspect-ratio: 1 / 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #f5f5f5;
+      color: #999;
+      font-size: 12px;
+    }
+    .card-content {
+      padding: 8px;
+    }
+    .card-title {
+      display: block;
+      color: #0066cc;
+      text-decoration: none;
+      margin-bottom: 4px;
+      line-height: 1.3;
+      font-weight: normal;
+    }
+    .card-title:hover {
+      text-decoration: underline;
+    }
+    .card-meta {
+      color: #666;
+      font-size: 11px;
+    }
     .ads-list {
       list-style: none;
       padding: 0;
@@ -1737,6 +1853,27 @@ function renderAdList(env: Env, ads: AdCardRow[]): string {
     .join('')}</div>`;
 }
 
+function renderAdCards(env: Env, ads: AdCardRow[]): string {
+  if (!ads.length) {
+    return '<div class="empty">Пока нет объявлений.</div>';
+  }
+
+  return `<div class="ad-cards-grid">${ads
+    .map((ad) => {
+      const city = ad.city ? `${htmlEscape(cityLabel(ad.city))}` : '';
+      const dateStr = new Date(ad.created_at).toLocaleDateString('ru-RU', { month: 'short', day: 'numeric' });
+      const image = ad.image_key ? `<div class="card-image"><img src="${htmlEscape(buildMediaUrl(env, ad.image_key))}" alt="${htmlEscape(ad.title)}" loading="lazy" /></div>` : '<div class="card-image-empty">фото нет</div>';
+      return `<div class="ad-card">
+${image}
+<div class="card-content">
+  <a href="/ad/${ad.id}" class="card-title">${htmlEscape(ad.title)}</a>
+  <div class="card-meta">${city}${city ? ' · ' : ''}${dateStr}</div>
+</div>
+</div>`;
+    })
+    .join('')}</div>`;
+}
+
 function renderSearchForm(query = '', category = ''): string {
   const categoryOptions = [
     `<option value="">Все категории</option>`,
@@ -1941,18 +2078,33 @@ ${nav(currentUser, currentCity, currentPath)}
 
 function renderHome(currentUser: CurrentUser | null = null, currentCity: string | null = null, currentPath = '/'): Response {
   const categories = CATEGORIES.map(
-    (category) => `<a href="/category/${category.slug}" class="category-item">${htmlEscape(category.label)}</a>`
+    (category) => `<a href="/category/${category.slug}" class="cat-link">${htmlEscape(category.label)}</a>`
   ).join('');
 
   return shell(
     'жоржлист',
     `<h1><a class="site-title" href="/">жоржлист</a></h1>
 ${nav(currentUser, currentCity, currentPath)}
-${renderSearchForm()}
-<div class="section">
-  <h2>Категории</h2>
-  <div class="categories-grid">
-    ${categories}
+<div class="home-layout">
+  <div class="home-sidebar">
+    <div class="sidebar-section">
+      <a href="/new" class="btn-primary">+ разместить</a>
+    </div>
+    <div class="sidebar-section">
+      <form method="get" action="/search" class="sidebar-search">
+        <input type="text" name="q" placeholder="поиск" />
+      </form>
+    </div>
+    <div class="sidebar-links">
+      <a href="/about">о проекте</a>
+      <a href="#help">безопасность</a>
+      <a href="#help">помощь</a>
+    </div>
+  </div>
+  <div class="home-content">
+    <div class="categories-craigslist">
+      ${categories}
+    </div>
   </div>
 </div>`
   );
@@ -2086,9 +2238,8 @@ ${nav(currentUser, currentCity, currentPath)}
 <div class="section">
   <h2>${htmlEscape(category.label)}</h2>
   ${renderTypeFilter(typeFilter, `/category/${encodeURIComponent(category.slug)}`)}
-  ${renderAdList(env, ads)}
-</div>
-${renderSearchForm()}`
+  ${renderAdCards(env, ads)}
+</div>`
   );
 }
 
