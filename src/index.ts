@@ -1721,7 +1721,7 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       gap: 8px;
     }
     .ad-message-section textarea {
-      max-width: 720px;
+      max-width: 100%;
       min-height: 140px;
     }
     @media (max-width: 900px) {
@@ -1730,6 +1730,11 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       }
       .ad-page-aside {
         grid-template-columns: 1fr;
+      }
+    }
+    @media (max-width: 768px) {
+      .ad-page-craigslist > div {
+        grid-template-columns: 1fr !important;
       }
     }
     .search-form {
@@ -2269,7 +2274,7 @@ ${nav(currentUser, currentCity, currentPath)}
 <div class="section">
   <div class="ad-page-craigslist">
     <h2 style="margin: 0 0 8px;">${htmlEscape(ad.title)}</h2>
-    <div style="display: grid; grid-template-columns: 1fr 300px; gap: 20px; margin-bottom: 16px; align-items: start;">
+    <div style="display: grid; grid-template-columns: 1fr 380px; gap: 20px; margin-bottom: 16px; align-items: start;">
       <div>
         ${media}
         <div class="ad-page-body" style="margin-top: 10px;">${htmlEscape(ad.body)}</div>
