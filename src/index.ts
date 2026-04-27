@@ -2200,8 +2200,25 @@ ${nav(currentUser, currentCity, currentPath)}
   );
 }
 
-function renderHome(currentUser: CurrentUser | null = null, currentCity: string | null = null, currentPath = '/'): Response {
-  const sectionsHtml = SECTIONS.map((section) => {
+async function renderHome(env: Env, currentUser: CurrentUser | null = null, currentCity: string | null = null, currentPath = '/'): Promise<Response> {
+  const categorySlugs = CATEGORIES.map((c) => c.slug);
+  const categoryCountResults = await Promise.all(
+    categorySlugs.map(async (slug) => {
+      const result = await env.DB.prepare('SELECT COUNT(*) as count FROM ads WHERE category = ? AND status = ? AND deleted_at IS NULL')
+        .bind(slug, 'published')
+        .first<{ count: number }>();
+      return { slug, count: result?.count || 0 };
+    })
+  );
+
+  const categoryCountMap = new Map(categoryCountResults.map((r) => [r.slug, r.count]));
+
+  const sectionsWithCounts = SECTIONS.map((section) => {
+    const count = section.categories.reduce((sum, cat) => sum + (categoryCountMap.get(cat.slug) || 0), 0);
+    return { ...section, count };
+  }).sort((a, b) => b.count - a.count);
+
+  const sectionsHtml = sectionsWithCounts.map((section) => {
     const categoriesHtml = section.categories
       .map((category) => `<a href="/category/${htmlEscape(category.slug)}">${htmlEscape(category.label)}</a>`)
       .join('');
@@ -7650,7 +7667,7 @@ async function handlePublicGetRoute(
   if (path === '/') {
     const currentUser = await getCurrentUserCached();
     const currentUrl = new URL(request.url);
-    return renderHome(currentUser, getCurrentCityFromRequest(request, currentUser), `${currentUrl.pathname}${currentUrl.search}`);
+    return await renderHome(env, currentUser, getCurrentCityFromRequest(request, currentUser), `${currentUrl.pathname}${currentUrl.search}`);
   }
 
   if (path === '/about') {
