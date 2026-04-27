@@ -63,7 +63,7 @@ export const AD_SELECT_COLUMNS = `
   deleted_at
 `;
 export const USER_AVATAR_MAX_BYTES = 5 * 1024 * 1024;
-export const AD_IMAGE_MAX_DIMENSION = 1600;
+export const AD_IMAGE_MAX_DIMENSION = 1024;
 export const AD_IMAGE_JPEG_QUALITY = 82;
 export const AD_LOCATION_RADIUS_OPTIONS = [500, 1000, 3000, 5000] as const;
 export const AD_LOCATION_DEFAULT_RADIUS = 1000;
