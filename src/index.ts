@@ -1119,36 +1119,53 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       grid-template-columns: 1fr 1.25fr 1fr;
       gap: 18px;
       max-width: 760px;
+      margin: 20px 0;
     }
     .category-column {
       display: flex;
       flex-direction: column;
       gap: 10px;
     }
+    .category-column:nth-child(1) {
+      border-left: 2px solid #999;
+      padding-left: 12px;
+    }
+    .category-section {
+      padding: 0;
+      margin: 0;
+    }
     .category-section h2 {
-      font-size: 16px;
-      line-height: 1.1;
-      margin: 0 0 4px;
-      padding: 3px 0;
-      text-align: center;
-      background: #eee;
+      font-size: 15px;
+      line-height: 1;
+      margin: 0 0 3px;
+      padding: 2px 4px;
+      text-align: left;
+      background: #f0f0f0;
       font-weight: bold;
+      border-bottom: 1px solid #ccc;
     }
     .category-links {
       columns: 2;
-      column-gap: 18px;
-      font-size: 13px;
-      line-height: 1.15;
+      column-gap: 16px;
+      font-size: 12px;
+      line-height: 1.4;
+      margin-top: 2px;
     }
     .category-section.discussions .category-links {
       columns: 3;
     }
     .category-links a {
       display: block;
-      font-size: 13px;
-      line-height: 1.15;
+      font-size: 12px;
+      line-height: 1.4;
       margin: 0;
       padding: 0;
+      color: #0066cc;
+      text-decoration: none;
+      word-break: break-word;
+    }
+    .category-links a:hover {
+      text-decoration: underline;
     }
     .categories-list {
       font-size: 13px;
