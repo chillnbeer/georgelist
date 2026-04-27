@@ -35,3 +35,7 @@ export function redirectWithHeaders(location: string, status = 303, headers?: He
 export function redirectWithMessage(path: string, message: string, status = 303, headers?: HeadersInit): Response {
   return redirectWithHeaders(`${path}?message=${encodeURIComponent(message)}`, status, headers);
 }
+
+export function methodNotAllowed(): Response {
+  return text('Method Not Allowed', 405);
+}
