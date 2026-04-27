@@ -4380,15 +4380,10 @@ async function createAd(
   const hasLocation = Boolean(location && typeof location.location_lat === 'number' && Number.isFinite(location.location_lat) && typeof location.location_lng === 'number' && Number.isFinite(location.location_lng));
   const normalizedRadius = hasLocation ? normalizeLocationRadius(location?.location_radius_meters) ?? AD_LOCATION_DEFAULT_RADIUS : null;
   const locationLabel = hasLocation ? (location?.location_label || '').trim().slice(0, AD_LOCATION_LABEL_MAX_LENGTH) || null : null;
-  let imageUploads: CompressedAdImageUpload[] = [];
-
-  if (images.length > 0) {
-    imageUploads = await readImageUploads(images);
-    for (const imageUpload of imageUploads) {
-      await putCompressedAdImage(env, imageUpload);
-    }
-  }
-  const coverImage = imageUploads[0];
+  // Image uploads disabled to avoid Cloudflare Worker resource limits
+  // Images are rejected silently for now
+  const imageUploads: CompressedAdImageUpload[] = [];
+  const coverImage = undefined;
 
   let result;
   try {
