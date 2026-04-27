@@ -1520,6 +1520,86 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       background: #f5f5f5;
       display: block;
     }
+    .ad-gallery-main a {
+      display: block;
+      cursor: zoom-in;
+    }
+    .ad-lightbox {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 9999;
+      background: rgba(0,0,0,0.9);
+      align-items: center;
+      justify-content: center;
+    }
+    .ad-lightbox.is-open {
+      display: flex;
+    }
+    .ad-lightbox-img {
+      max-width: calc(100vw - 104px);
+      max-height: 92vh;
+      object-fit: contain;
+      border-radius: 2px;
+      display: block;
+      user-select: none;
+    }
+    .ad-lightbox-close {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      width: 38px;
+      height: 38px;
+      border-radius: 50%;
+      border: none;
+      background: rgba(255,255,255,0.15);
+      color: #fff;
+      font-size: 24px;
+      line-height: 1;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .ad-lightbox-close:hover {
+      background: rgba(255,255,255,0.28);
+    }
+    .ad-lightbox-nav {
+      position: absolute;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 44px;
+      height: 44px;
+      border-radius: 50%;
+      border: none;
+      background: rgba(255,255,255,0.15);
+      color: #fff;
+      font-size: 30px;
+      line-height: 1;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .ad-lightbox-nav:hover:not([disabled]) {
+      background: rgba(255,255,255,0.28);
+    }
+    .ad-lightbox-nav[disabled] {
+      opacity: 0.2;
+      cursor: default;
+    }
+    .ad-lightbox-prev { left: 10px; }
+    .ad-lightbox-next { right: 10px; }
+    .ad-lightbox-counter {
+      position: absolute;
+      bottom: 12px;
+      left: 50%;
+      transform: translateX(-50%);
+      color: rgba(255,255,255,0.6);
+      font-size: 12px;
+      pointer-events: none;
+      white-space: nowrap;
+    }
     .edit-image-list {
       display: grid;
       gap: 10px;
@@ -1928,6 +2008,74 @@ function renderAdImagesGallery(env: Env, imageKeys: string[], alt: string): stri
 function renderAdGalleryScript(): string {
   return `<script>
   (function () {
+    var lightbox = null;
+    var lightboxImg = null;
+    var lightboxClose = null;
+    var lightboxPrev = null;
+    var lightboxNext = null;
+    var lightboxCounter = null;
+    var lightboxUrls = [];
+    var lightboxIndex = 0;
+
+    function ensureLightbox() {
+      if (lightbox) return;
+      lightbox = document.createElement('div');
+      lightbox.className = 'ad-lightbox';
+      lightbox.setAttribute('role', 'dialog');
+      lightbox.setAttribute('aria-modal', 'true');
+      lightbox.innerHTML =
+        '<button class="ad-lightbox-close" aria-label="Закрыть">×</button>' +
+        '<button class="ad-lightbox-nav ad-lightbox-prev" aria-label="Предыдущее фото">‹</button>' +
+        '<img class="ad-lightbox-img" alt="" />' +
+        '<button class="ad-lightbox-nav ad-lightbox-next" aria-label="Следующее фото">›</button>' +
+        '<div class="ad-lightbox-counter"></div>';
+      document.body.appendChild(lightbox);
+      lightboxImg = lightbox.querySelector('.ad-lightbox-img');
+      lightboxClose = lightbox.querySelector('.ad-lightbox-close');
+      lightboxPrev = lightbox.querySelector('.ad-lightbox-prev');
+      lightboxNext = lightbox.querySelector('.ad-lightbox-next');
+      lightboxCounter = lightbox.querySelector('.ad-lightbox-counter');
+      lightboxClose.addEventListener('click', closeLightbox);
+      lightboxPrev.addEventListener('click', function () { openLightbox(lightboxUrls, lightboxIndex - 1); });
+      lightboxNext.addEventListener('click', function () { openLightbox(lightboxUrls, lightboxIndex + 1); });
+      lightbox.addEventListener('click', function (e) {
+        if (e.target === lightbox) closeLightbox();
+      });
+    }
+
+    function openLightbox(urls, index) {
+      ensureLightbox();
+      if (!urls.length || index < 0 || index >= urls.length) return;
+      lightboxUrls = urls;
+      lightboxIndex = index;
+      lightboxImg.src = urls[index];
+      var multi = urls.length > 1;
+      lightboxPrev.style.display = multi ? '' : 'none';
+      lightboxNext.style.display = multi ? '' : 'none';
+      lightboxCounter.style.display = multi ? '' : 'none';
+      if (multi) {
+        lightboxPrev.disabled = index === 0;
+        lightboxNext.disabled = index === urls.length - 1;
+        lightboxCounter.textContent = String(index + 1) + ' / ' + String(urls.length);
+      }
+      lightbox.classList.add('is-open');
+      document.body.style.overflow = 'hidden';
+      lightboxClose.focus();
+    }
+
+    function closeLightbox() {
+      if (!lightbox) return;
+      lightbox.classList.remove('is-open');
+      document.body.style.overflow = '';
+    }
+
+    document.addEventListener('keydown', function (e) {
+      if (!lightbox || !lightbox.classList.contains('is-open')) return;
+      if (e.key === 'Escape') { closeLightbox(); }
+      else if (e.key === 'ArrowLeft') { openLightbox(lightboxUrls, lightboxIndex - 1); }
+      else if (e.key === 'ArrowRight') { openLightbox(lightboxUrls, lightboxIndex + 1); }
+    });
+
     function init(root) {
       var mainImage = root.querySelector('[data-ad-gallery-main-image]');
       var mainLink = root.querySelector('[data-ad-gallery-main-link]');
@@ -1935,22 +2083,27 @@ function renderAdGalleryScript(): string {
       var thumbs = Array.prototype.slice.call(root.querySelectorAll('[data-ad-gallery-thumb]'));
       var prevButton = root.querySelector('[data-ad-gallery-prev]');
       var nextButton = root.querySelector('[data-ad-gallery-next]');
-      if (!mainImage || !mainLink || thumbs.length < 2) {
-        return;
-      }
+
+      if (!mainImage || !mainLink) return;
 
       var activeIndex = 0;
 
+      mainLink.addEventListener('click', function (e) {
+        e.preventDefault();
+        var urls = thumbs.length > 0
+          ? thumbs.map(function (t) { return t.getAttribute('data-full'); })
+          : [mainLink.getAttribute('href')];
+        openLightbox(urls, activeIndex);
+      });
+
+      if (thumbs.length < 2) return;
+
       function apply(index) {
-        if (index < 0 || index >= thumbs.length) {
-          return;
-        }
+        if (index < 0 || index >= thumbs.length) return;
         activeIndex = index;
         var thumb = thumbs[index];
         var nextUrl = thumb.getAttribute('data-full');
-        if (!nextUrl) {
-          return;
-        }
+        if (!nextUrl) return;
         mainImage.setAttribute('src', nextUrl);
         mainLink.setAttribute('href', nextUrl);
         thumbs.forEach(function (node, nodeIndex) {
@@ -1959,39 +2112,24 @@ function renderAdGalleryScript(): string {
         if (counter) {
           counter.textContent = String(activeIndex + 1) + ' / ' + String(thumbs.length);
         }
-        if (prevButton) {
-          prevButton.disabled = activeIndex === 0;
-        }
-        if (nextButton) {
-          nextButton.disabled = activeIndex === thumbs.length - 1;
-        }
+        if (prevButton) { prevButton.disabled = activeIndex === 0; }
+        if (nextButton) { nextButton.disabled = activeIndex === thumbs.length - 1; }
       }
 
       thumbs.forEach(function (thumb, index) {
-        thumb.addEventListener('click', function () {
-          apply(index);
-        });
+        thumb.addEventListener('click', function () { apply(index); });
       });
 
       if (prevButton) {
-        prevButton.addEventListener('click', function () {
-          apply(activeIndex - 1);
-        });
+        prevButton.addEventListener('click', function () { apply(activeIndex - 1); });
       }
       if (nextButton) {
-        nextButton.addEventListener('click', function () {
-          apply(activeIndex + 1);
-        });
+        nextButton.addEventListener('click', function () { apply(activeIndex + 1); });
       }
       document.addEventListener('keydown', function (event) {
-        if (!root.contains(document.activeElement)) {
-          return;
-        }
-        if (event.key === 'ArrowLeft') {
-          apply(activeIndex - 1);
-        } else if (event.key === 'ArrowRight') {
-          apply(activeIndex + 1);
-        }
+        if (!root.contains(document.activeElement)) return;
+        if (event.key === 'ArrowLeft') { apply(activeIndex - 1); }
+        else if (event.key === 'ArrowRight') { apply(activeIndex + 1); }
       });
 
       apply(0);
