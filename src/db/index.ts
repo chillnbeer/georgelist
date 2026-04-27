@@ -789,7 +789,7 @@ export async function listPublishedAdsByCategoryPage(
   return result.results;
 }
 
-export async function searchPublishedAds(env: Env, query: string, city: string | null = null): Promise<AdCardRow[]> {
+export async function searchPublishedAds(env: Env, query: string, city: string | null = null, category: string | null = null): Promise<AdCardRow[]> {
   const trimmed = query.trim();
   if (!trimmed) {
     return [];
@@ -812,6 +812,7 @@ export async function searchPublishedAds(env: Env, query: string, city: string |
       WHERE ads.status = 'published'
         AND ads.deleted_at IS NULL
         AND COALESCE(ads.city, ?) = ?
+        AND (? IS NULL OR ads.category = ?)
         AND (
           LOWER(ads.title) LIKE ? ESCAPE '\\'
           OR LOWER(ads.body) LIKE ? ESCAPE '\\'
@@ -820,7 +821,7 @@ export async function searchPublishedAds(env: Env, query: string, city: string |
       LIMIT ?
     `
   )
-    .bind(CITY_DEFAULT_SLUG, CITY_DEFAULT_SLUG, normalizeCity(city), pattern, pattern, ADS_SEARCH_LIMIT)
+    .bind(CITY_DEFAULT_SLUG, CITY_DEFAULT_SLUG, normalizeCity(city), category, category, pattern, pattern, ADS_SEARCH_LIMIT)
     .all<AdCardRow>();
 
   return result.results;

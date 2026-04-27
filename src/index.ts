@@ -27,7 +27,7 @@ import {
   type ChatThreadRow,
   upsertChatNotification,
 } from './chat';
-import { html, json, redirect, redirectWithHeaders, redirectWithMessage, text } from './http';
+import { html, json, methodNotAllowed, redirect, redirectWithHeaders, redirectWithMessage, text } from './http';
 import type { Env, CurrentUser, AdRow, PublicAdCardRow, AdCardRow, PublicUserRow, AdForm, AdLocationInput, AdImageUpload, CompressedAdImageUpload, TelegramCallbackQuery, TelegramUpdate, UserIdentityRow, SessionRow, TelegramAuthPayload, BotDraftRow, AdminUserRow, AdminSection, AdminPagination, UserBotScreenRef, LocationSearchResult } from './types';
 import { CATEGORIES, AD_TYPES, CATEGORY_LABELS, AD_TYPE_LABELS, type CategorySlug, type AdTypeSlug, SESSION_MAX_AGE_SECONDS, PASSWORD_HASH_ITERATIONS, DUMMY_PASSWORD_HASH, ADS_HOME_LIMIT, ADS_USER_LIMIT, ADS_SEARCH_LIMIT, TELEGRAM_AUTH_COOKIE_NAME, TELEGRAM_AUTH_COOKIE_MAX_AGE_SECONDS, TELEGRAM_AUTH_MAX_AGE_SECONDS, AD_IMAGE_MAX_BYTES, USER_BOT_MENU_CREATE, USER_BOT_MENU_SECTIONS, USER_BOT_MENU_SEARCH, USER_BOT_MENU_EDIT, USER_BOT_MENU_DELETE, USER_BOT_MENU_SETTINGS, USER_BOT_MENU_MY, USER_BOT_MENU_HOME, USER_BOT_CANCEL_FLOW, USER_BOT_MENU_MY_AD, USER_BOT_SECTION_PREFIX, USER_BOT_SECTION_AD_PREFIX, USER_BOT_SECTION_MORE_PREFIX, USER_BOT_SEARCH_RESULTS, USER_BOT_SEARCH_AD_PREFIX, USER_BOT_SEARCH_MORE_PREFIX, BOT_ADS_PAGE_SIZE, USER_BOT_DELETE_PREFIX, USER_BOT_SETTINGS_PREFIX, USER_BOT_CHAT_PREFIX, USER_BOT_CHAT_DOWNLOAD_PREFIX, USER_BOT_CHAT_HIDE_PREFIX, USER_BOT_CHAT_START_PREFIX, USER_BOT_CHAT_LIST, USER_BOT_DRAFT_PREFIX, USER_BOT_DRAFT_TYPE_PREFIX, USER_BOT_DRAFT_CANCEL, USER_BOT_DRAFT_SEND, USER_BOT_EDIT_DRAFT_CANCEL, USER_BOT_EDIT_DRAFT_SAVE, USER_BOT_DRAFT_IMAGE_SKIP, ADMIN_BOT_MENU_HOME, USER_AVATAR_MAX_BYTES, AD_IMAGE_MAX_DIMENSION, AD_IMAGE_JPEG_QUALITY, AD_LOCATION_RADIUS_OPTIONS, AD_LOCATION_DEFAULT_RADIUS, AD_LOCATION_LABEL_MAX_LENGTH, AD_TITLE_MAX_LENGTH, AD_BODY_MAX_LENGTH, AD_CONTACT_MAX_LENGTH, AD_MESSAGE_MAX_LENGTH, USER_DISPLAY_NAME_MAX_LENGTH, ADMIN_PAGE_SIZE, ALLOWED_IMAGE_MIME_TYPES } from './constants';
 import { textEncoder, textDecoder, htmlEscape, categoryLabel, normalizeCategory, typeLabel, normalizeAdType, buildCategoryRows, buildTypeRows, escapeLikePattern, isImageMimeType, getImageExtension, normalizeMimeType, getImageMimeTypeFromPath, isFileLike, truncateText, bytesToBase64, base64ToBytes, bytesToHex, constantTimeEqual, hexToBytes, formatSqliteTimestamp, base64UrlEncode, base64UrlDecode, isValidEmail, isValidLogin, isSecureRequest, sanitizeNextPath, parseOptionalNumberField, parseOptionalTextField, normalizeLocationRadius, formatLocationRadius } from './utils';
@@ -90,6 +90,12 @@ const NOOP_EXECUTION_CONTEXT = {
   waitUntil(): void {},
   passThroughOnException(): void {},
 } as unknown as ExecutionContext;
+
+function verifyTelegramWebhookSecret(request: Request, secret: string | undefined): boolean {
+  if (!secret) return true;
+  const header = request.headers.get('X-Telegram-Bot-Api-Secret-Token');
+  return header === secret;
+}
 
 function parseCookieHeader(cookieHeader: string | null): Map<string, string> {
   const cookies = new Map<string, string>();
@@ -1336,6 +1342,25 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       max-width: 720px;
       min-height: 140px;
     }
+    .search-form {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      align-items: center;
+    }
+    .search-form input[type=search] {
+      flex: 1;
+      min-width: 160px;
+      margin: 0;
+    }
+    .search-form-cat {
+      width: auto;
+      margin: 0;
+    }
+    .search-form button {
+      margin: 0;
+      white-space: nowrap;
+    }
     @media (max-width: 700px) {
       .ad-page {
         grid-template-columns: 1fr;
@@ -1349,6 +1374,10 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       }
       .location-picker-search-row {
         grid-template-columns: 1fr;
+      }
+      .search-form input[type=search],
+      .search-form-cat {
+        width: 100%;
       }
     }
   </style>
@@ -1385,11 +1414,18 @@ function renderAdList(env: Env, ads: AdCardRow[]): string {
     .join('')}</div>`;
 }
 
-function renderSearchForm(query = ''): string {
+function renderSearchForm(query = '', category = ''): string {
+  const categoryOptions = [
+    `<option value="">Все категории</option>`,
+    ...CATEGORIES.map((c) => `<option value="${c.slug}"${c.slug === category ? ' selected' : ''}>${htmlEscape(c.label)}</option>`),
+  ].join('');
+
   return `<div class="section">
-  <h2>Поиск</h2>
-  <form method="get" action="/search">
-    <input name="q" type="search" value="${htmlEscape(query)}" placeholder="Искать объявления" />
+  <form method="get" action="/search" class="search-form">
+    <input name="q" type="search" value="${htmlEscape(query)}" placeholder="Поиск по объявлениям" />
+    <select name="cat" class="search-form-cat">
+      ${categoryOptions}
+    </select>
     <button type="submit">Найти</button>
   </form>
 </div>`;
@@ -1487,13 +1523,13 @@ function renderHome(currentUser: CurrentUser | null = null, currentCity: string 
     'жоржлист',
     `<h1>жоржлист</h1>
 ${nav(currentUser, currentCity, currentPath)}
+${renderSearchForm()}
 <div class="section">
   <h2>Категории</h2>
   <ul>
     ${categories}
   </ul>
-</div>
-${renderSearchForm()}`
+</div>`
   );
 }
 
@@ -1515,7 +1551,7 @@ ${nav(currentUser, currentCity, currentPath)}
   );
 }
 
-function renderSearchPage(env: Env, query: string, ads: AdCardRow[], currentUser: CurrentUser | null = null, currentCity: string | null = null, currentPath = '/search'): Response {
+function renderSearchPage(env: Env, query: string, category: string, ads: AdCardRow[], currentUser: CurrentUser | null = null, currentCity: string | null = null, currentPath = '/search'): Response {
   const hasQuery = query.trim().length > 0;
   const content = hasQuery
     ? ads.length
@@ -1527,13 +1563,7 @@ function renderSearchPage(env: Env, query: string, ads: AdCardRow[], currentUser
     'поиск - жоржлист',
     `<h1>жоржлист</h1>
 ${nav(currentUser, currentCity, currentPath)}
-<div class="section">
-  <h2>Поиск</h2>
-  <form method="get" action="/search">
-    <input name="q" type="search" value="${htmlEscape(query)}" placeholder="Искать объявления" />
-    <button type="submit">Найти</button>
-  </form>
-</div>
+${renderSearchForm(query, category)}
 <div class="section">
   ${content}
 </div>`,
@@ -8158,8 +8188,12 @@ export default {
 
     if (path === '/search' && request.method === 'GET') {
       const query = url.searchParams.get('q') || '';
+      const rawCategory = url.searchParams.get('cat') || '';
+      const category = CATEGORIES.some((c) => c.slug === rawCategory) ? rawCategory : '';
+      const categoryFilter = category || null;
       const currentUser = await getCurrentUserCached();
-      return renderSearchPage(env, query, await searchPublishedAds(env, query, getCurrentCityFromRequest(request, currentUser)), currentUser, getCurrentCityFromRequest(request, currentUser), `${url.pathname}${url.search}`);
+      const currentCity = getCurrentCityFromRequest(request, currentUser);
+      return renderSearchPage(env, query, category, await searchPublishedAds(env, query, currentCity, categoryFilter), currentUser, currentCity, `${url.pathname}${url.search}`);
     }
 
     if (path === '/city') {
