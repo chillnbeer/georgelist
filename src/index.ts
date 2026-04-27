@@ -1137,6 +1137,29 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
       gap: 16px;
     }
+    .categories-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+      gap: 12px;
+    }
+    .category-item {
+      display: block;
+      padding: 12px;
+      border: 1px solid #eee;
+      border-radius: 8px;
+      background: #fff;
+      text-align: center;
+      text-decoration: none;
+      color: #0066cc;
+      font-size: 14px;
+      transition: all 0.2s;
+      box-shadow: 0 1px 0 rgba(0, 0, 0, 0.02);
+    }
+    .category-item:hover {
+      border-color: #0066cc;
+      background: #f5f9ff;
+      box-shadow: 0 2px 4px rgba(0, 102, 204, 0.1);
+    }
     .ad-actions {
       display: flex;
       flex-wrap: wrap;
@@ -1910,7 +1933,7 @@ ${nav(currentUser, currentCity, currentPath)}
 
 function renderHome(currentUser: CurrentUser | null = null, currentCity: string | null = null, currentPath = '/'): Response {
   const categories = CATEGORIES.map(
-    (category) => `<li><a href="/category/${category.slug}">${htmlEscape(category.label)}</a></li>`
+    (category) => `<a href="/category/${category.slug}" class="category-item">${htmlEscape(category.label)}</a>`
   ).join('');
 
   return shell(
@@ -1920,9 +1943,9 @@ ${nav(currentUser, currentCity, currentPath)}
 ${renderSearchForm()}
 <div class="section">
   <h2>Категории</h2>
-  <ul>
+  <div class="categories-grid">
     ${categories}
-  </ul>
+  </div>
 </div>`
   );
 }
