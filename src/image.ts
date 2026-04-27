@@ -144,80 +144,13 @@ function toEightBitPngSamples(samples: Uint8Array | Uint8ClampedArray | Uint16Ar
 async function compressAdImage(file: File): Promise<CompressedAdImageUpload> {
   const sourceBytes = await file.arrayBuffer();
 
-  try {
-    let width = 0;
-    let height = 0;
-    let rgbaPixels: Uint8Array | null = null;
-
-    if (file.type === 'image/png') {
-      const decoded = decodePng(new Uint8Array(sourceBytes));
-      width = decoded.width;
-      height = decoded.height;
-      const channelCount = decoded.palette?.[0]?.length
-        ? decoded.palette[0].length
-        : typeof (decoded as { channels?: number }).channels === 'number'
-          ? (decoded as { channels: number }).channels
-          : 4;
-      const rawPixels = decoded.palette
-        ? convertIndexedToRgb(decoded)
-        : toEightBitPngSamples(decoded.data);
-      if (channelCount === 4) {
-        rgbaPixels = rawPixels;
-      } else {
-        const pixelCount = width * height;
-        const normalized = new Uint8Array(pixelCount * 4);
-        for (let index = 0; index < pixelCount; index += 1) {
-          const sourceIndex = index * channelCount;
-          const targetIndex = index * 4;
-          const r = rawPixels[sourceIndex] ?? 0;
-          const g = channelCount > 1 ? (rawPixels[sourceIndex + 1] ?? r) : r;
-          const b = channelCount > 2 ? (rawPixels[sourceIndex + 2] ?? r) : r;
-          const a = channelCount > 3 ? (rawPixels[sourceIndex + 3] ?? 255) : 255;
-          normalized[targetIndex] = r;
-          normalized[targetIndex + 1] = g;
-          normalized[targetIndex + 2] = b;
-          normalized[targetIndex + 3] = a;
-        }
-        rgbaPixels = normalized;
-      }
-    } else if (file.type === 'image/jpeg' || file.type === 'image/jpg') {
-      const decoded = jpeg.decode(new Uint8Array(sourceBytes), { useTArray: true });
-      width = decoded.width;
-      height = decoded.height;
-      rgbaPixels = new Uint8Array(decoded.data);
-    } else {
-      throw new Error('Unsupported image type for compression');
-    }
-
-    const scale = Math.min(1, AD_IMAGE_MAX_DIMENSION / Math.max(width, height));
-    const resizedWidth = Math.max(1, Math.round(width * scale));
-    const resizedHeight = Math.max(1, Math.round(height * scale));
-    const resizedPixels = resizeRgba(rgbaPixels, width, height, resizedWidth, resizedHeight);
-    const flattenedPixels = flattenRgbaToWhite(resizedPixels);
-    const encoded = jpeg.encode(
-      {
-        data: flattenedPixels,
-        width: resizedWidth,
-        height: resizedHeight,
-      },
-      AD_IMAGE_JPEG_QUALITY
-    );
-    const outputBytes = encoded.data.buffer.slice(
-      encoded.data.byteOffset,
-      encoded.data.byteOffset + encoded.data.byteLength
-    ) as ArrayBuffer;
-    return {
-      key: `ads/${crypto.randomUUID()}.jpg`,
-      mimeType: 'image/jpeg',
-      bytes: outputBytes,
-    };
-  } catch {
-    return {
-      key: `ads/${crypto.randomUUID()}.${getImageExtension(file.type)}`,
-      mimeType: file.type,
-      bytes: sourceBytes,
-    };
-  }
+  // Skip CPU-intensive image processing on Cloudflare Workers
+  // Just upload the image as-is to avoid resource limit errors
+  return {
+    key: `ads/${crypto.randomUUID()}.${getImageExtension(file.type)}`,
+    mimeType: file.type,
+    bytes: sourceBytes,
+  };
 }
 
 async function readImageUpload(file: File | null): Promise<CompressedAdImageUpload | null> {
