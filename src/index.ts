@@ -969,11 +969,22 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       text-decoration: underline;
     }
     h2 {
-      margin: 14px 0 6px;
-      font-size: 16px;
+      margin: 16px 0 10px;
+      font-size: 18px;
       font-weight: 700;
+      color: #000;
     }
-    p { margin: 0 0 10px; }
+    p {
+      margin: 0 0 12px;
+      line-height: 1.6;
+    }
+    a {
+      color: #0066cc;
+      text-decoration: none;
+    }
+    a:hover {
+      text-decoration: underline;
+    }
     .nav {
       margin: 0 0 20px;
       display: flex;
@@ -1079,13 +1090,17 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       margin: 0 0 12px;
     }
     .link-button {
-      color: #00f;
-      text-decoration: underline;
+      color: #0066cc;
+      text-decoration: none;
       background: none;
       border: 0;
       padding: 0;
       font: inherit;
       cursor: pointer;
+      transition: all 0.2s;
+    }
+    .link-button:hover {
+      text-decoration: underline;
     }
     label {
       display: block;
@@ -1094,32 +1109,46 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
     input, textarea, select {
       width: 100%;
       max-width: 640px;
-      margin: 0 0 8px;
-      padding: 6px 8px;
-      border: 1px solid #bbb;
+      margin: 0 0 10px;
+      padding: 8px 10px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
       background: #fff;
       color: #000;
       font: inherit;
+      font-size: 14px;
       box-sizing: border-box;
+    }
+    input:focus, textarea:focus, select:focus {
+      outline: none;
+      border-color: #0066cc;
+      box-shadow: 0 0 0 2px rgba(0, 102, 204, 0.1);
     }
     textarea {
       min-height: 120px;
       resize: vertical;
     }
     button {
-      margin-top: 8px;
-      border: 1px solid #999;
-      background: #f5f5f5;
+      margin-top: 10px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      background: #f8f8f8;
       color: #000;
-      padding: 6px 12px;
+      padding: 8px 14px;
       font: inherit;
+      font-size: 14px;
       cursor: pointer;
+      transition: all 0.2s;
+    }
+    button:hover {
+      background: #f0f0f0;
+      border-color: #999;
     }
     button:disabled {
-      opacity: 0.7;
-      cursor: wait;
+      opacity: 0.6;
+      cursor: not-allowed;
     }
-    .section { margin: 0 0 14px; }
+    .section { margin: 0 0 20px; }
     .home-content {
       margin: 14px 0;
     }
@@ -1177,9 +1206,11 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
     .ad-card {
       border: 1px solid #ddd;
       background: #fff;
-      border-radius: 2px;
+      border-radius: 8px;
       overflow: hidden;
-      font-size: 13px;
+      font-size: 14px;
+      display: flex;
+      flex-direction: column;
     }
     .card-image {
       width: 100%;
@@ -1204,16 +1235,28 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       font-size: 12px;
     }
     .card-content {
-      padding: 8px;
+      padding: 10px;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
     }
     .card-title {
       display: block;
-      margin-bottom: 4px;
+      margin-bottom: 6px;
       line-height: 1.3;
       font-weight: normal;
+      font-size: 14px;
+      color: #000;
     }
     .card-meta {
       color: #666;
+      font-size: 12px;
+      margin-top: auto;
+    }
+    .card-actions {
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px solid #f0f0f0;
       font-size: 12px;
     }
     .ads-list {
@@ -1222,13 +1265,13 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       margin: 0;
     }
     .ad-row {
-      padding: 8px 0;
+      padding: 10px 0;
       border-bottom: 1px solid #eee;
       font-size: 14px;
       line-height: 1.5;
     }
     .ad-row-date {
-      color: #666;
+      color: #999;
       font-size: 12px;
       margin-left: 8px;
     }
@@ -1237,13 +1280,15 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       flex-direction: column;
       gap: 10px;
       padding: 10px;
-      border: 1px solid #eee;
-      border-radius: 14px;
+      border: 1px solid #ddd;
+      border-radius: 8px;
       background: #fff;
-      box-shadow: 0 1px 0 rgba(0, 0, 0, 0.02);
     }
     .ad-content {
       min-width: 0;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
     }
     .admin-user-title {
       display: flex;
@@ -1256,8 +1301,8 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
     }
     .ad-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-      gap: 16px;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: 12px;
     }
     .categories-grid {
       display: grid;
@@ -1266,38 +1311,40 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
     }
     .category-item {
       display: block;
-      padding: 12px;
-      border: 1px solid #eee;
+      padding: 10px;
+      border: 1px solid #ddd;
       border-radius: 8px;
       background: #fff;
       text-align: center;
       text-decoration: none;
       color: #0066cc;
-      font-size: 14px;
+      font-size: 13px;
       transition: all 0.2s;
-      box-shadow: 0 1px 0 rgba(0, 0, 0, 0.02);
     }
     .category-item:hover {
-      border-color: #0066cc;
-      background: #f5f9ff;
-      box-shadow: 0 2px 4px rgba(0, 102, 204, 0.1);
+      border-color: #bbb;
+      background: #f9f9f9;
     }
     .ad-actions {
       display: flex;
       flex-wrap: wrap;
-      gap: 10px;
+      gap: 12px;
       align-items: center;
-      margin-top: 8px;
+      margin-top: 10px;
+      padding-top: 10px;
+      border-top: 1px solid #f0f0f0;
+      font-size: 13px;
     }
     .title {
-      margin: 0 0 8px;
-      font-size: 16px;
+      margin: 0 0 6px;
+      font-size: 14px;
       font-weight: 700;
+      color: #000;
     }
     .meta {
       margin: 0 0 4px;
-      color: #555;
-      font-size: 13px;
+      color: #666;
+      font-size: 12px;
     }
     .body {
       white-space: pre-wrap;
@@ -1308,8 +1355,9 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       width: 100%;
       aspect-ratio: 1 / 1;
       overflow: hidden;
-      background: #f2f2f2;
+      background: #f5f5f5;
       border: 1px solid #ddd;
+      border-radius: 4px;
       box-sizing: border-box;
     }
     .ad-page-image,
@@ -1320,11 +1368,12 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
     .avatar {
       width: 112px;
       aspect-ratio: 1 / 1;
-      border-radius: 50%;
+      border-radius: 8px;
       overflow: hidden;
       border: 1px solid #ddd;
-      background: #f2f2f2;
+      background: #f5f5f5;
       box-sizing: border-box;
+      flex-shrink: 0;
     }
     .avatar img {
       width: 100%;
@@ -1336,19 +1385,21 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       display: flex;
       align-items: center;
       justify-content: center;
-      color: #777;
-      font-size: 13px;
+      color: #999;
+      font-size: 12px;
       text-align: center;
       padding: 10px;
     }
     .avatar-mini {
-      width: 24px;
-      aspect-ratio: 1 / 1;
-      border-radius: 50%;
+      width: 28px;
+      height: 28px;
+      border-radius: 4px;
       overflow: hidden;
       border: 1px solid #ddd;
-      background: #f2f2f2;
-      display: inline-block;
+      background: #f5f5f5;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
       flex: 0 0 auto;
     }
     .avatar-mini img {
@@ -1361,8 +1412,8 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       display: flex;
       align-items: center;
       justify-content: center;
-      color: #777;
-      font-size: 9px;
+      color: #999;
+      font-size: 11px;
       text-align: center;
       padding: 0;
       line-height: 1;
@@ -1469,7 +1520,7 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
     }
     .ad-page-media {
       border: 1px solid #ddd;
-      border-radius: 2px;
+      border-radius: 4px;
       overflow: hidden;
       background: #f5f5f5;
       margin: 0 0 10px;
@@ -1492,7 +1543,7 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       display: block;
       object-fit: cover;
       border: 1px solid #ddd;
-      border-radius: 2px;
+      border-radius: 4px;
       background: #f5f5f5;
     }
     .ad-gallery {
@@ -1503,7 +1554,7 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
     .ad-gallery-main {
       position: relative;
       border: 1px solid #ddd;
-      border-radius: 6px;
+      border-radius: 4px;
       overflow: hidden;
       background: #f5f5f5;
       height: min(55vh, 520px);
@@ -1570,7 +1621,7 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       aspect-ratio: 1 / 1;
       object-fit: cover;
       border: 1px solid #ddd;
-      border-radius: 6px;
+      border-radius: 4px;
       background: #f5f5f5;
       display: block;
     }
@@ -1661,11 +1712,11 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
     }
     .edit-image-item {
       border: 1px solid #ddd;
-      border-radius: 10px;
-      padding: 8px;
+      border-radius: 8px;
+      padding: 10px;
       display: grid;
       gap: 8px;
-      background: #fafafa;
+      background: #f9f9f9;
       max-width: 560px;
     }
     .edit-image-controls {
