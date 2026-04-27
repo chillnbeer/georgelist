@@ -1110,69 +1110,20 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       cursor: wait;
     }
     .section { margin: 0 0 14px; }
-    .home-layout {
-      display: grid;
-      grid-template-columns: 120px 1fr;
-      gap: 20px;
+    .home-content {
       margin: 14px 0;
     }
-    .home-sidebar {
+    .categories-list {
       font-size: 13px;
+      line-height: 1.6;
+      color: #333;
     }
-    .sidebar-section {
-      margin-bottom: 14px;
-    }
-    .btn-primary {
-      display: block;
-      padding: 6px 8px;
-      border: 1px solid #999;
-      background: #f0f0f0;
-      color: #000;
-      text-decoration: none;
-      text-align: center;
-      font-size: 12px;
-      border-radius: 2px;
-    }
-    .btn-primary:hover {
-      background: #e0e0e0;
-    }
-    .sidebar-search input {
-      width: 100% !important;
-      max-width: 100% !important;
-      padding: 4px 4px !important;
-      font-size: 12px !important;
-      margin-bottom: 0 !important;
-    }
-    .sidebar-links {
-      font-size: 11px;
-      line-height: 1.8;
-    }
-    .sidebar-links a {
-      display: block;
+    .categories-list a {
       color: #0066cc;
       text-decoration: none;
     }
-    .sidebar-links a:hover {
+    .categories-list a:hover {
       text-decoration: underline;
-    }
-    .categories-craigslist {
-      display: grid;
-      grid-template-columns: repeat(2, 1fr);
-      gap: 12px;
-    }
-    .cat-link {
-      padding: 6px 8px;
-      border: 1px solid #ddd;
-      background: #fff;
-      color: #0066cc;
-      text-decoration: none;
-      font-size: 12px;
-      display: block;
-      border-radius: 2px;
-    }
-    .cat-link:hover {
-      background: #f9f9f9;
-      border-color: #999;
     }
     .ad-cards-grid {
       display: grid;
@@ -2078,33 +2029,16 @@ ${nav(currentUser, currentCity, currentPath)}
 
 function renderHome(currentUser: CurrentUser | null = null, currentCity: string | null = null, currentPath = '/'): Response {
   const categories = CATEGORIES.map(
-    (category) => `<a href="/category/${category.slug}" class="cat-link">${htmlEscape(category.label)}</a>`
-  ).join('');
+    (category) => `<a href="/category/${category.slug}">${htmlEscape(category.label)}</a>`
+  ).join(' · ');
 
   return shell(
     'жоржлист',
     `<h1><a class="site-title" href="/">жоржлист</a></h1>
 ${nav(currentUser, currentCity, currentPath)}
-<div class="home-layout">
-  <div class="home-sidebar">
-    <div class="sidebar-section">
-      <a href="/new" class="btn-primary">+ разместить</a>
-    </div>
-    <div class="sidebar-section">
-      <form method="get" action="/search" class="sidebar-search">
-        <input type="text" name="q" placeholder="поиск" />
-      </form>
-    </div>
-    <div class="sidebar-links">
-      <a href="/about">о проекте</a>
-      <a href="#help">безопасность</a>
-      <a href="#help">помощь</a>
-    </div>
-  </div>
-  <div class="home-content">
-    <div class="categories-craigslist">
-      ${categories}
-    </div>
+<div class="home-content">
+  <div class="categories-list">
+    ${categories}
   </div>
 </div>`
   );
