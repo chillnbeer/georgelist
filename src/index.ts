@@ -1145,7 +1145,7 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       margin-top: 8px;
     }
     .title {
-      margin: 0 0 2px;
+      margin: 0 0 8px;
       font-size: 16px;
       font-weight: 700;
     }
@@ -1467,6 +1467,7 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       padding: 2px 8px;
       font-size: 12px;
       color: #555;
+      margin-right: 8px;
     }
     .ad-page-body {
       white-space: pre-wrap;
