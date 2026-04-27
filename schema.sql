@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS ads (
   city TEXT,
   category TEXT,
   type TEXT,
+  price TEXT,
   location_lat REAL,
   location_lng REAL,
   location_radius_meters INTEGER,
