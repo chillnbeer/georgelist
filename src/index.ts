@@ -969,13 +969,6 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       font-weight: 700;
     }
     p { margin: 0 0 10px; }
-    a {
-      color: #0066cc;
-      text-decoration: none;
-    }
-    a:hover {
-      text-decoration: underline;
-    }
     .nav {
       margin: 0 0 10px;
       display: flex;
@@ -1122,13 +1115,6 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       line-height: 1.6;
       color: #333;
     }
-    .categories-list a {
-      color: #0066cc;
-      text-decoration: none;
-    }
-    .categories-list a:hover {
-      text-decoration: underline;
-    }
     .ad-cards-grid {
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
@@ -1168,14 +1154,9 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
     }
     .card-title {
       display: block;
-      color: #0066cc;
-      text-decoration: none;
       margin-bottom: 4px;
       line-height: 1.3;
       font-weight: normal;
-    }
-    .card-title:hover {
-      text-decoration: underline;
     }
     .card-meta {
       color: #666;
@@ -1191,13 +1172,6 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       border-bottom: 1px solid #eee;
       font-size: 14px;
       line-height: 1.5;
-    }
-    .ad-row a {
-      color: #0066cc;
-      text-decoration: none;
-    }
-    .ad-row a:hover {
-      text-decoration: underline;
     }
     .ad-row-date {
       color: #666;
@@ -1915,14 +1889,31 @@ function renderAdImagesGallery(env: Env, imageKeys: string[], alt: string): stri
   }
 
   const imageUrls = imageKeys.map((key) => buildMediaUrl(env, key));
-  return `<div class="ad-images-simple">
-${imageUrls
-  .map(
-    (url) => `<a href="${htmlEscape(url)}" target="_blank" rel="noopener">
-    <img src="${htmlEscape(url)}" alt="${htmlEscape(alt)}" loading="lazy" style="max-width: 100%; margin-bottom: 8px;" />
-  </a>`
-  )
-  .join('')}
+  const [mainImageUrl] = imageUrls;
+  return `<div class="ad-gallery">
+  <div class="ad-gallery-main" data-ad-gallery-main>
+    <a href="${htmlEscape(mainImageUrl)}" target="_blank" rel="noopener" data-ad-gallery-main-link>
+      <img src="${htmlEscape(mainImageUrl)}" alt="${htmlEscape(alt)}" loading="eager" data-ad-gallery-main-image />
+    </a>
+    ${
+      imageUrls.length > 1
+        ? `<button type="button" class="ad-gallery-nav ad-gallery-nav-prev" data-ad-gallery-prev aria-label="Предыдущее фото">‹</button>
+    <button type="button" class="ad-gallery-nav ad-gallery-nav-next" data-ad-gallery-next aria-label="Следующее фото">›</button>`
+        : ''
+    }
+  </div>
+  ${
+    imageUrls.length > 1
+      ? `<div class="ad-gallery-meta"><span data-ad-gallery-counter>1 / ${imageUrls.length}</span></div>
+  <div class="ad-gallery-thumbs">${imageUrls
+      .map(
+        (url, index) => `<button type="button" class="ad-gallery-thumb${index === 0 ? ' is-active' : ''}" data-ad-gallery-thumb data-index="${index}" data-full="${htmlEscape(url)}" aria-label="Фото ${index + 1}">
+      <img src="${htmlEscape(url)}" alt="${htmlEscape(alt)}" loading="lazy" />
+    </button>`
+      )
+      .join('')}</div>`
+      : ''
+  }
 </div>`;
 }
 
