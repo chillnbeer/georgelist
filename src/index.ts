@@ -1118,22 +1118,28 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
       gap: 0;
-      margin: 14px 0;
+      margin: 0;
     }
     .section-block {
-      margin-bottom: 0;
+      margin: 0;
+      padding: 0;
     }
     .section-title {
       font-weight: 700;
       font-size: 14px;
-      margin: 0 0 8px;
+      margin: 0;
+      padding: 0;
     }
     .section-categories {
       font-size: 13px;
       line-height: 1.8;
+      margin: 0;
+      padding: 0;
     }
     .section-categories a {
       display: block;
+      margin: 0;
+      padding: 0;
     }
     .categories-list {
       font-size: 13px;
