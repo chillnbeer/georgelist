@@ -28,9 +28,11 @@ import { clearChatNotification, sendOrUpdateChatNotification, storeConversationM
 import {
   AD_TYPES,
   CATEGORIES,
+  SECTIONS,
   buildCategoryRows,
   buildTypeRows,
   categoryLabel,
+  getSectionLabel,
   normalizeAdType,
   normalizeCategory,
   type AdTypeSlug,
@@ -1112,6 +1114,42 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
     .home-content {
       margin: 14px 0;
     }
+    .sections-container {
+      display: flex;
+      flex-direction: column;
+      gap: 28px;
+    }
+    .section-block {
+      border-top: 2px solid #ddd;
+      padding-top: 16px;
+    }
+    .section-title {
+      font-size: 18px;
+      font-weight: 700;
+      margin: 0 0 12px;
+      color: #000;
+    }
+    .section-categories {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+      gap: 10px;
+      margin-left: 0;
+    }
+    .section-category-link {
+      display: block;
+      padding: 8px 12px;
+      border-radius: 4px;
+      background: #f9f9f9;
+      text-decoration: none;
+      color: #0066cc;
+      font-size: 13px;
+      transition: all 0.2s;
+      border: 1px solid #eee;
+    }
+    .section-category-link:hover {
+      background: #f0f5ff;
+      border-color: #0066cc;
+    }
     .categories-list {
       font-size: 13px;
       line-height: 1.6;
@@ -2178,17 +2216,26 @@ ${nav(currentUser, currentCity, currentPath)}
 }
 
 function renderHome(currentUser: CurrentUser | null = null, currentCity: string | null = null, currentPath = '/'): Response {
-  const categories = CATEGORIES.map(
-    (category) => `<a href="/category/${category.slug}">${htmlEscape(category.label)}</a>`
-  ).join(' · ');
+  const sectionsHtml = SECTIONS.map((section) => {
+    const categoriesHtml = section.categories
+      .map((category) => `<a class="section-category-link" href="/category/${htmlEscape(category.slug)}">${htmlEscape(category.label)}</a>`)
+      .join('');
+
+    return `<div class="section-block">
+  <div class="section-title">${htmlEscape(section.emoji)} ${htmlEscape(section.label)}</div>
+  <div class="section-categories">
+    ${categoriesHtml}
+  </div>
+</div>`;
+  }).join('');
 
   return shell(
     'жоржлист',
     `<h1><a class="site-title" href="/">жоржлист</a></h1>
 ${nav(currentUser, currentCity, currentPath)}
 <div class="home-content">
-  <div class="categories-list">
-    ${categories}
+  <div class="sections-container">
+    ${sectionsHtml}
   </div>
 </div>`
   );
