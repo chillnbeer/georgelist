@@ -1114,6 +1114,32 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
     .home-content {
       margin: 14px 0;
     }
+    .sections-list {
+      margin: 14px 0;
+    }
+    .section-block {
+      margin-bottom: 20px;
+    }
+    .section-title {
+      font-weight: 700;
+      font-size: 14px;
+      color: #000;
+      margin: 10px 0 8px;
+    }
+    .section-categories {
+      columns: 3;
+      column-gap: 20px;
+      font-size: 13px;
+      line-height: 1.8;
+    }
+    .section-categories a {
+      display: block;
+      color: #0066cc;
+      text-decoration: none;
+    }
+    .section-categories a:hover {
+      text-decoration: underline;
+    }
     .categories-list {
       font-size: 13px;
       line-height: 1.6;
@@ -2183,18 +2209,23 @@ function renderHome(currentUser: CurrentUser | null = null, currentCity: string 
   const sectionsHtml = SECTIONS.map((section) => {
     const categoriesHtml = section.categories
       .map((category) => `<a href="/category/${htmlEscape(category.slug)}">${htmlEscape(category.label)}</a>`)
-      .join(' | ');
+      .join('');
 
-    return `<tr><td><strong>${htmlEscape(section.emoji)} ${htmlEscape(section.label)}</strong></td><td>${categoriesHtml}</td></tr>`;
+    return `<div class="section-block">
+  <div class="section-title">${htmlEscape(section.emoji)} ${htmlEscape(section.label)}</div>
+  <div class="section-categories">
+    ${categoriesHtml}
+  </div>
+</div>`;
   }).join('');
 
   return shell(
     'жоржлист',
     `<h1><a class="site-title" href="/">жоржлист</a></h1>
 ${nav(currentUser, currentCity, currentPath)}
-<table>
+<div class="sections-list">
   ${sectionsHtml}
-</table>`
+</div>`
   );
 }
 
