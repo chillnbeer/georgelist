@@ -2290,7 +2290,8 @@ ${nav(currentUser, currentCity, currentPath)}
     </div>
     <div class="ad-page-body">${htmlEscape(ad.body)}</div>
   </div>
-</div>`,
+</div>
+${renderAdMessageSection(ad, currentUser, canMessageAuthor, currentUserHasTelegram, message)}`,
     currentUser,
     200,
     `${hasLocation ? renderLeafletAssets() : ''}${renderAdGalleryScript()}`
