@@ -1,7 +1,8 @@
-import { buildCategoryRows, buildTypeRows } from './ad-taxonomy';
+import { buildCategoryRows, buildSectionRows, buildTypeRows, getCategoriesForSection } from './ad-taxonomy';
 import { CITIES, normalizeCity } from './cities';
 import type { ChatMessageRow, ChatThreadListRow, ChatThreadRow } from './chat';
 import {
+  USER_BOT_BROWSE_SECTIONS_PREFIX,
   USER_BOT_CANCEL_FLOW,
   USER_BOT_CHAT_DOWNLOAD_PREFIX,
   USER_BOT_CHAT_HIDE_PREFIX,
@@ -47,8 +48,18 @@ export function userBotMenuMarkup(env: Env): Record<string, unknown> {
 export function userBotSectionsMarkup(): Record<string, unknown> {
   return {
     inline_keyboard: [
-      ...buildCategoryRows(USER_BOT_SECTION_PREFIX),
+      ...buildSectionRows(USER_BOT_BROWSE_SECTIONS_PREFIX),
       [{ text: 'Назад', callback_data: USER_BOT_MENU_HOME }],
+    ],
+  };
+}
+
+export function userBotBrowseSectionMarkup(sectionSlug: string): Record<string, unknown> {
+  const categories = getCategoriesForSection(sectionSlug);
+  return {
+    inline_keyboard: [
+      ...buildCategoryRows(USER_BOT_SECTION_PREFIX, categories),
+      [{ text: 'Назад', callback_data: USER_BOT_MENU_SECTIONS }],
     ],
   };
 }

@@ -1,4 +1,4 @@
-import { categoryLabel, normalizeCategory, typeLabel } from './ad-taxonomy';
+import { categoryLabel, getSectionLabel, normalizeCategory, typeLabel } from './ad-taxonomy';
 import { buildAdLocationSummary } from './ad-location';
 import { cityLabel } from './cities';
 import {
@@ -20,6 +20,7 @@ import type { AdCardRow, AdRow, Env, PublicAdCardRow } from './types';
 import { truncateText } from './utils';
 import { showUserBotPhotoScreen, showUserBotScreen } from './user-bot-screen';
 import {
+  userBotBrowseSectionMarkup,
   userBotCancelHomeMarkup,
   userBotSearchAdMarkup,
   userBotSectionAdMarkup,
@@ -33,6 +34,11 @@ import {
 
 export async function sendUserBotSections(env: Env, telegramUserId: string, chatId: number): Promise<void> {
   await showUserBotScreen(env, telegramUserId, chatId, 'Объявления', userBotSectionsMarkup());
+}
+
+export async function sendUserBotBrowseSection(env: Env, telegramUserId: string, chatId: number, sectionSlug: string): Promise<void> {
+  const sectionLabel = getSectionLabel(sectionSlug);
+  await showUserBotScreen(env, telegramUserId, chatId, sectionLabel, userBotBrowseSectionMarkup(sectionSlug));
 }
 
 export async function sendUserBotSearchPrompt(

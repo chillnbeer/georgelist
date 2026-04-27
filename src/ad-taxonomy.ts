@@ -182,7 +182,17 @@ export const SECTIONS = [
 export type SectionSlug = (typeof SECTIONS)[number]['slug'];
 export type Section = (typeof SECTIONS)[number];
 
-export const CATEGORIES = SECTIONS.flatMap((section) => section.categories) as const;
+export const CATEGORIES = [
+  ...SECTIONS[0].categories,
+  ...SECTIONS[1].categories,
+  ...SECTIONS[2].categories,
+  ...SECTIONS[3].categories,
+  ...SECTIONS[4].categories,
+  ...SECTIONS[5].categories,
+  ...SECTIONS[6].categories,
+  ...SECTIONS[7].categories,
+  ...SECTIONS[8].categories,
+] as const;
 
 export type CategorySlug = (typeof CATEGORIES)[number]['slug'];
 
@@ -226,9 +236,9 @@ export function normalizeAdType(slug: string | null | undefined): AdTypeSlug {
   return AD_TYPES.some((type) => type.slug === value) ? value : 'sell';
 }
 
-export function getCategoriesForSection(sectionSlug: string): typeof CATEGORIES {
+export function getCategoriesForSection(sectionSlug: string): Array<{ readonly slug: string; readonly label: string }> {
   const section = SECTIONS.find((s) => s.slug === sectionSlug);
-  return (section?.categories || []) as typeof CATEGORIES;
+  return (section?.categories || []) as Array<{ readonly slug: string; readonly label: string }>;
 }
 
 export function getSectionLabel(sectionSlug: string): string {
@@ -238,7 +248,7 @@ export function getSectionLabel(sectionSlug: string): string {
 
 export function buildCategoryRows(
   callbackPrefix: string,
-  categories: typeof CATEGORIES = CATEGORIES
+  categories: typeof CATEGORIES | Array<{ readonly slug: string; readonly label: string }> = CATEGORIES
 ): Array<Array<{ text: string; callback_data: string }>> {
   const rows: Array<Array<{ text: string; callback_data: string }>> = [];
   for (let index = 0; index < categories.length; index += 2) {
