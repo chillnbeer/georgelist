@@ -40,6 +40,26 @@ import {
   typeLabel,
 } from './ad-taxonomy';
 import {
+  ADMIN_PAGE_SIZE,
+  buildAdminActionUrl,
+  buildAdminUrl,
+  countAllAds,
+  countAllUsers,
+  listAdminAdsPage,
+  listAdminUsersPage,
+  parseAdminPage,
+  parseAdminSection,
+  type AdminPagination,
+  type AdminSection,
+  type AdminUserRow,
+} from './admin';
+import {
+  handleAdminBotCallback,
+  handleAdminBotText,
+  isAdminTelegramChat,
+  type AdminBotDeps,
+} from './admin-bot';
+import {
   AD_BODY_MAX_LENGTH,
   AD_CONTACT_MAX_LENGTH,
   AD_IMAGES_MAX_COUNT,
@@ -177,6 +197,28 @@ const NOOP_EXECUTION_CONTEXT = {
   waitUntil(): void {},
   passThroughOnException(): void {},
 } as unknown as ExecutionContext;
+
+const adminBotDeps: AdminBotDeps = {
+  telegramApi,
+  buildMediaUrl,
+  buildAdLocationSummary,
+  countAllAds,
+  countAllUsers,
+  listAdminAdsPage,
+  listAdminUsersPage,
+  getAdById,
+  findUserById,
+  getBotDraft,
+  upsertBotDraft,
+  clearBotDraft,
+  deleteAdminAd,
+  promoteAdminUser,
+  demoteAdminUser,
+  deleteAdminUser,
+  updateAdStatus,
+  notifyAdOwnerStatusChange,
+  sendTelegramMessage,
+};
 
 function buildMediaUrl(env: Env, key: string): string {
   return buildPublicSiteUrl(env, `/media/${encodeURIComponent(key)}`);
@@ -2412,136 +2454,6 @@ ${nav(currentUser, currentCity, currentPath)}
   );
 }
 
-type AdminUserRow = {
-  id: number;
-  login: string;
-  avatar_key: string | null;
-  email: string | null;
-  role: string;
-  created_at: string;
-};
-
-type AdminSection = 'users' | 'ads';
-
-type AdminPagination = {
-  page: number;
-  totalPages: number;
-};
-
-const ADMIN_PAGE_SIZE = 5;
-
-function parseAdminSection(value: string | null): AdminSection {
-  return value === 'users' ? 'users' : 'ads';
-}
-
-function parseAdminPage(value: string | null): number {
-  const page = Number(value || '1');
-  return Number.isInteger(page) && page > 0 ? page : 1;
-}
-
-function buildAdminUrl(section: AdminSection, page: number, message: string | null = null): string {
-  const params = new URLSearchParams({
-    section,
-    page: String(page),
-  });
-
-  if (message) {
-    params.set('message', message);
-  }
-
-  return `/admin?${params.toString()}`;
-}
-
-function buildAdminActionUrl(path: string, section: AdminSection, page: number): string {
-  const params = new URLSearchParams({
-    section,
-    page: String(page),
-  });
-
-  return `${path}?${params.toString()}`;
-}
-
-async function countAllUsers(env: Env): Promise<number> {
-  const result = await env.DB.prepare(
-    `
-      SELECT COUNT(*) AS count
-      FROM users
-    `
-  )
-    .first<{ count: number }>();
-
-  return result?.count ?? 0;
-}
-
-async function listAdminUsersPage(env: Env, page: number): Promise<AdminUserRow[]> {
-  const offset = (page - 1) * ADMIN_PAGE_SIZE;
-  const result = await env.DB.prepare(
-    `
-      SELECT users.id,
-             users.login,
-             users.avatar_key,
-             (SELECT email FROM user_identities WHERE user_id = users.id AND provider = 'email' LIMIT 1) AS email,
-             users.role,
-             users.created_at
-      FROM users
-      ORDER BY users.id ASC
-      LIMIT ?
-      OFFSET ?
-    `
-  )
-    .bind(ADMIN_PAGE_SIZE, offset)
-    .all<AdminUserRow>();
-
-  return result.results ?? [];
-}
-
-async function countAllAds(env: Env): Promise<number> {
-  const result = await env.DB.prepare(
-    `
-      SELECT COUNT(*) AS count
-      FROM ads
-      WHERE deleted_at IS NULL
-    `
-  )
-    .first<{ count: number }>();
-
-  return result?.count ?? 0;
-}
-
-async function listAdminAdsPage(env: Env, page: number): Promise<AdRow[]> {
-  const offset = (page - 1) * ADMIN_PAGE_SIZE;
-  const result = await env.DB.prepare(
-    `
-      SELECT ads.id,
-             ads.title,
-             ads.body,
-             ads.contact,
-             ads.category,
-             COALESCE(ads.type, 'sell') AS type,
-             ads.owner_user_id,
-             ads.status,
-             ads.image_key,
-             ads.image_mime_type,
-             ads.image_updated_at,
-             ads.created_at,
-             ads.updated_at,
-             ads.deleted_at,
-             users.login AS owner_login,
-             users.avatar_key AS owner_avatar_key
-      FROM ads
-      LEFT JOIN users ON users.id = ads.owner_user_id
-      WHERE deleted_at IS NULL
-      ORDER BY ads.created_at DESC, ads.id DESC
-      LIMIT ?
-      OFFSET ?
-    `
-  )
-    .bind(ADMIN_PAGE_SIZE, offset)
-    .all<AdRow>();
-
-  return result.results ?? [];
-}
-
 function renderAdminPagination(section: AdminSection, pagination: AdminPagination): string {
   if (pagination.totalPages <= 1) {
     return `<p class="empty">Страница 1 из 1</p>`;
@@ -4027,220 +3939,6 @@ async function sendUserBotSectionAdDetail(env: Env, telegramUserId: string, chat
   await sendUserBotPublicAdCard(env, telegramUserId, chatId, ad, userBotSectionAdMarkup(categoryKey));
 }
 
-function isAdminTelegramChat(env: Env, chatId: number): boolean {
-  return String(chatId) === String(env.TELEGRAM_ADMIN_ID);
-}
-
-function adminBotMenuMarkup(): Record<string, unknown> {
-  return {
-    inline_keyboard: [
-      [{ text: 'Объявления', callback_data: 'admin:ads:page:1' }],
-      [{ text: 'Пользователи', callback_data: 'admin:users:page:1' }],
-      [{ text: 'Обновить', callback_data: ADMIN_BOT_MENU_HOME }],
-    ],
-  };
-}
-
-function adminBotPageMarkup(section: AdminSection, page: number, totalPages: number): Array<Array<{ text: string; callback_data: string }>> {
-  const row: Array<{ text: string; callback_data: string }> = [];
-  if (page > 1) {
-    row.push({ text: 'Назад', callback_data: `admin:${section}:page:${page - 1}` });
-  }
-  row.push({ text: `Стр. ${page}/${totalPages}`, callback_data: `admin:${section}:page:${page}` });
-  if (page < totalPages) {
-    row.push({ text: 'Вперёд', callback_data: `admin:${section}:page:${page + 1}` });
-  }
-  return [row];
-}
-
-function adminBotAdsMarkup(
-  ads: Array<{ id: number; title: string }>,
-  page: number,
-  totalPages: number
-): Record<string, unknown> {
-  return {
-    inline_keyboard: [
-      ...ads.map((ad) => [
-        { text: ad.title.slice(0, 40) || `#${ad.id}`, callback_data: `admin:ad:${page}:${ad.id}` },
-      ]),
-      ...adminBotPageMarkup('ads', page, totalPages),
-      [{ text: 'Назад', callback_data: ADMIN_BOT_MENU_HOME }],
-    ],
-  };
-}
-
-function adminBotUsersMarkup(
-  users: Array<{ id: number; login: string; role: string }>,
-  page: number,
-  totalPages: number
-): Record<string, unknown> {
-  return {
-    inline_keyboard: [
-      ...users.map((user) => [
-        { text: `${user.login}${user.role === 'admin' ? ' · admin' : ''}`, callback_data: `admin:user:${page}:${user.id}` },
-      ]),
-      ...adminBotPageMarkup('users', page, totalPages),
-      [{ text: 'Назад', callback_data: ADMIN_BOT_MENU_HOME }],
-    ],
-  };
-}
-
-function adminBotAdMarkup(adId: number, page: number): Record<string, unknown> {
-  return {
-    inline_keyboard: [
-      [
-        { text: 'Редактировать', callback_data: `admin:ad:${page}:${adId}:edit` },
-        { text: 'Удалить', callback_data: `admin:ad:${page}:${adId}:delete` },
-      ],
-      [
-        { text: 'Publish', callback_data: `admin:ad:${page}:${adId}:publish` },
-        { text: 'Reject', callback_data: `admin:ad:${page}:${adId}:reject` },
-      ],
-      [{ text: 'Назад', callback_data: `admin:ads:page:${page}` }],
-    ],
-  };
-}
-
-function adminBotUserMarkup(userId: number, role: string, page: number): Record<string, unknown> {
-  return {
-    inline_keyboard: [
-      role === 'admin'
-        ? [
-            { text: 'Сделать user', callback_data: `admin:user:${page}:${userId}:demote` },
-            { text: 'Уже admin', callback_data: `admin:user:${page}:${userId}` },
-          ]
-        : [{ text: 'Сделать admin', callback_data: `admin:user:${page}:${userId}:promote` }],
-      [
-        { text: 'Удалить', callback_data: `admin:user:${page}:${userId}:delete` },
-        { text: 'Назад', callback_data: `admin:users:page:${page}` },
-      ],
-    ],
-  };
-}
-
-async function sendAdminBotMessage(
-  env: Env,
-  chatId: number,
-  text: string,
-  replyMarkup?: Record<string, unknown>
-): Promise<void> {
-  const payload: Record<string, unknown> = {
-    chat_id: chatId,
-    text,
-  };
-
-  if (replyMarkup) {
-    payload.reply_markup = replyMarkup;
-  }
-
-  const response = await telegramApi(env, 'sendMessage', payload);
-  if (!response.ok) {
-    throw new Error(`Telegram sendMessage failed with status ${response.status}`);
-  }
-}
-
-async function answerAdminCallbackQuery(env: Env, callbackQueryId: string, text?: string): Promise<void> {
-  await telegramApi(env, 'answerCallbackQuery', {
-    callback_query_id: callbackQueryId,
-    ...(text ? { text } : {}),
-  });
-}
-
-async function sendAdminBotHome(env: Env, chatId: number, message = 'Админ-панель'): Promise<void> {
-  await sendAdminBotMessage(env, chatId, message, adminBotMenuMarkup());
-}
-
-async function sendAdminBotAds(env: Env, chatId: number, page = 1): Promise<void> {
-  const totalAds = await countAllAds(env);
-  const totalPages = Math.max(1, Math.ceil(totalAds / ADMIN_PAGE_SIZE));
-  const normalizedPage = Math.min(Math.max(1, page), totalPages);
-  const ads = await listAdminAdsPage(env, normalizedPage);
-  if (!ads.length) {
-    await sendAdminBotMessage(env, chatId, 'Пока нет объявлений', adminBotMenuMarkup());
-    return;
-  }
-
-  await sendAdminBotMessage(
-    env,
-    chatId,
-    `Объявления: страница ${normalizedPage}/${totalPages}`,
-    adminBotAdsMarkup(ads.map((ad) => ({ id: ad.id, title: ad.title })), normalizedPage, totalPages)
-  );
-}
-
-async function sendAdminBotUsers(env: Env, chatId: number, page = 1): Promise<void> {
-  const totalUsers = await countAllUsers(env);
-  const totalPages = Math.max(1, Math.ceil(totalUsers / ADMIN_PAGE_SIZE));
-  const normalizedPage = Math.min(Math.max(1, page), totalPages);
-  const users = await listAdminUsersPage(env, normalizedPage);
-  if (!users.length) {
-    await sendAdminBotMessage(env, chatId, 'Пока нет пользователей', adminBotMenuMarkup());
-    return;
-  }
-
-  await sendAdminBotMessage(
-    env,
-    chatId,
-    `Пользователи: страница ${normalizedPage}/${totalPages}`,
-    adminBotUsersMarkup(users.map((user) => ({ id: user.id, login: user.login, role: user.role })), normalizedPage, totalPages)
-  );
-}
-
-async function buildAdminBotAdText(
-  env: Env,
-  ad: Pick<AdRow, 'id' | 'title' | 'body' | 'contact' | 'category' | 'type' | 'status' | 'owner_user_id' | 'deleted_at' | 'image_key' | 'location_lat' | 'location_lng' | 'location_radius_meters' | 'location_label'>,
-  bodyLimit = 2800
-): Promise<string> {
-  const owner = ad.owner_user_id ? await findUserById(env, ad.owner_user_id) : null;
-  const location = buildAdLocationSummary(ad);
-  return [
-    `#${ad.id}`,
-    `Заголовок: ${ad.title}`,
-    `Тип: ${typeLabel(ad.type)}`,
-    `Категория: ${categoryLabel(ad.category)}`,
-    `Статус: ${ad.status}`,
-    `Owner: ${owner?.login ? `${owner.login} (#${ad.owner_user_id})` : ad.owner_user_id ?? 'none'}`,
-    `Удалено: ${ad.deleted_at ? 'yes' : 'no'}`,
-    location ? `Зона встречи: ${location}` : null,
-    'Текст:',
-    truncateText(ad.body, bodyLimit),
-    ad.contact ? `Контакты: ${ad.contact}` : null,
-  ].filter((line): line is string => line !== null).join('\n');
-}
-
-async function sendAdminBotAdDetail(env: Env, chatId: number, ad: AdRow, page: number): Promise<void> {
-  const replyMarkup = adminBotAdMarkup(ad.id, page);
-  const text = await buildAdminBotAdText(env, ad);
-
-  if (ad.image_key) {
-    const response = await telegramApi(env, 'sendPhoto', {
-      chat_id: chatId,
-      photo: buildMediaUrl(env, ad.image_key),
-      caption: await buildAdminBotAdText(env, ad, 700),
-      reply_markup: replyMarkup,
-    });
-
-    if (!response.ok) {
-      throw new Error(`Telegram sendPhoto failed with status ${response.status}`);
-    }
-    return;
-  }
-
-  await sendAdminBotMessage(env, chatId, text, replyMarkup);
-}
-
-async function sendAdminBotUserDetail(env: Env, chatId: number, user: AdminUserRow, page: number): Promise<void> {
-  const text = [
-    `#${user.id}`,
-    `Login: ${user.login}`,
-    `Email: ${user.email || '—'}`,
-    `Role: ${user.role}`,
-    `Created: ${user.created_at}`,
-  ].join('\n');
-
-  await sendAdminBotMessage(env, chatId, text, adminBotUserMarkup(user.id, user.role, page));
-}
-
 async function deleteAdminAd(env: Env, adId: number): Promise<'deleted' | 'missing' | 'already'> {
   const result = await env.DB.prepare(
     `
@@ -4933,331 +4631,6 @@ async function notifyAdOwnerStatusChange(
   } catch (error) {
     console.error(`Failed to notify user about ad ${statusLabel}`, error);
   }
-}
-
-async function startAdminBotEditFlow(env: Env, chatId: number, adId: number, page: number): Promise<boolean> {
-  const ad = await getAdById(env, adId);
-  if (!ad) {
-    await sendAdminBotHome(env, chatId, 'Объявление не найдено');
-    return false;
-  }
-
-  await upsertBotDraft(env, String(chatId), `admin-edit:${page}`, 'title', ad.category, ad.title, ad.body, ad.id);
-  await sendAdminBotMessage(env, chatId, 'Введи новый заголовок');
-  return true;
-}
-
-async function handleAdminBotText(
-  env: Env,
-  chatId: number,
-  text: string,
-  ctx: ExecutionContext
-): Promise<void> {
-  const draft = await getBotDraft(env, String(chatId));
-
-  if (!draft || !draft.action.startsWith('admin-edit')) {
-    const normalized = text.trim();
-    if (normalized === '/start' || normalized === '/menu') {
-      await sendAdminBotHome(env, chatId);
-      return;
-    }
-
-    if (normalized === '/ads') {
-      await sendAdminBotAds(env, chatId, 1);
-      return;
-    }
-
-    if (normalized === '/users') {
-      await sendAdminBotUsers(env, chatId, 1);
-      return;
-    }
-
-    return;
-  }
-
-  if (!draft.ad_id) {
-    await clearBotDraft(env, String(chatId));
-    await sendAdminBotHome(env, chatId, 'Черновик потерян');
-    return;
-  }
-
-  const originalAd = await getAdById(env, draft.ad_id);
-
-  if (draft.step === 'title') {
-    const title = text.trim();
-    if (!title) {
-      await sendAdminBotMessage(env, chatId, 'Заголовок не должен быть пустым');
-      return;
-    }
-
-    await upsertBotDraft(env, String(chatId), draft.action, 'body', draft.category, title, draft.body, draft.ad_id);
-    await sendAdminBotMessage(env, chatId, 'Введи новый текст');
-    return;
-  }
-
-  if (draft.step === 'body') {
-    const body = text.trim();
-    if (!body) {
-      await sendAdminBotMessage(env, chatId, 'Текст не должен быть пустым');
-      return;
-    }
-
-    await upsertBotDraft(env, String(chatId), draft.action, 'category', draft.category, draft.title, body, draft.ad_id);
-    await sendAdminBotMessage(env, chatId, `Введи новую категорию: ${CATEGORIES.map((category) => category.slug).join(', ')}`);
-    return;
-  }
-
-  if (draft.step === 'category') {
-    const category = normalizeCategory(text.trim());
-    const adId = draft.ad_id;
-    const page = Number(draft.action.split(':')[1] || '1');
-    const normalizedPage = Number.isInteger(page) && page > 0 ? page : 1;
-
-    const result = await env.DB.prepare(
-      `
-        UPDATE ads
-        SET title = ?,
-            body = ?,
-            category = ?,
-            updated_at = CURRENT_TIMESTAMP
-        WHERE id = ?
-          AND deleted_at IS NULL
-      `
-    )
-      .bind(draft.title || '', draft.body || '', category, adId)
-      .run();
-
-    await clearBotDraft(env, String(chatId));
-
-    if ((result.meta.changes ?? 0) === 0) {
-      await sendAdminBotAds(env, chatId, normalizedPage);
-      return;
-    }
-
-    await sendAdminBotAds(env, chatId, normalizedPage);
-    ctx.waitUntil(
-      sendTelegramMessage(env, {
-        id: adId,
-        title: draft.title || '',
-        body: draft.body || '',
-        city: originalAd?.city || CITY_DEFAULT_SLUG,
-        category,
-        type: originalAd?.type ?? 'sell',
-        location_lat: originalAd?.location_lat ?? null,
-        location_lng: originalAd?.location_lng ?? null,
-        location_radius_meters: originalAd?.location_radius_meters ?? null,
-        location_label: originalAd?.location_label ?? null,
-        image_key: originalAd?.image_key ?? null,
-      }, 'Edited').catch((error: unknown) => {
-        console.error('Telegram notification failed after admin edit', error);
-      })
-    );
-  }
-}
-
-async function handleAdminBotCallback(
-  update: TelegramUpdate,
-  env: Env,
-  ctx: ExecutionContext
-): Promise<Response> {
-  const callbackQuery = update.callback_query;
-  if (!callbackQuery?.data || !callbackQuery.message) {
-    return json({ ok: true });
-  }
-
-  const chatId = callbackQuery.message.chat.id;
-  const data = callbackQuery.data;
-
-  const [action, id] = data.split(':', 2);
-  if (id && (action === 'publish' || action === 'reject')) {
-    const numericId = Number(id);
-    if (!Number.isInteger(numericId) || numericId <= 0) {
-      await answerAdminCallbackQuery(env, callbackQuery.id, 'Invalid id').catch(() => {});
-      return json({ ok: true });
-    }
-
-    const ad = await getAdById(env, numericId);
-    if (!ad) {
-      await answerAdminCallbackQuery(env, callbackQuery.id, 'Ad not found').catch(() => {});
-      return json({ ok: true });
-    }
-
-    const status = action === 'publish' ? 'published' : 'rejected';
-    const result = await env.DB.prepare(
-      `
-        UPDATE ads
-        SET status = ?, updated_at = CURRENT_TIMESTAMP
-        WHERE id = ?
-          AND deleted_at IS NULL
-      `
-    )
-      .bind(status, numericId)
-      .run();
-
-    if (result.meta.changes === 0) {
-      await answerAdminCallbackQuery(env, callbackQuery.id, 'Ad not found').catch(() => {});
-      return json({ ok: true });
-    }
-
-    const itemKind: 'New' | 'Edited' =
-      (callbackQuery.message.caption || callbackQuery.message.text || '').startsWith('Type: Edited') ? 'Edited' : 'New';
-
-    try {
-      await editTelegramMessage(
-        env,
-        callbackQuery.message.chat.id,
-        callbackQuery.message.message_id,
-        ad,
-        status === 'published' ? 'Published' : 'Rejected',
-        itemKind
-      );
-    } catch (error) {
-      console.error('Failed to edit Telegram message', error);
-    }
-
-    await notifyAdOwnerStatusChange(env, ad, status);
-
-    await answerAdminCallbackQuery(env, callbackQuery.id, status === 'published' ? 'Published' : 'Rejected').catch(() => {});
-    return json({ ok: true });
-  }
-
-  if (data === ADMIN_BOT_MENU_HOME) {
-    await answerAdminCallbackQuery(env, callbackQuery.id).catch(() => {});
-    await sendAdminBotHome(env, chatId);
-    return json({ ok: true });
-  }
-
-  if (action === 'admin' && id === 'ads' && data.split(':')[2] === 'page') {
-    const page = Number(data.split(':')[3] || '1');
-    await answerAdminCallbackQuery(env, callbackQuery.id).catch(() => {});
-    await sendAdminBotAds(env, chatId, Number.isInteger(page) && page > 0 ? page : 1);
-    return json({ ok: true });
-  }
-
-  if (action === 'admin' && id === 'users' && data.split(':')[2] === 'page') {
-    const page = Number(data.split(':')[3] || '1');
-    await answerAdminCallbackQuery(env, callbackQuery.id).catch(() => {});
-    await sendAdminBotUsers(env, chatId, Number.isInteger(page) && page > 0 ? page : 1);
-    return json({ ok: true });
-  }
-
-  if (action === 'admin' && id === 'ad') {
-    const page = Number(data.split(':')[2] || '1');
-    const adId = Number(data.split(':')[3] || '0');
-    const command = data.split(':')[4] || 'view';
-
-    if (!Number.isInteger(page) || page <= 0 || !Number.isInteger(adId) || adId <= 0) {
-      await answerAdminCallbackQuery(env, callbackQuery.id, 'Invalid ad').catch(() => {});
-      return json({ ok: true });
-    }
-
-    if (command === 'edit') {
-      const started = await startAdminBotEditFlow(env, chatId, adId, page);
-      if (!started) {
-        await answerAdminCallbackQuery(env, callbackQuery.id, 'Ad not found').catch(() => {});
-        return json({ ok: true });
-      }
-
-      await answerAdminCallbackQuery(env, callbackQuery.id).catch(() => {});
-      return json({ ok: true });
-    }
-
-    if (command === 'delete') {
-      const result = await deleteAdminAd(env, adId);
-      await answerAdminCallbackQuery(
-        env,
-        callbackQuery.id,
-        result === 'deleted' ? 'Ad deleted' : result === 'already' ? 'Already deleted' : 'Ad not found'
-      ).catch(() => {});
-      await sendAdminBotAds(env, chatId, page);
-      return json({ ok: true });
-    }
-
-    if (command === 'publish' || command === 'reject') {
-      const status = command === 'publish' ? 'published' : 'rejected';
-      const response = await updateAdStatus(env, String(adId), status);
-      if (response.status === 404) {
-        await answerAdminCallbackQuery(env, callbackQuery.id, 'Ad not found').catch(() => {});
-        return json({ ok: true });
-      }
-
-      await answerAdminCallbackQuery(env, callbackQuery.id, status === 'published' ? 'Published' : 'Rejected').catch(() => {});
-      await sendAdminBotAds(env, chatId, page);
-      return json({ ok: true });
-    }
-
-    const ad = await getAdById(env, adId);
-    if (!ad) {
-      await answerAdminCallbackQuery(env, callbackQuery.id, 'Ad not found').catch(() => {});
-      return json({ ok: true });
-    }
-
-    await answerAdminCallbackQuery(env, callbackQuery.id).catch(() => {});
-    await sendAdminBotAdDetail(env, chatId, ad, page);
-    return json({ ok: true });
-  }
-
-  if (action === 'admin' && id === 'user') {
-    const page = Number(data.split(':')[2] || '1');
-    const userId = Number(data.split(':')[3] || '0');
-    const command = data.split(':')[4] || 'view';
-
-    if (!Number.isInteger(page) || page <= 0 || !Number.isInteger(userId) || userId <= 0) {
-      await answerAdminCallbackQuery(env, callbackQuery.id, 'Invalid user').catch(() => {});
-      return json({ ok: true });
-    }
-
-    if (command === 'promote') {
-      const result = await promoteAdminUser(env, userId);
-      await answerAdminCallbackQuery(env, callbackQuery.id, result === 'promoted' ? 'Admin added' : result === 'already' ? 'Already admin' : 'User not found').catch(() => {});
-      await sendAdminBotUsers(env, chatId, page);
-      return json({ ok: true });
-    }
-
-    if (command === 'demote') {
-      if (userId === chatId) {
-        await answerAdminCallbackQuery(env, callbackQuery.id, 'Cannot demote yourself').catch(() => {});
-        return json({ ok: true });
-      }
-
-      const result = await demoteAdminUser(env, userId);
-      await answerAdminCallbackQuery(env, callbackQuery.id, result === 'demoted' ? 'User added' : result === 'already' ? 'Already user' : 'User not found').catch(() => {});
-      await sendAdminBotUsers(env, chatId, page);
-      return json({ ok: true });
-    }
-
-    if (command === 'delete') {
-      if (userId === chatId) {
-        await answerAdminCallbackQuery(env, callbackQuery.id, 'Cannot delete yourself').catch(() => {});
-        return json({ ok: true });
-      }
-
-      const result = await deleteAdminUser(env, userId);
-      await answerAdminCallbackQuery(env, callbackQuery.id, result === 'deleted' ? 'User deleted' : 'User not found').catch(() => {});
-      await sendAdminBotUsers(env, chatId, page);
-      return json({ ok: true });
-    }
-
-    const user = await findUserById(env, userId);
-    if (!user) {
-      await answerAdminCallbackQuery(env, callbackQuery.id, 'User not found').catch(() => {});
-      return json({ ok: true });
-    }
-
-    await answerAdminCallbackQuery(env, callbackQuery.id).catch(() => {});
-    await sendAdminBotUserDetail(env, chatId, {
-      id: user.id,
-      login: user.login,
-      email: user.email,
-      role: user.role,
-      avatar_key: user.avatar_key,
-      created_at: user.created_at,
-    }, page);
-    return json({ ok: true });
-  }
-
-  await answerAdminCallbackQuery(env, callbackQuery.id, 'Unknown action').catch(() => {});
-  return json({ ok: true });
 }
 
 async function ensureAdImageColumns(env: Env): Promise<void> {
@@ -6160,7 +5533,7 @@ async function handleTelegramWebhook(request: Request, env: Env): Promise<Respon
   if (update.message?.text && update.message.from) {
     const chatId = update.message.chat.id;
     if (isAdminTelegramChat(env, chatId)) {
-      await handleAdminBotText(env, chatId, update.message.text, NOOP_EXECUTION_CONTEXT).catch((error: unknown) => {
+      await handleAdminBotText(adminBotDeps, env, chatId, update.message.text, NOOP_EXECUTION_CONTEXT).catch((error: unknown) => {
         console.error('Failed to handle admin bot text', error);
       });
       return json({ ok: true });
@@ -6173,7 +5546,7 @@ async function handleTelegramWebhook(request: Request, env: Env): Promise<Respon
   }
 
   if (isAdminTelegramChat(env, callbackQuery.message.chat.id)) {
-    return handleAdminBotCallback(update, env, NOOP_EXECUTION_CONTEXT);
+    return handleAdminBotCallback(adminBotDeps, update, env, NOOP_EXECUTION_CONTEXT);
   }
 
   const [action, id] = callbackQuery.data.split(':', 2);
