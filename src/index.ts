@@ -2262,10 +2262,10 @@ ${nav(null, null, currentPath)}
   <form method="post" action="/register">
     <input type="hidden" name="next" value="${htmlEscape(nextPath)}" />
 
-    <label for="login">Login</label>
+    <label for="login">Имя пользователя</label>
     <input id="login" name="login" type="text" required value="${htmlEscape(login)}" />
 
-    <label for="email">Email</label>
+    <label for="email">Почта</label>
     <input id="email" name="email" type="email" required value="${htmlEscape(email)}" />
 
     <label for="password">Пароль</label>
