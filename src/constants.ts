@@ -19,6 +19,7 @@ export const USER_BOT_MENU_MY = 'user:my';
 export const USER_BOT_MENU_HOME = 'user:home';
 export const USER_BOT_CANCEL_FLOW = 'user:cancel';
 export const USER_BOT_MENU_MY_AD = 'user:myad:';
+export const USER_BOT_BROWSE_SECTIONS_PREFIX = 'user:browse:';
 export const USER_BOT_SECTION_PREFIX = 'user:section:';
 export const USER_BOT_SECTION_AD_PREFIX = 'user:sectionad:';
 export const USER_BOT_SECTION_MORE_PREFIX = 'user:more:';
