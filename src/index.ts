@@ -974,25 +974,33 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
     }
     p { margin: 0 0 10px; }
     .nav {
-      margin: 0 0 10px;
+      margin: 0 0 20px;
       display: flex;
       flex-wrap: nowrap;
-      align-items: center;
-      gap: 20px;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 16px;
     }
-    .nav-links,
+    .nav-links {
+      display: flex;
+      flex-wrap: nowrap;
+      align-items: baseline;
+      gap: 16px;
+    }
     .nav-auth {
       display: flex;
       flex-wrap: nowrap;
-      align-items: center;
-      gap: 14px;
-    }
-    .nav-auth {
-      margin-left: auto;
+      align-items: baseline;
+      gap: 12px;
+      margin-left: 0;
     }
     .nav form {
       display: inline;
       margin: 0;
+    }
+    .nav a,
+    .nav button {
+      white-space: nowrap;
     }
     .city-picker {
       position: relative;
