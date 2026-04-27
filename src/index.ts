@@ -943,7 +943,8 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       background: #fff;
       color: #000;
       font-family: Arial, Helvetica, sans-serif;
-      line-height: 1.35;
+      font-size: 13px;
+      line-height: 1.4;
     }
     .page {
       max-width: 980px;
@@ -969,7 +970,10 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
     }
     p { margin: 0 0 10px; }
     a {
-      color: #00f;
+      color: #0066cc;
+      text-decoration: none;
+    }
+    a:hover {
       text-decoration: underline;
     }
     .nav {
@@ -1412,6 +1416,13 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       color: #666;
       font-size: 13px;
       margin-bottom: 16px;
+    }
+    .ad-page-craigslist {
+      max-width: 900px;
+    }
+    .ad-page-craigslist h2 {
+      font-size: 20px;
+      font-weight: normal;
     }
     .ad-page {
       display: grid;
@@ -2260,16 +2271,24 @@ function renderPublicAdPage(
     `<h1><a class="site-title" href="/">жоржлист</a></h1>
 ${nav(currentUser, currentCity, currentPath)}
 <div class="section">
-  <div class="ad-page-simple">
-    <h2>${htmlEscape(ad.title)}</h2>
-    <div class="ad-meta-line">
-      ${ad.city ? `<strong>${htmlEscape(cityLabel(ad.city))}</strong> · ` : ''}
-      ${htmlEscape(ad.created_at)}
+  <div class="ad-page-craigslist">
+    <h2 style="margin: 0 0 8px;">${htmlEscape(ad.title)}</h2>
+    <div style="display: grid; grid-template-columns: 1fr 300px; gap: 20px; margin-bottom: 16px;">
+      <div>
+        ${media}
+      </div>
+      <div style="font-size: 13px;">
+        <div style="margin-bottom: 12px;">
+          <strong style="font-size: 18px;">${ad.city ? htmlEscape(cityLabel(ad.city)) : ''}</strong>
+        </div>
+        ${ad.contact ? `<div style="margin-bottom: 12px;"><strong>Контакты:</strong><br />${htmlEscape(ad.contact)}</div>` : ''}
+        <div style="color: #666; font-size: 12px;">
+          ${htmlEscape(ad.created_at)}
+        </div>
+        ${hasLocation ? `<div style="margin-top: 12px;">${renderLocationViewer(ad, currentCity)}</div>` : ''}
+      </div>
     </div>
     <div class="ad-page-body">${htmlEscape(ad.body)}</div>
-    ${ad.contact ? `<div style="margin-top: 12px; padding: 8px; background: #f5f5f5;"><strong>Контакты:</strong> ${htmlEscape(ad.contact)}</div>` : ''}
-    ${media}
-    ${hasLocation ? renderLocationViewer(ad, currentCity) : ''}
   </div>
 </div>`,
     currentUser,
