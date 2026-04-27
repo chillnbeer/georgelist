@@ -7,8 +7,8 @@ export const ADS_SEARCH_LIMIT = 50;
 export const TELEGRAM_AUTH_COOKIE_NAME = 'telegram_auth';
 export const TELEGRAM_AUTH_COOKIE_MAX_AGE_SECONDS = 60 * 10;
 export const TELEGRAM_AUTH_MAX_AGE_SECONDS = 60 * 60 * 24;
-export const AD_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
-export const AD_IMAGES_MAX_COUNT = 8;
+export const AD_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
+export const AD_IMAGES_MAX_COUNT = 3;
 export const USER_BOT_MENU_CREATE = 'user:create';
 export const USER_BOT_MENU_SECTIONS = 'user:sections';
 export const USER_BOT_MENU_SEARCH = 'user:search';
@@ -63,8 +63,8 @@ export const AD_SELECT_COLUMNS = `
   deleted_at
 `;
 export const USER_AVATAR_MAX_BYTES = 5 * 1024 * 1024;
-export const AD_IMAGE_MAX_DIMENSION = 1024;
-export const AD_IMAGE_JPEG_QUALITY = 82;
+export const AD_IMAGE_MAX_DIMENSION = 800;
+export const AD_IMAGE_JPEG_QUALITY = 75;
 export const AD_LOCATION_RADIUS_OPTIONS = [500, 1000, 3000, 5000] as const;
 export const AD_LOCATION_DEFAULT_RADIUS = 1000;
 export const AD_LOCATION_LABEL_MAX_LENGTH = 120;
