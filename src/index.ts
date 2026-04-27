@@ -1455,7 +1455,7 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
     }
     .ad-gallery-main img {
       width: 100%;
-      max-height: min(70vh, 680px);
+      max-height: min(55vh, 520px);
       display: block;
       object-fit: contain;
     }
@@ -2269,9 +2269,10 @@ ${nav(currentUser, currentCity, currentPath)}
 <div class="section">
   <div class="ad-page-craigslist">
     <h2 style="margin: 0 0 8px;">${htmlEscape(ad.title)}</h2>
-    <div style="display: grid; grid-template-columns: 1fr 300px; gap: 20px; margin-bottom: 16px;">
+    <div style="display: grid; grid-template-columns: 1fr 300px; gap: 20px; margin-bottom: 16px; align-items: start;">
       <div>
         ${media}
+        <div class="ad-page-body" style="margin-top: 10px;">${htmlEscape(ad.body)}</div>
       </div>
       <div style="font-size: 13px;">
         <div style="margin-bottom: 12px;">
@@ -2283,12 +2284,13 @@ ${nav(currentUser, currentCity, currentPath)}
           ${htmlEscape(ad.created_at)}
         </div>
         ${hasLocation ? `<div style="margin-top: 12px;">${renderLocationViewer(ad, currentCity)}</div>` : ''}
+        <div style="margin-top: 16px;">
+          ${renderAdMessageSection(ad, currentUser, canMessageAuthor, currentUserHasTelegram, message)}
+        </div>
       </div>
     </div>
-    <div class="ad-page-body">${htmlEscape(ad.body)}</div>
   </div>
-</div>
-${renderAdMessageSection(ad, currentUser, canMessageAuthor, currentUserHasTelegram, message)}`,
+</div>`,
     currentUser,
     200,
     `${hasLocation ? renderLeafletAssets() : ''}${renderAdGalleryScript()}`
