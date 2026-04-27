@@ -1116,23 +1116,23 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
     }
     .sections-list {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
       gap: 0;
       margin: 0;
     }
     .section-block {
       margin: 0;
-      padding: 0;
+      padding: 2px 8px;
     }
     .section-title {
       font-weight: 700;
-      font-size: 14px;
-      margin: 0;
+      font-size: 12px;
+      margin: 2px 0 1px;
       padding: 0;
     }
     .section-categories {
-      font-size: 13px;
-      line-height: 1.8;
+      font-size: 12px;
+      line-height: 1.2;
       margin: 0;
       padding: 0;
     }
@@ -1140,6 +1140,7 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       display: block;
       margin: 0;
       padding: 0;
+      line-height: 1.2;
     }
     .categories-list {
       font-size: 13px;
