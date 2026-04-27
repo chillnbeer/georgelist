@@ -1115,29 +1115,25 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       margin: 14px 0;
     }
     .sections-list {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 20px;
       margin: 14px 0;
     }
     .section-block {
-      margin-bottom: 20px;
+      margin-bottom: 0;
     }
     .section-title {
       font-weight: 700;
       font-size: 14px;
-      color: #000;
-      margin: 10px 0 8px;
+      margin: 0 0 8px;
     }
     .section-categories {
-      columns: 1;
       font-size: 13px;
       line-height: 1.8;
     }
     .section-categories a {
       display: block;
-      color: #0066cc;
-      text-decoration: none;
-    }
-    .section-categories a:hover {
-      text-decoration: underline;
     }
     .categories-list {
       font-size: 13px;
