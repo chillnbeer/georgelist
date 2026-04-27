@@ -1799,10 +1799,12 @@ function renderAdCards(env: Env, ads: AdCardRow[]): string {
       const city = ad.city ? `${htmlEscape(cityLabel(ad.city))}` : '';
       const dateStr = new Date(ad.created_at).toLocaleDateString('ru-RU', { month: 'short', day: 'numeric' });
       const image = ad.image_key ? `<div class="card-image"><img src="${htmlEscape(buildMediaUrl(env, ad.image_key))}" alt="${htmlEscape(ad.title)}" loading="lazy" /></div>` : '<div class="card-image-empty">фото нет</div>';
+      const price = ad.price ? `<div style="font-weight: bold; margin-bottom: 4px;">${htmlEscape(ad.price)}</div>` : '';
       return `<div class="ad-card">
 ${image}
 <div class="card-content">
   <a href="/ad/${ad.id}" class="card-title">${htmlEscape(ad.title)}</a>
+  ${price}
   <div class="card-meta">${city}${city ? ' · ' : ''}${dateStr}</div>
 </div>
 </div>`;
@@ -2135,6 +2137,9 @@ ${nav(currentUser, currentCity, currentPath)}
     <label for="type">Тип объявления</label>
     ${renderTypeSelect('sell')}
 
+    <label for="price">Цена</label>
+    <input id="price" name="price" type="text" maxlength="100" placeholder="Например: 1000 руб или 15 $ или договор" />
+
     <label for="images">Картинки (до ${AD_IMAGES_MAX_COUNT})</label>
     <input id="images" name="images" type="file" accept="image/*" multiple />
 
@@ -2272,6 +2277,7 @@ ${nav(currentUser, currentCity, currentPath)}
         <div style="margin-bottom: 12px;">
           <strong style="font-size: 18px;">${ad.city ? htmlEscape(cityLabel(ad.city)) : ''}</strong>
         </div>
+        ${ad.price ? `<div style="margin-bottom: 12px; font-weight: bold; font-size: 16px;">${htmlEscape(ad.price)}</div>` : ''}
         ${ad.contact ? `<div style="margin-bottom: 12px;"><strong>Контакты:</strong><br />${htmlEscape(ad.contact)}</div>` : ''}
         <div style="color: #666; font-size: 12px;">
           ${htmlEscape(ad.created_at)}
@@ -2477,6 +2483,9 @@ ${nav(currentUser, currentCity, currentPath)}
 
     <label for="type">Тип объявления</label>
     ${renderTypeSelect(normalizeAdType(ad.type).toString())}
+
+    <label for="price">Цена</label>
+    <input id="price" name="price" type="text" maxlength="100" placeholder="Например: 1000 руб или 15 $ или договор" value="${htmlEscape(ad.price || '')}" />
 
     <label>Текущие картинки</label>
     ${currentImagePreview}

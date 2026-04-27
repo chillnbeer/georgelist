@@ -35,6 +35,7 @@ export type AdRow = {
   city: string | null;
   category: string | null;
   type: string | null;
+  price: string | null;
   location_lat: number | null;
   location_lng: number | null;
   location_radius_meters: number | null;
@@ -59,6 +60,7 @@ export type PublicAdCardRow = {
   city: string | null;
   category: string | null;
   type: string | null;
+  price: string | null;
   location_lat: number | null;
   location_lng: number | null;
   location_radius_meters: number | null;
@@ -78,6 +80,7 @@ export type AdCardRow = {
   city: string | null;
   category: string | null;
   type: string | null;
+  price: string | null;
   location_lat: number | null;
   location_lng: number | null;
   location_radius_meters: number | null;
@@ -106,6 +109,7 @@ export type AdForm = {
   city: string;
   category: string;
   type: string;
+  price: string;
   location_lat: number | null;
   location_lng: number | null;
   location_radius_meters: number | null;
