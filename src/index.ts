@@ -1117,7 +1117,7 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
     .sections-list {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-      gap: 20px;
+      gap: 0;
       margin: 14px 0;
     }
     .section-block {
