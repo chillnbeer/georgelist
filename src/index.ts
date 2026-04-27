@@ -1,5 +1,3 @@
-import { convertIndexedToRgb, decode as decodePng } from 'fast-png';
-import * as jpeg from 'jpeg-js';
 import {
   CITIES,
   CITY_COOKIE_NAME,
@@ -41,315 +39,127 @@ import {
   type CategorySlug,
   typeLabel,
 } from './ad-taxonomy';
+import {
+  AD_BODY_MAX_LENGTH,
+  AD_CONTACT_MAX_LENGTH,
+  AD_IMAGES_MAX_COUNT,
+  AD_LOCATION_DEFAULT_RADIUS,
+  AD_LOCATION_LABEL_MAX_LENGTH,
+  AD_LOCATION_RADIUS_OPTIONS,
+  AD_MESSAGE_MAX_LENGTH,
+  AD_SELECT_COLUMNS,
+  AD_TITLE_MAX_LENGTH,
+  ADS_HOME_LIMIT,
+  ADS_SEARCH_LIMIT,
+  ADS_USER_LIMIT,
+  ADMIN_BOT_MENU_HOME,
+  BOT_ADS_PAGE_SIZE,
+  DUMMY_PASSWORD_HASH,
+  SESSION_MAX_AGE_SECONDS,
+  TELEGRAM_AUTH_COOKIE_MAX_AGE_SECONDS,
+  TELEGRAM_AUTH_COOKIE_NAME,
+  TELEGRAM_AUTH_MAX_AGE_SECONDS,
+  USER_AVATAR_MAX_BYTES,
+  USER_BOT_CANCEL_FLOW,
+  USER_BOT_CHAT_DOWNLOAD_PREFIX,
+  USER_BOT_CHAT_HIDE_PREFIX,
+  USER_BOT_CHAT_LIST,
+  USER_BOT_CHAT_PREFIX,
+  USER_BOT_CHAT_START_PREFIX,
+  USER_BOT_DELETE_PREFIX,
+  USER_BOT_DRAFT_CANCEL,
+  USER_BOT_DRAFT_PREFIX,
+  USER_BOT_DRAFT_SEND,
+  USER_BOT_DRAFT_TYPE_PREFIX,
+  USER_BOT_EDIT_DRAFT_CANCEL,
+  USER_BOT_EDIT_DRAFT_SAVE,
+  USER_BOT_MENU_CREATE,
+  USER_BOT_MENU_DELETE,
+  USER_BOT_MENU_EDIT,
+  USER_BOT_MENU_HOME,
+  USER_BOT_MENU_MY,
+  USER_BOT_MENU_MY_AD,
+  USER_BOT_MENU_SEARCH,
+  USER_BOT_MENU_SECTIONS,
+  USER_BOT_MENU_SETTINGS,
+  USER_BOT_SEARCH_AD_PREFIX,
+  USER_BOT_SEARCH_MORE_PREFIX,
+  USER_BOT_SEARCH_RESULTS,
+  USER_BOT_SECTION_AD_PREFIX,
+  USER_BOT_SECTION_MORE_PREFIX,
+  USER_BOT_SECTION_PREFIX,
+  USER_BOT_SETTINGS_PREFIX,
+  USER_DISPLAY_NAME_MAX_LENGTH,
+} from './constants';
 import { html, json, methodNotAllowed, redirect, redirectWithHeaders, redirectWithMessage, text } from './http';
+import {
+  effectiveAdImages,
+  getAdById,
+  getPublicUserByLogin,
+  getPublishedAdCardById,
+  isMissingAdImagesTableError,
+  listAdImagesByAdId,
+  listPendingAds,
+  listPublishedAds,
+  listPublishedAdsByCategory,
+  listPublishedAdsByCategoryAndType,
+  listPublishedAdsByCategoryPage,
+  listPublishedAdsByUser,
+  searchPublishedAds,
+  searchPublishedAdsPage,
+} from './db';
+import {
+  deleteAdImage,
+  deleteAvatarImage,
+  getImageExtension,
+  getImageMimeTypeFromPath,
+  isImageMimeType,
+  normalizeMimeType,
+  putAdImage,
+  putCompressedAdImage,
+  putMediaObject,
+  readAvatarUpload,
+  readImageUploads,
+} from './image';
+import type {
+  AdCardRow,
+  AdForm,
+  AdImageRow,
+  AdImageUpload,
+  AdLocationInput,
+  AdRow,
+  BotDraftRow,
+  CompressedAdImageUpload,
+  CurrentUser,
+  Env,
+  PublicAdCardRow,
+  PublicUserRow,
+  SessionRow,
+  TelegramAuthPayload,
+  TelegramUpdate,
+  UserIdentityRow,
+} from './types';
+import {
+  base64UrlDecode,
+  base64UrlEncode,
+  buildSessionCookie,
+  clearSessionCookie,
+  constantTimeEqual,
+  formatSqliteTimestamp,
+  generateSessionToken,
+  getCookieValue,
+  hashPassword,
+  hashSessionToken,
+  hexToBytes,
+  hmacSha256Hex,
+  htmlEscape,
+  isFileLike,
+  sanitizeNextPath,
+  sha256Bytes,
+  truncateText,
+  verifyPassword,
+} from './utils';
 
-type Env = {
-  DB: D1Database;
-  MEDIA_BUCKET?: R2Bucket;
-  TELEGRAM_BOT_TOKEN: string;
-  TELEGRAM_ADMIN_ID: string;
-  TELEGRAM_WEBHOOK_SECRET?: string;
-  TELEGRAM_USER_WEBHOOK_SECRET?: string;
-  USER_TELEGRAM_BOT_TOKEN?: string;
-  TELEGRAM_USER_BOT_TOKEN?: string;
-  USER_TELEGRAM_BOT_USERNAME?: string;
-  TELEGRAM_USER_BOT_USERNAME?: string;
-  PUBLIC_SITE_URL?: string;
-  SITE_URL?: string;
-};
-
-type CurrentUser = {
-  id: number;
-  login: string;
-  display_name: string | null;
-  email: string | null;
-  city: string | null;
-  role: string;
-  avatar_key: string | null;
-  avatar_mime_type: string | null;
-  avatar_updated_at: string | null;
-  created_at: string;
-  updated_at: string;
-};
-
-type AdRow = {
-  id: number;
-  title: string;
-  body: string;
-  contact: string | null;
-  city: string | null;
-  category: string | null;
-  type: string | null;
-  location_lat: number | null;
-  location_lng: number | null;
-  location_radius_meters: number | null;
-  location_label: string | null;
-  owner_user_id: number | null;
-  owner_login: string | null;
-  owner_avatar_key: string | null;
-  status: string;
-  image_key: string | null;
-  image_mime_type: string | null;
-  image_updated_at: string | null;
-  created_at: string;
-  updated_at: string;
-  deleted_at: string | null;
-};
-
-type PublicAdCardRow = {
-  id: number;
-  title: string;
-  body: string;
-  contact: string | null;
-  city: string | null;
-  category: string | null;
-  type: string | null;
-  location_lat: number | null;
-  location_lng: number | null;
-  location_radius_meters: number | null;
-  location_label: string | null;
-  owner_user_id: number | null;
-  image_key: string | null;
-  image_mime_type: string | null;
-  image_updated_at: string | null;
-  created_at: string;
-  author_login: string | null;
-  author_avatar_key: string | null;
-};
-
-type AdCardRow = {
-  id: number;
-  title: string;
-  city: string | null;
-  category: string | null;
-  type: string | null;
-  location_lat: number | null;
-  location_lng: number | null;
-  location_radius_meters: number | null;
-  location_label: string | null;
-  image_key: string | null;
-  created_at: string;
-  author_login: string | null;
-  author_avatar_key: string | null;
-};
-
-type PublicUserRow = {
-  id: number;
-  login: string;
-  display_name: string | null;
-  city: string | null;
-  avatar_key: string | null;
-  avatar_mime_type: string | null;
-  avatar_updated_at: string | null;
-  created_at: string;
-};
-
-type AdForm = {
-  title: string;
-  body: string;
-  contact: string;
-  city: string;
-  category: string;
-  type: string;
-  location_lat: number | null;
-  location_lng: number | null;
-  location_radius_meters: number | null;
-  location_label: string;
-  images: File[];
-  keep_image_keys: string[];
-  cover_image_key: string | null;
-};
-
-type AdLocationInput = {
-  location_lat: number | null;
-  location_lng: number | null;
-  location_radius_meters: number | null;
-  location_label: string;
-};
-
-type AdImageUpload = {
-  key: string;
-  mimeType: string;
-};
-
-type CompressedAdImageUpload = {
-  key: string;
-  mimeType: string;
-  bytes: ArrayBuffer;
-};
-
-type AdImageRow = {
-  id: number;
-  ad_id: number;
-  image_key: string;
-  image_mime_type: string;
-  sort_order: number;
-  created_at: string;
-};
-
-type TelegramCallbackQuery = {
-  id: string;
-  data?: string;
-  message?: {
-    chat: {
-      id: number;
-    };
-    message_id: number;
-    text?: string;
-    caption?: string;
-  };
-};
-
-type TelegramUpdate = {
-  callback_query?: TelegramCallbackQuery;
-  message?: {
-    message_id: number;
-    chat: {
-      id: number;
-    };
-    from?: {
-      id: number;
-      username?: string;
-    };
-    text?: string;
-    photo?: Array<{
-      file_id: string;
-    }>;
-    document?: {
-      file_id: string;
-      mime_type?: string;
-      file_name?: string;
-    };
-  };
-};
-
-type UserIdentityRow = {
-  id: number;
-  user_id: number;
-  provider: string;
-  provider_user_id: string | null;
-  email: string | null;
-  password_hash: string | null;
-  telegram_username: string | null;
-  created_at: string;
-};
-
-type SessionRow = {
-  id: number;
-  user_id: number;
-  session_token_hash: string;
-  created_at: string;
-  expires_at: string;
-};
-
-type TelegramAuthPayload = {
-  id: string;
-  first_name: string;
-  last_name: string | null;
-  username: string | null;
-  photo_url: string | null;
-  auth_date: number;
-  hash: string;
-};
-
-type BotDraftRow = {
-  id: number;
-  telegram_user_id: string;
-  action: string;
-  step: string;
-  ui_chat_id: number | null;
-  ui_message_id: number | null;
-  ad_id: number | null;
-  login: string | null;
-  email: string | null;
-  category: string | null;
-  ad_type: string | null;
-  reply_user_id: number | null;
-  reply_ad_id: number | null;
-  password_current: string | null;
-  password_new: string | null;
-  title: string | null;
-  body: string | null;
-  created_at: string;
-  updated_at: string;
-};
-
-const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30;
-const PASSWORD_HASH_ITERATIONS = 210000;
-const DUMMY_PASSWORD_HASH = 'pbkdf2_sha256$210000$AAAAAAAAAAAAAAAAAAAAAA==$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=';
-const ADS_HOME_LIMIT = 200;
-const ADS_USER_LIMIT = 100;
-const ADS_SEARCH_LIMIT = 50;
-const TELEGRAM_AUTH_COOKIE_NAME = 'telegram_auth';
-const TELEGRAM_AUTH_COOKIE_MAX_AGE_SECONDS = 60 * 10;
-const TELEGRAM_AUTH_MAX_AGE_SECONDS = 60 * 60 * 24;
-const textEncoder = new TextEncoder();
-const textDecoder = new TextDecoder();
-const AD_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
-const AD_IMAGES_MAX_COUNT = 8;
-const USER_BOT_MENU_CREATE = 'user:create';
-const USER_BOT_MENU_SECTIONS = 'user:sections';
-const USER_BOT_MENU_SEARCH = 'user:search';
-const USER_BOT_MENU_EDIT = 'user:edit';
-const USER_BOT_MENU_DELETE = 'user:delete';
-const USER_BOT_MENU_SETTINGS = 'user:settings';
-const USER_BOT_MENU_MY = 'user:my';
-const USER_BOT_MENU_HOME = 'user:home';
-const USER_BOT_CANCEL_FLOW = 'user:cancel';
-const USER_BOT_MENU_MY_AD = 'user:myad:';
-const USER_BOT_SECTION_PREFIX = 'user:section:';
-const USER_BOT_SECTION_AD_PREFIX = 'user:sectionad:';
-const USER_BOT_SECTION_MORE_PREFIX = 'user:more:';
-const USER_BOT_SEARCH_RESULTS = 'user:search:results';
-const USER_BOT_SEARCH_AD_PREFIX = 'user:searchad:';
-const USER_BOT_SEARCH_MORE_PREFIX = 'user:searchmore:';
-const BOT_ADS_PAGE_SIZE = 5;
-const USER_BOT_DELETE_PREFIX = 'delete_';
-const USER_BOT_SETTINGS_PREFIX = 'user:settings:';
-const USER_BOT_CHAT_PREFIX = 'user:chat:';
-const USER_BOT_CHAT_DOWNLOAD_PREFIX = 'user:chatdownload:';
-const USER_BOT_CHAT_HIDE_PREFIX = 'user:chathide:';
-const USER_BOT_CHAT_START_PREFIX = 'user:chatstart:';
-const USER_BOT_CHAT_LIST = 'user:chats';
-const USER_BOT_DRAFT_PREFIX = 'draft:';
-const USER_BOT_DRAFT_TYPE_PREFIX = 'draft:type:';
-const USER_BOT_DRAFT_CANCEL = 'draft:confirm:cancel';
-const USER_BOT_DRAFT_SEND = 'draft:confirm:send';
-const USER_BOT_EDIT_DRAFT_CANCEL = 'draft:edit:cancel';
-const USER_BOT_EDIT_DRAFT_SAVE = 'draft:edit:save';
-const ADMIN_BOT_MENU_HOME = 'admin:home';
-const AD_SELECT_COLUMNS = `
-  id,
-  title,
-  body,
-  contact,
-  city,
-  category,
-  type,
-  location_lat,
-  location_lng,
-  location_radius_meters,
-  location_label,
-  owner_user_id,
-  status,
-  image_key,
-  image_mime_type,
-  image_updated_at,
-  created_at,
-  updated_at,
-  deleted_at
-`;
-const USER_AVATAR_MAX_BYTES = 5 * 1024 * 1024;
-const AD_IMAGE_MAX_DIMENSION = 1600;
-const AD_IMAGE_JPEG_QUALITY = 82;
-const AD_LOCATION_RADIUS_OPTIONS = [500, 1000, 3000, 5000] as const;
-const AD_LOCATION_DEFAULT_RADIUS = 1000;
-const AD_LOCATION_LABEL_MAX_LENGTH = 120;
-const AD_TITLE_MAX_LENGTH = 200;
-const AD_BODY_MAX_LENGTH = 5000;
-const AD_CONTACT_MAX_LENGTH = 300;
-const AD_MESSAGE_MAX_LENGTH = 1000;
-const USER_DISPLAY_NAME_MAX_LENGTH = 100;
 let cachedTelegramUserBotUsername: string | null = null;
 let cachedTelegramUserBotUsernamePromise: Promise<string | null> | null = null;
 let cachedEnsureAdImageColumnsPromise: Promise<void> | null = null;
@@ -368,299 +178,8 @@ const NOOP_EXECUTION_CONTEXT = {
   passThroughOnException(): void {},
 } as unknown as ExecutionContext;
 
-function htmlEscape(value: string): string {
-  return value
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#39;');
-}
-
-function escapeLikePattern(value: string): string {
-  return value.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_');
-}
-
-const ALLOWED_IMAGE_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
-
-function isImageMimeType(mimeType: string): boolean {
-  return ALLOWED_IMAGE_MIME_TYPES.includes(mimeType);
-}
-
-function getImageExtension(mimeType: string): string {
-  switch (mimeType) {
-    case 'image/jpeg':
-      return 'jpg';
-    case 'image/png':
-      return 'png';
-    case 'image/webp':
-      return 'webp';
-    case 'image/gif':
-      return 'gif';
-    case 'image/avif':
-      return 'avif';
-    case 'image/svg+xml':
-      return 'svg';
-    default:
-      return 'bin';
-  }
-}
-
 function buildMediaUrl(env: Env, key: string): string {
   return buildPublicSiteUrl(env, `/media/${encodeURIComponent(key)}`);
-}
-
-function normalizeMimeType(mimeType: string | null | undefined): string | null {
-  const normalized = (mimeType || '').split(';', 1)[0].trim().toLowerCase();
-  return normalized || null;
-}
-
-function getImageMimeTypeFromPath(filePath: string): string | null {
-  const ext = filePath.split('.').pop()?.toLowerCase() || '';
-  switch (ext) {
-    case 'jpg':
-    case 'jpeg':
-      return 'image/jpeg';
-    case 'png':
-      return 'image/png';
-    case 'webp':
-      return 'image/webp';
-    case 'gif':
-      return 'image/gif';
-    case 'avif':
-      return 'image/avif';
-    case 'svg':
-      return 'image/svg+xml';
-    default:
-      return null;
-  }
-}
-
-async function putMediaObject(env: Env, key: string, body: ArrayBuffer, mimeType: string): Promise<void> {
-  if (!env.MEDIA_BUCKET) {
-    throw new Error('Media bucket is not configured');
-  }
-
-  await env.MEDIA_BUCKET.put(key, body, {
-    httpMetadata: {
-      contentType: mimeType,
-    },
-  });
-}
-
-function resizeRgba(source: Uint8Array, sourceWidth: number, sourceHeight: number, targetWidth: number, targetHeight: number): Uint8Array {
-  if (sourceWidth === targetWidth && sourceHeight === targetHeight) {
-    return source;
-  }
-
-  const output = new Uint8Array(targetWidth * targetHeight * 4);
-  const xScale = sourceWidth / targetWidth;
-  const yScale = sourceHeight / targetHeight;
-
-  for (let y = 0; y < targetHeight; y += 1) {
-    const sampleY = (y + 0.5) * yScale - 0.5;
-    const clampedY = Math.max(0, Math.min(sourceHeight - 1, sampleY));
-    const y0 = Math.floor(clampedY);
-    const y1 = Math.min(sourceHeight - 1, y0 + 1);
-    const yLerp = clampedY - y0;
-    const row0 = y0 * sourceWidth * 4;
-    const row1 = y1 * sourceWidth * 4;
-
-    for (let x = 0; x < targetWidth; x += 1) {
-      const sampleX = (x + 0.5) * xScale - 0.5;
-      const clampedX = Math.max(0, Math.min(sourceWidth - 1, sampleX));
-      const x0 = Math.floor(clampedX);
-      const x1 = Math.min(sourceWidth - 1, x0 + 1);
-      const xLerp = clampedX - x0;
-
-      const base00 = row0 + x0 * 4;
-      const base10 = row0 + x1 * 4;
-      const base01 = row1 + x0 * 4;
-      const base11 = row1 + x1 * 4;
-      const outBase = (y * targetWidth + x) * 4;
-
-      for (let channel = 0; channel < 4; channel += 1) {
-        const top = source[base00 + channel] * (1 - xLerp) + source[base10 + channel] * xLerp;
-        const bottom = source[base01 + channel] * (1 - xLerp) + source[base11 + channel] * xLerp;
-        output[outBase + channel] = Math.round(top * (1 - yLerp) + bottom * yLerp);
-      }
-    }
-  }
-
-  return output;
-}
-
-function flattenRgbaToWhite(source: Uint8Array): Uint8Array {
-  const output = new Uint8Array(source);
-
-  for (let index = 0; index < output.length; index += 4) {
-    const alpha = output[index + 3] / 255;
-    const inverseAlpha = 1 - alpha;
-    output[index] = Math.round(output[index] * alpha + 255 * inverseAlpha);
-    output[index + 1] = Math.round(output[index + 1] * alpha + 255 * inverseAlpha);
-    output[index + 2] = Math.round(output[index + 2] * alpha + 255 * inverseAlpha);
-    output[index + 3] = 255;
-  }
-
-  return output;
-}
-
-function toEightBitPngSamples(samples: Uint8Array | Uint16Array): Uint8Array {
-  if (samples instanceof Uint8Array) {
-    return samples;
-  }
-
-  const output = new Uint8Array(samples.length);
-  for (let index = 0; index < samples.length; index += 1) {
-    output[index] = samples[index] > 255 ? Math.round(samples[index] / 257) : samples[index];
-  }
-  return output;
-}
-
-async function compressAdImage(file: File): Promise<CompressedAdImageUpload> {
-  const sourceBytes = await file.arrayBuffer();
-
-  try {
-    let width = 0;
-    let height = 0;
-    let rgbaPixels: Uint8Array | null = null;
-
-    if (file.type === 'image/png') {
-      const decoded = decodePng(new Uint8Array(sourceBytes));
-      width = decoded.width;
-      height = decoded.height;
-      const channelCount = decoded.palette?.[0]?.length
-        ? decoded.palette[0].length
-        : typeof (decoded as { channels?: number }).channels === 'number'
-          ? (decoded as { channels: number }).channels
-          : 4;
-      const rawPixels = decoded.palette
-        ? convertIndexedToRgb(decoded)
-        : toEightBitPngSamples(decoded.data);
-      if (channelCount === 4) {
-        rgbaPixels = rawPixels;
-      } else {
-        const pixelCount = width * height;
-        const normalized = new Uint8Array(pixelCount * 4);
-        for (let index = 0; index < pixelCount; index += 1) {
-          const sourceIndex = index * channelCount;
-          const targetIndex = index * 4;
-          const r = rawPixels[sourceIndex] ?? 0;
-          const g = channelCount > 1 ? (rawPixels[sourceIndex + 1] ?? r) : r;
-          const b = channelCount > 2 ? (rawPixels[sourceIndex + 2] ?? r) : r;
-          const a = channelCount > 3 ? (rawPixels[sourceIndex + 3] ?? 255) : 255;
-          normalized[targetIndex] = r;
-          normalized[targetIndex + 1] = g;
-          normalized[targetIndex + 2] = b;
-          normalized[targetIndex + 3] = a;
-        }
-        rgbaPixels = normalized;
-      }
-    } else if (file.type === 'image/jpeg' || file.type === 'image/jpg') {
-      const decoded = jpeg.decode(new Uint8Array(sourceBytes), { useTArray: true });
-      width = decoded.width;
-      height = decoded.height;
-      rgbaPixels = new Uint8Array(decoded.data);
-    } else {
-      throw new Error('Unsupported image type for compression');
-    }
-
-    const scale = Math.min(1, AD_IMAGE_MAX_DIMENSION / Math.max(width, height));
-    const resizedWidth = Math.max(1, Math.round(width * scale));
-    const resizedHeight = Math.max(1, Math.round(height * scale));
-    const resizedPixels = resizeRgba(rgbaPixels, width, height, resizedWidth, resizedHeight);
-    const flattenedPixels = flattenRgbaToWhite(resizedPixels);
-    const encoded = jpeg.encode(
-      {
-        data: flattenedPixels,
-        width: resizedWidth,
-        height: resizedHeight,
-      },
-      AD_IMAGE_JPEG_QUALITY
-    );
-    const outputBytes = encoded.data.buffer.slice(
-      encoded.data.byteOffset,
-      encoded.data.byteOffset + encoded.data.byteLength
-    ) as ArrayBuffer;
-    return {
-      key: `ads/${crypto.randomUUID()}.jpg`,
-      mimeType: 'image/jpeg',
-      bytes: outputBytes,
-    };
-  } catch {
-    return {
-      key: `ads/${crypto.randomUUID()}.${getImageExtension(file.type)}`,
-      mimeType: file.type,
-      bytes: sourceBytes,
-    };
-  }
-}
-
-async function readImageUpload(file: File | null): Promise<CompressedAdImageUpload | null> {
-  if (!file || file.size <= 0) {
-    return null;
-  }
-
-  if (file.size > AD_IMAGE_MAX_BYTES) {
-    throw new Error('Image is too large');
-  }
-
-  if (!isImageMimeType(file.type)) {
-    throw new Error('Invalid image type');
-  }
-
-  return compressAdImage(file);
-}
-
-async function readImageUploads(files: File[]): Promise<CompressedAdImageUpload[]> {
-  const normalizedFiles = files.filter((file) => file.size > 0).slice(0, AD_IMAGES_MAX_COUNT);
-  const uploads: CompressedAdImageUpload[] = [];
-  for (const file of normalizedFiles) {
-    const upload = await readImageUpload(file);
-    if (upload) {
-      uploads.push(upload);
-    }
-  }
-  return uploads;
-}
-
-async function readAvatarUpload(file: File | null): Promise<AdImageUpload | null> {
-  if (!file || file.size <= 0) {
-    return null;
-  }
-
-  if (file.size > USER_AVATAR_MAX_BYTES) {
-    throw new Error('Avatar is too large');
-  }
-
-  if (!isImageMimeType(file.type)) {
-    throw new Error('Invalid avatar type');
-  }
-
-  return {
-    key: `avatars/${crypto.randomUUID()}.${getImageExtension(file.type)}`,
-    mimeType: file.type,
-  };
-}
-
-async function putAdImage(env: Env, upload: AdImageUpload, file: File): Promise<void> {
-  await putMediaObject(env, upload.key, await file.arrayBuffer(), upload.mimeType);
-}
-
-async function putCompressedAdImage(env: Env, upload: CompressedAdImageUpload): Promise<void> {
-  await putMediaObject(env, upload.key, upload.bytes, upload.mimeType);
-}
-
-async function deleteAdImage(env: Env, key: string | null | undefined): Promise<void> {
-  if (!key || !env.MEDIA_BUCKET) {
-    return;
-  }
-
-  await env.MEDIA_BUCKET.delete(key);
-}
-
-async function deleteAvatarImage(env: Env, key: string | null | undefined): Promise<void> {
-  await deleteAdImage(env, key);
 }
 
 async function downloadTelegramImage(
@@ -706,228 +225,10 @@ async function putTelegramAvatar(env: Env, fileId: string): Promise<AdImageUploa
   };
 }
 
-function isFileLike(value: File | string | null): value is File {
-  return typeof value !== 'string' && value instanceof File;
-}
-
-function truncateText(value: string, maxLength: number): string {
-  if (value.length <= maxLength) {
-    return value;
-  }
-
-  if (maxLength <= 1) {
-    return '…';
-  }
-
-  return `${value.slice(0, maxLength - 1)}…`;
-}
-
-function bytesToBase64(bytes: Uint8Array): string {
-  let binary = '';
-
-  for (let index = 0; index < bytes.length; index += 1) {
-    binary += String.fromCharCode(bytes[index]);
-  }
-
-  return btoa(binary);
-}
-
-function base64ToBytes(value: string): Uint8Array {
-  const binary = atob(value);
-  const bytes = new Uint8Array(binary.length);
-
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
-  }
-
-  return bytes;
-}
-
-function bytesToHex(bytes: Uint8Array): string {
-  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
-}
-
-function constantTimeEqual(left: Uint8Array, right: Uint8Array): boolean {
-  if (left.length !== right.length) {
-    return false;
-  }
-
-  let result = 0;
-  for (let index = 0; index < left.length; index += 1) {
-    result |= left[index] ^ right[index];
-  }
-
-  return result === 0;
-}
-
-async function sha256Hex(value: string): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', textEncoder.encode(value));
-  return bytesToHex(new Uint8Array(digest));
-}
-
-async function sha256Bytes(value: string): Promise<Uint8Array> {
-  const digest = await crypto.subtle.digest('SHA-256', textEncoder.encode(value));
-  return new Uint8Array(digest);
-}
-
-async function hmacSha256Hex(secret: string | Uint8Array, value: string): Promise<string> {
-  const key = await crypto.subtle.importKey(
-    'raw',
-    typeof secret === 'string' ? textEncoder.encode(secret) : secret,
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign']
-  );
-  const signature = await crypto.subtle.sign('HMAC', key, textEncoder.encode(value));
-  return bytesToHex(new Uint8Array(signature));
-}
-
-function hexToBytes(hex: string): Uint8Array | null {
-  if (hex.length % 2 !== 0) {
-    return null;
-  }
-
-  const bytes = new Uint8Array(hex.length / 2);
-  for (let index = 0; index < hex.length; index += 2) {
-    const byte = Number.parseInt(hex.slice(index, index + 2), 16);
-    if (!Number.isFinite(byte)) {
-      return null;
-    }
-    bytes[index / 2] = byte;
-  }
-
-  return bytes;
-}
-
-function formatSqliteTimestamp(date: Date): string {
-  const pad = (value: number) => String(value).padStart(2, '0');
-  return [
-    date.getUTCFullYear(),
-    '-',
-    pad(date.getUTCMonth() + 1),
-    '-',
-    pad(date.getUTCDate()),
-    ' ',
-    pad(date.getUTCHours()),
-    ':',
-    pad(date.getUTCMinutes()),
-    ':',
-    pad(date.getUTCSeconds()),
-  ].join('');
-}
-
 function verifyTelegramWebhookSecret(request: Request, secret: string | undefined): boolean {
   if (!secret) return true;
   const header = request.headers.get('X-Telegram-Bot-Api-Secret-Token');
   return header === secret;
-}
-
-function generateSessionToken(): string {
-  return crypto.randomUUID();
-}
-
-async function hashSessionToken(token: string): Promise<string> {
-  return sha256Hex(token);
-}
-
-function base64UrlEncode(value: string): string {
-  return bytesToBase64(textEncoder.encode(value))
-    .replaceAll('+', '-')
-    .replaceAll('/', '_')
-    .replaceAll('=', '');
-}
-
-function base64UrlDecode(value: string): string {
-  const normalized = value.replaceAll('-', '+').replaceAll('_', '/');
-  const padLength = (4 - (normalized.length % 4)) % 4;
-  return textDecoder.decode(base64ToBytes(normalized + '='.repeat(padLength)));
-}
-
-async function hashPassword(password: string): Promise<string> {
-  const salt = new Uint8Array(16);
-  crypto.getRandomValues(salt);
-
-  const key = await crypto.subtle.importKey('raw', textEncoder.encode(password), 'PBKDF2', false, ['deriveBits']);
-  const derivedBits = await crypto.subtle.deriveBits(
-    {
-      name: 'PBKDF2',
-      salt,
-      iterations: PASSWORD_HASH_ITERATIONS,
-      hash: 'SHA-256',
-    },
-    key,
-    256
-  );
-
-  return `pbkdf2_sha256$${PASSWORD_HASH_ITERATIONS}$${bytesToBase64(salt)}$${bytesToBase64(new Uint8Array(derivedBits))}`;
-}
-
-async function verifyPassword(password: string, storedHash: string): Promise<boolean> {
-  const [algorithm, iterationsText, saltBase64, hashBase64] = storedHash.split('$');
-  if (algorithm !== 'pbkdf2_sha256' || !iterationsText || !saltBase64 || !hashBase64) {
-    return false;
-  }
-
-  const iterations = Number(iterationsText);
-  if (!Number.isInteger(iterations) || iterations <= 0) {
-    return false;
-  }
-
-  const salt = base64ToBytes(saltBase64);
-  const expectedHash = base64ToBytes(hashBase64);
-  const key = await crypto.subtle.importKey('raw', textEncoder.encode(password), 'PBKDF2', false, ['deriveBits']);
-  const derivedBits = await crypto.subtle.deriveBits(
-    {
-      name: 'PBKDF2',
-      salt,
-      iterations,
-      hash: 'SHA-256',
-    },
-    key,
-    expectedHash.length * 8
-  );
-
-  return constantTimeEqual(new Uint8Array(derivedBits), expectedHash);
-}
-
-function parseCookieHeader(cookieHeader: string | null): Map<string, string> {
-  const cookies = new Map<string, string>();
-
-  if (!cookieHeader) {
-    return cookies;
-  }
-
-  for (const part of cookieHeader.split(';')) {
-    const index = part.indexOf('=');
-    if (index <= 0) {
-      continue;
-    }
-
-    const name = part.slice(0, index).trim();
-    const value = part.slice(index + 1).trim();
-    if (name) {
-      try {
-        cookies.set(name, decodeURIComponent(value));
-      } catch {
-        cookies.set(name, value);
-      }
-    }
-  }
-
-  return cookies;
-}
-
-function getCookieValue(request: Request, name: string): string | null {
-  return parseCookieHeader(request.headers.get('Cookie')).get(name) || null;
-}
-
-function sanitizeNextPath(value: string | null | undefined): string {
-  const next = (value || '').trim();
-  if (!next || !next.startsWith('/') || next.startsWith('//')) {
-    return '/my';
-  }
-
-  return next;
 }
 
 function buildTelegramAuthCallbackUrl(request: Request, mode: 'login' | 'link', nextPath: string | null = null): string {
@@ -938,33 +239,6 @@ function buildTelegramAuthCallbackUrl(request: Request, mode: 'login' | 'link', 
   }
 
   return url.toString();
-}
-
-function buildSessionCookie(token: string, secure: boolean): string {
-  return [
-    `session=${encodeURIComponent(token)}`,
-    'Path=/',
-    'HttpOnly',
-    'SameSite=Lax',
-    `Max-Age=${SESSION_MAX_AGE_SECONDS}`,
-    secure ? 'Secure' : '',
-  ]
-    .filter(Boolean)
-    .join('; ');
-}
-
-function clearSessionCookie(secure: boolean): string {
-  return [
-    'session=',
-    'Path=/',
-    'HttpOnly',
-    'SameSite=Lax',
-    'Max-Age=0',
-    'Expires=Thu, 01 Jan 1970 00:00:00 GMT',
-    secure ? 'Secure' : '',
-  ]
-    .filter(Boolean)
-    .join('; ');
 }
 
 function buildTelegramAuthCookie(value: string, secure: boolean): string {
@@ -5984,416 +5258,6 @@ async function handleAdminBotCallback(
 
   await answerAdminCallbackQuery(env, callbackQuery.id, 'Unknown action').catch(() => {});
   return json({ ok: true });
-}
-
-async function getAdById(env: Env, id: number): Promise<AdRow | null> {
-  const result = await env.DB.prepare(
-    `
-      SELECT ${AD_SELECT_COLUMNS}
-      FROM ads
-      WHERE id = ?
-        AND deleted_at IS NULL
-      LIMIT 1
-    `
-  )
-    .bind(id)
-    .first<AdRow>();
-
-  return result ?? null;
-}
-
-async function listAdImagesByAdId(env: Env, adId: number): Promise<AdImageRow[]> {
-  try {
-    const result = await env.DB.prepare(
-      `
-        SELECT id, ad_id, image_key, image_mime_type, sort_order, created_at
-        FROM ad_images
-        WHERE ad_id = ?
-        ORDER BY sort_order ASC, id ASC
-      `
-    )
-      .bind(adId)
-      .all<AdImageRow>();
-    return result.results ?? [];
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (message.includes('no such table: ad_images')) {
-      return [];
-    }
-    throw error;
-  }
-}
-
-function effectiveAdImages(ad: Pick<AdRow, 'id' | 'image_key' | 'image_mime_type' | 'created_at'>, images: AdImageRow[]): AdImageRow[] {
-  if (images.length > 0) {
-    return images;
-  }
-  if (!ad.image_key) {
-    return [];
-  }
-  return [{
-    id: 0,
-    ad_id: ad.id,
-    image_key: ad.image_key,
-    image_mime_type: ad.image_mime_type || 'image/jpeg',
-    sort_order: 0,
-    created_at: ad.created_at,
-  }];
-}
-
-function isMissingAdImagesTableError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return message.includes('no such table: ad_images');
-}
-
-async function getPublishedAdCardById(
-  env: Env,
-  id: number,
-  category: string | null = null,
-  city: string | null = null
-): Promise<PublicAdCardRow | null> {
-  const sql = [
-    `
-      SELECT ads.id,
-             ads.title,
-             ads.body,
-             ads.contact,
-             COALESCE(ads.city, ?) AS city,
-             ads.category,
-             COALESCE(ads.type, 'sell') AS type,
-             ads.location_lat,
-             ads.location_lng,
-             ads.location_radius_meters,
-             ads.location_label,
-             ads.owner_user_id,
-             ads.image_key,
-             ads.image_mime_type,
-             ads.image_updated_at,
-             ads.created_at,
-             users.login AS author_login,
-             users.avatar_key AS author_avatar_key
-      FROM ads
-      LEFT JOIN users ON users.id = ads.owner_user_id
-      WHERE ads.id = ?
-        AND ads.status = 'published'
-        AND ads.deleted_at IS NULL
-    `,
-  ];
-
-  const params: Array<number | string> = [CITY_DEFAULT_SLUG, id];
-
-  if (category) {
-    sql.push('        AND ads.category = ?');
-    params.push(category);
-  }
-
-  if (city) {
-    sql.push('        AND COALESCE(ads.city, ?) = ?');
-    params.push(CITY_DEFAULT_SLUG, normalizeCity(city));
-  }
-
-  sql.push('      LIMIT 1');
-
-  const statement = await env.DB.prepare(sql.join('\n'));
-  const result = await statement.bind(...params).first<PublicAdCardRow>();
-
-  return result ?? null;
-}
-
-async function getPublicUserByLogin(env: Env, login: string): Promise<PublicUserRow | null> {
-  const result = await env.DB.prepare(
-    `
-      SELECT id,
-             login,
-             display_name,
-             COALESCE(city, ?) AS city,
-             avatar_key,
-             avatar_mime_type,
-             avatar_updated_at,
-             created_at
-      FROM users
-      WHERE login = ?
-      LIMIT 1
-    `
-  )
-    .bind(CITY_DEFAULT_SLUG, login)
-    .first<PublicUserRow>();
-
-  return result ?? null;
-}
-
-async function listPublishedAdsByUser(env: Env, userId: number, city: string | null = null): Promise<AdCardRow[]> {
-  const result = await env.DB.prepare(
-    `
-      SELECT ads.id,
-             ads.title,
-             COALESCE(ads.city, ?) AS city,
-             ads.category,
-             COALESCE(ads.type, 'sell') AS type,
-             ads.location_lat,
-             ads.location_lng,
-             ads.location_radius_meters,
-             ads.location_label,
-             ads.image_key,
-             ads.created_at,
-             users.login AS author_login,
-             users.avatar_key AS author_avatar_key
-      FROM ads
-      INNER JOIN users ON users.id = ads.owner_user_id
-      WHERE owner_user_id = ?
-        AND status = 'published'
-        AND deleted_at IS NULL
-        AND COALESCE(ads.city, ?) = ?
-      ORDER BY ads.created_at DESC, ads.id DESC
-      LIMIT ?
-    `
-  )
-    .bind(CITY_DEFAULT_SLUG, userId, CITY_DEFAULT_SLUG, normalizeCity(city), ADS_USER_LIMIT)
-    .all<AdCardRow>();
-
-  return result.results ?? [];
-}
-
-async function listPublishedAds(env: Env, city: string | null = null): Promise<AdRow[]> {
-  const result = await env.DB.prepare(
-    `
-      SELECT ${AD_SELECT_COLUMNS}
-      FROM ads
-      WHERE status = 'published'
-        AND deleted_at IS NULL
-        AND COALESCE(city, ?) = ?
-      ORDER BY created_at DESC, id DESC
-      LIMIT ?
-    `
-  )
-    .bind(CITY_DEFAULT_SLUG, normalizeCity(city), ADS_HOME_LIMIT)
-    .all<AdRow>();
-
-  return result.results;
-}
-
-async function listPublishedAdsByCategory(env: Env, category: string, city: string | null = null): Promise<AdCardRow[]> {
-  const result = await env.DB.prepare(
-    `
-      SELECT ads.id,
-             ads.title,
-             COALESCE(ads.city, ?) AS city,
-             ads.category,
-             COALESCE(ads.type, 'sell') AS type,
-             ads.location_lat,
-             ads.location_lng,
-             ads.location_radius_meters,
-             ads.location_label,
-             ads.image_key,
-             ads.created_at,
-             users.login AS author_login,
-             users.avatar_key AS author_avatar_key
-      FROM ads
-      LEFT JOIN users ON users.id = ads.owner_user_id
-      WHERE ads.status = 'published'
-        AND ads.deleted_at IS NULL
-        AND ads.category = ?
-        AND COALESCE(ads.city, ?) = ?
-      ORDER BY ads.created_at DESC, ads.id DESC
-    `
-  )
-    .bind(CITY_DEFAULT_SLUG, category, CITY_DEFAULT_SLUG, normalizeCity(city))
-    .all<AdCardRow>();
-
-  return result.results;
-}
-
-async function listPublishedAdsByCategoryAndType(
-  env: Env,
-  category: string,
-  type: string | null,
-  city: string | null = null
-): Promise<AdCardRow[]> {
-  const normalizedType = type ? normalizeAdType(type) : null;
-  const query = normalizedType
-    ? `
-      SELECT ads.id,
-             ads.title,
-             COALESCE(ads.city, ?) AS city,
-             ads.category,
-             COALESCE(ads.type, 'sell') AS type,
-             ads.location_lat,
-             ads.location_lng,
-             ads.location_radius_meters,
-             ads.location_label,
-             ads.image_key,
-             ads.created_at,
-             users.login AS author_login,
-             users.avatar_key AS author_avatar_key
-      FROM ads
-      LEFT JOIN users ON users.id = ads.owner_user_id
-      WHERE ads.status = 'published'
-        AND ads.deleted_at IS NULL
-        AND ads.category = ?
-        AND COALESCE(ads.type, 'sell') = ?
-        AND COALESCE(ads.city, ?) = ?
-      ORDER BY ads.created_at DESC, ads.id DESC
-    `
-    : `
-      SELECT ads.id,
-             ads.title,
-             COALESCE(ads.city, ?) AS city,
-             ads.category,
-             COALESCE(ads.type, 'sell') AS type,
-             ads.location_lat,
-             ads.location_lng,
-             ads.location_radius_meters,
-             ads.location_label,
-             ads.image_key,
-             ads.created_at,
-             users.login AS author_login,
-             users.avatar_key AS author_avatar_key
-      FROM ads
-      LEFT JOIN users ON users.id = ads.owner_user_id
-      WHERE ads.status = 'published'
-        AND ads.deleted_at IS NULL
-        AND ads.category = ?
-        AND COALESCE(ads.city, ?) = ?
-      ORDER BY ads.created_at DESC, ads.id DESC
-    `;
-
-  const statement = await env.DB.prepare(query);
-  const result = normalizedType
-    ? await statement.bind(CITY_DEFAULT_SLUG, category, normalizedType, CITY_DEFAULT_SLUG, normalizeCity(city)).all<AdCardRow>()
-    : await statement.bind(CITY_DEFAULT_SLUG, category, CITY_DEFAULT_SLUG, normalizeCity(city)).all<AdCardRow>();
-
-  return result.results;
-}
-
-async function listPublishedAdsByCategoryPage(
-  env: Env,
-  category: string,
-  limit: number,
-  offset: number,
-  city: string | null = null
-): Promise<AdCardRow[]> {
-  const result = await env.DB.prepare(
-    `
-      SELECT ads.id,
-             ads.title,
-             COALESCE(ads.city, ?) AS city,
-             ads.category,
-             COALESCE(ads.type, 'sell') AS type,
-             ads.location_lat,
-             ads.location_lng,
-             ads.location_radius_meters,
-             ads.location_label,
-             ads.image_key,
-             ads.created_at,
-             users.login AS author_login,
-             users.avatar_key AS author_avatar_key
-      FROM ads
-      LEFT JOIN users ON users.id = ads.owner_user_id
-      WHERE ads.status = 'published'
-        AND ads.deleted_at IS NULL
-        AND ads.category = ?
-        AND COALESCE(ads.city, ?) = ?
-      ORDER BY ads.created_at DESC, ads.id DESC
-      LIMIT ? OFFSET ?
-    `
-  )
-    .bind(CITY_DEFAULT_SLUG, category, CITY_DEFAULT_SLUG, normalizeCity(city), limit, offset)
-    .all<AdCardRow>();
-
-  return result.results;
-}
-
-async function searchPublishedAds(env: Env, query: string, city: string | null = null, category: string | null = null): Promise<AdCardRow[]> {
-  const trimmed = query.trim();
-  if (!trimmed) {
-    return [];
-  }
-
-  const pattern = `%${escapeLikePattern(trimmed.toLowerCase())}%`;
-  const result = await env.DB.prepare(
-    `
-      SELECT ads.id,
-             ads.title,
-             COALESCE(ads.city, ?) AS city,
-             ads.category,
-             COALESCE(ads.type, 'sell') AS type,
-             ads.image_key,
-             ads.created_at,
-             users.login AS author_login,
-             users.avatar_key AS author_avatar_key
-      FROM ads
-      LEFT JOIN users ON users.id = ads.owner_user_id
-      WHERE ads.status = 'published'
-        AND ads.deleted_at IS NULL
-        AND COALESCE(ads.city, ?) = ?
-        AND (? IS NULL OR ads.category = ?)
-        AND (
-          LOWER(ads.title) LIKE ? ESCAPE '\\'
-          OR LOWER(ads.body) LIKE ? ESCAPE '\\'
-        )
-      ORDER BY ads.created_at DESC, ads.id DESC
-      LIMIT ?
-    `
-  )
-    .bind(CITY_DEFAULT_SLUG, CITY_DEFAULT_SLUG, normalizeCity(city), category, category, pattern, pattern, ADS_SEARCH_LIMIT)
-    .all<AdCardRow>();
-
-  return result.results;
-}
-
-async function searchPublishedAdsPage(
-  env: Env,
-  query: string,
-  limit: number,
-  offset: number,
-  city: string | null = null
-): Promise<AdCardRow[]> {
-  const trimmed = query.trim();
-  if (!trimmed) return [];
-
-  const pattern = `%${escapeLikePattern(trimmed.toLowerCase())}%`;
-  const result = await env.DB.prepare(
-    `
-      SELECT ads.id,
-             ads.title,
-             COALESCE(ads.city, ?) AS city,
-             ads.category,
-             COALESCE(ads.type, 'sell') AS type,
-             ads.image_key,
-             ads.created_at,
-             users.login AS author_login,
-             users.avatar_key AS author_avatar_key
-      FROM ads
-      LEFT JOIN users ON users.id = ads.owner_user_id
-      WHERE ads.status = 'published'
-        AND ads.deleted_at IS NULL
-        AND COALESCE(ads.city, ?) = ?
-        AND (
-          LOWER(ads.title) LIKE ? ESCAPE '\\'
-          OR LOWER(ads.body) LIKE ? ESCAPE '\\'
-        )
-      ORDER BY ads.created_at DESC, ads.id DESC
-      LIMIT ? OFFSET ?
-    `
-  )
-    .bind(CITY_DEFAULT_SLUG, CITY_DEFAULT_SLUG, normalizeCity(city), pattern, pattern, limit, offset)
-    .all<AdCardRow>();
-
-  return result.results;
-}
-
-async function listPendingAds(env: Env): Promise<Response> {
-  const result = await env.DB.prepare(
-    `
-      SELECT ${AD_SELECT_COLUMNS}
-      FROM ads
-      WHERE status = 'pending'
-        AND deleted_at IS NULL
-      ORDER BY created_at DESC, id DESC
-    `
-  ).all<AdRow>();
-
-  return json({ ads: result.results });
 }
 
 async function ensureAdImageColumns(env: Env): Promise<void> {
