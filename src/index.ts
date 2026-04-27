@@ -943,8 +943,8 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       background: #fff;
       color: #000;
       font-family: Arial, Helvetica, sans-serif;
-      font-size: 13px;
-      line-height: 1.4;
+      font-size: 14px;
+      line-height: 1.5;
     }
     .page {
       max-width: 980px;
@@ -1081,8 +1081,8 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
     input, textarea, select {
       width: 100%;
       max-width: 640px;
-      margin: 0 0 4px;
-      padding: 4px 6px;
+      margin: 0 0 8px;
+      padding: 6px 8px;
       border: 1px solid #bbb;
       background: #fff;
       color: #000;
@@ -1090,15 +1090,15 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       box-sizing: border-box;
     }
     textarea {
-      min-height: 100px;
+      min-height: 120px;
       resize: vertical;
     }
     button {
-      margin-top: 4px;
+      margin-top: 8px;
       border: 1px solid #999;
       background: #f5f5f5;
       color: #000;
-      padding: 4px 8px;
+      padding: 6px 12px;
       font: inherit;
       cursor: pointer;
     }
@@ -1160,7 +1160,7 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
     }
     .card-meta {
       color: #666;
-      font-size: 11px;
+      font-size: 12px;
     }
     .ads-list {
       list-style: none;
@@ -1243,7 +1243,7 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
     .meta {
       margin: 0 0 4px;
       color: #555;
-      font-size: 12px;
+      font-size: 13px;
     }
     .body {
       white-space: pre-wrap;
