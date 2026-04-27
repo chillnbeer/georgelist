@@ -4511,7 +4511,9 @@ async function parseAdForm(request: Request): Promise<AdForm> {
   if (legacyImage) {
     imageValues.push(legacyImage);
   }
-  const images = imageValues.filter((value): value is File => isFileLike(value) && value.size > 0);
+  const images = imageValues
+    .filter((value): value is File => isFileLike(value) && value.size > 0)
+    .slice(0, AD_IMAGES_MAX_COUNT);
   const keep_image_keys = form
     .getAll('keep_image_keys')
     .map((value) => String(value || '').trim())
@@ -4531,7 +4533,7 @@ async function parseAdForm(request: Request): Promise<AdForm> {
     location_lat: hasLocation ? locationLat : null,
     location_lng: hasLocation ? locationLng : null,
     location_radius_meters: hasLocation ? locationRadius ?? AD_LOCATION_DEFAULT_RADIUS : null,
-    location_label: '',
+    location_label: hasLocation ? String(form.get('location_label') || '').trim().slice(0, AD_LOCATION_LABEL_MAX_LENGTH) || null : null,
     images,
     keep_image_keys,
     cover_image_key: coverImageKeyRaw || null,
