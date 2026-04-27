@@ -1114,33 +1114,41 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
     .home-content {
       margin: 14px 0;
     }
-    .sections-list {
+    .category-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
-      gap: 0;
-      margin: 0;
+      grid-template-columns: 1fr 1.25fr 1fr;
+      gap: 18px;
+      max-width: 760px;
     }
-    .section-block {
-      margin: 0;
-      padding: 2px 8px;
+    .category-column {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
     }
-    .section-title {
-      font-weight: 700;
-      font-size: 12px;
-      margin: 2px 0 1px;
-      padding: 0;
+    .category-section h2 {
+      font-size: 16px;
+      line-height: 1.1;
+      margin: 0 0 4px;
+      padding: 3px 0;
+      text-align: center;
+      background: #eee;
+      font-weight: bold;
     }
-    .section-categories {
-      font-size: 12px;
-      line-height: 1.2;
-      margin: 0;
-      padding: 0;
+    .category-links {
+      columns: 2;
+      column-gap: 18px;
+      font-size: 13px;
+      line-height: 1.15;
     }
-    .section-categories a {
+    .category-section.discussions .category-links {
+      columns: 3;
+    }
+    .category-links a {
       display: block;
+      font-size: 13px;
+      line-height: 1.15;
       margin: 0;
       padding: 0;
-      line-height: 1.2;
     }
     .categories-list {
       font-size: 13px;
@@ -2208,33 +2216,35 @@ ${nav(currentUser, currentCity, currentPath)}
 }
 
 async function renderHome(env: Env, currentUser: CurrentUser | null = null, currentCity: string | null = null, currentPath = '/'): Promise<Response> {
-  const categorySlugs = CATEGORIES.map((c) => c.slug);
-  const categoryCountResults = await Promise.all(
-    categorySlugs.map(async (slug) => {
-      const result = await env.DB.prepare('SELECT COUNT(*) as count FROM ads WHERE category = ? AND status = ? AND deleted_at IS NULL')
-        .bind(slug, 'published')
-        .first<{ count: number }>();
-      return { slug, count: result?.count || 0 };
-    })
-  );
+  const columnGroups = [
+    ['community', 'services', 'topic-discussions'],
+    ['housing', 'forsale'],
+    ['jobs', 'gigs', 'resumes'],
+  ];
 
-  const categoryCountMap = new Map(categoryCountResults.map((r) => [r.slug, r.count]));
+  const sectionMap = new Map(SECTIONS.map((s) => [s.slug, s]));
 
-  const sectionsWithCounts = SECTIONS.map((section) => {
-    const count = section.categories.reduce((sum, cat) => sum + (categoryCountMap.get(cat.slug) || 0), 0);
-    return { ...section, count };
-  }).sort((a, b) => b.count - a.count);
+  const columnsHtml = columnGroups.map((slugs) => {
+    const columnSections = slugs
+      .map((slug) => sectionMap.get(slug))
+      .filter((section): section is typeof SECTIONS[number] => section !== undefined);
 
-  const sectionsHtml = sectionsWithCounts.map((section) => {
-    const categoriesHtml = section.categories
-      .map((category) => `<a href="/category/${htmlEscape(category.slug)}">${htmlEscape(category.label)}</a>`)
-      .join('');
+    const sectionsHtml = columnSections.map((section) => {
+      const isDiscussions = section.slug === 'topic-discussions';
+      const categoriesHtml = section.categories
+        .map((category) => `<a href="/category/${htmlEscape(category.slug)}">${htmlEscape(category.label)}</a>`)
+        .join('');
 
-    return `<div class="section-block">
-  <div class="section-title">${htmlEscape(section.emoji)} ${htmlEscape(section.label)}</div>
-  <div class="section-categories">
+      return `<div class="category-section${isDiscussions ? ' discussions' : ''}">
+  <h2>${htmlEscape(section.emoji)} ${htmlEscape(section.label)}</h2>
+  <div class="category-links">
     ${categoriesHtml}
   </div>
+</div>`;
+    }).join('');
+
+    return `<div class="category-column">
+  ${sectionsHtml}
 </div>`;
   }).join('');
 
@@ -2242,8 +2252,8 @@ async function renderHome(env: Env, currentUser: CurrentUser | null = null, curr
     'жоржлист',
     `<h1><a class="site-title" href="/">жоржлист</a></h1>
 ${nav(currentUser, currentCity, currentPath)}
-<div class="sections-list">
-  ${sectionsHtml}
+<div class="category-grid">
+  ${columnsHtml}
 </div>`
   );
 }
