@@ -1127,8 +1127,7 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       margin: 10px 0 8px;
     }
     .section-categories {
-      columns: 3;
-      column-gap: 20px;
+      columns: 1;
       font-size: 13px;
       line-height: 1.8;
     }
