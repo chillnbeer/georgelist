@@ -951,8 +951,9 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       line-height: 1.5;
     }
     .page {
-      max-width: 980px;
+      max-width: 1100px;
       margin: 0 auto;
+      padding: 0;
     }
     h1 {
       margin: 0 0 8px;
