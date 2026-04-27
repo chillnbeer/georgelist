@@ -1797,27 +1797,31 @@ function renderAdList(env: Env, ads: AdCardRow[]): string {
     .join('')}</div>`;
 }
 
-function renderAdCards(env: Env, ads: AdCardRow[]): string {
-  if (!ads.length) {
-    return '<div class="empty">Пока нет объявлений.</div>';
-  }
+type UnifiedAdType = { id: number; title: string; price?: string | null; city?: string | null; created_at: string; image_key?: string | null };
 
-  return `<div class="ad-cards-grid">${ads
-    .map((ad) => {
-      const city = ad.city ? `${htmlEscape(cityLabel(ad.city))}` : '';
-      const dateStr = new Date(ad.created_at).toLocaleDateString('ru-RU', { month: 'short', day: 'numeric' });
-      const image = ad.image_key ? `<div class="card-image"><img src="${htmlEscape(buildMediaUrl(env, ad.image_key))}" alt="${htmlEscape(ad.title)}" loading="lazy" /></div>` : '<div class="card-image-empty">фото нет</div>';
-      const price = ad.price ? `<div style="font-weight: bold; margin-bottom: 4px;">${htmlEscape(ad.price)}</div>` : '';
-      return `<div class="ad-card">
+function renderUnifiedAdCard(env: Env, ad: UnifiedAdType, actions: string = ''): string {
+  const city = ad.city ? `${htmlEscape(cityLabel(ad.city))}` : '';
+  const dateStr = new Date(ad.created_at).toLocaleDateString('ru-RU', { month: 'short', day: 'numeric' });
+  const image = ad.image_key ? `<div class="card-image"><img src="${htmlEscape(buildMediaUrl(env, ad.image_key))}" alt="${htmlEscape(ad.title)}" loading="lazy" /></div>` : '<div class="card-image-empty">фото нет</div>';
+  const price = ad.price ? `<div style="font-weight: bold; margin-bottom: 4px;">${htmlEscape(ad.price)}</div>` : '';
+  const actionsHtml = actions ? `<div class="card-actions">${actions}</div>` : '';
+  return `<div class="ad-card">
 ${image}
 <div class="card-content">
   <a href="/ad/${ad.id}" class="card-title">${htmlEscape(ad.title)}</a>
   ${price}
   <div class="card-meta">${city}${city ? ' · ' : ''}${dateStr}</div>
+  ${actionsHtml}
 </div>
 </div>`;
-    })
-    .join('')}</div>`;
+}
+
+function renderAdCards(env: Env, ads: AdCardRow[]): string {
+  if (!ads.length) {
+    return '<div class="empty">Пока нет объявлений.</div>';
+  }
+
+  return `<div class="ad-cards-grid">${ads.map((ad) => renderUnifiedAdCard(env, ad)).join('')}</div>`;
 }
 
 function renderSearchForm(query = '', category = ''): string {
@@ -2407,11 +2411,10 @@ ${nav(null, null, currentPath)}
 
 function renderMyPage(env: Env, currentUser: CurrentUser, ads: AdRow[], message: string | null = null, currentCity: string | null = null, currentPath = '/my'): Response {
   const items = ads.length
-    ? `<div class="ads-list">${ads
+    ? `<div class="ad-cards-grid">${ads
         .map((ad) => {
-          const status = `[${htmlEscape(ad.status)}]`;
-          const dateStr = new Date(ad.created_at).toLocaleDateString('ru-RU', { month: 'short', day: 'numeric' });
-          return `<div class="ad-row">${status} <a href="/ad/${ad.id}">${htmlEscape(ad.title)}</a> <span class="ad-row-date">${dateStr}</span> [<a href="/my/edit/${ad.id}">ред</a> · <a href="#" onclick="return confirm('Удалить?') && fetch('/my/delete/${ad.id}', {method: 'POST'})">del</a>]</div>`;
+          const actions = `[<a href="/my/edit/${ad.id}">ред</a> · <a href="#" onclick="return confirm('Удалить?') && fetch('/my/delete/${ad.id}', {method: 'POST'})">del</a>]`;
+          return renderUnifiedAdCard(env, ad, actions);
         })
         .join('')}</div>`
     : '<div class="empty">Пока нет твоих объявлений.</div>';
@@ -2608,7 +2611,7 @@ function renderAdminAdsSection(
   currentPath = '/admin?section=ads'
 ): Response {
   const items = ads.length
-    ? ads
+    ? `<div class="ad-cards-grid">${ads
         .map((ad) => {
           const owner = ad.owner_user_id
             ? ad.owner_login
@@ -2624,23 +2627,18 @@ function renderAdminAdsSection(
         <button class="link-button" type="submit">Reject</button>
       </form>`
             : '';
-          return `<div class="ad">
-  ${renderAdImage(env, ad.image_key, ad.title, 'ad-image')}
-  <div class="ad-content">
-    <div class="title"><a href="/ad/${ad.id}">#${ad.id} · ${htmlEscape(ad.title)}</a></div>
-    <div class="meta">${htmlEscape(ad.status)} · ${category}${htmlEscape(ad.created_at)}</div>
-    ${owner}
-    <div class="ad-actions">
-      <a href="${htmlEscape(buildAdminActionUrl(`/admin/edit/${ad.id}`, 'ads', pagination.page))}">Редактировать</a>
-      <form method="post" action="${htmlEscape(buildAdminActionUrl(`/admin/delete/${ad.id}`, 'ads', pagination.page))}" style="display:inline">
-        <button class="link-button" type="submit" onclick="return confirm('Удалить объявление?')">Удалить</button>
-      </form>
-      ${moderationActions}
-    </div>
-  </div>
+          const actions = `<div style="font-size: 0.9em; color: #666; margin-bottom: 8px;">${htmlEscape(ad.status)} · ${category}${htmlEscape(ad.created_at)}</div>
+${owner}
+<div style="margin-top: 8px;">
+  <a href="${htmlEscape(buildAdminActionUrl(`/admin/edit/${ad.id}`, 'ads', pagination.page))}">Редактировать</a>
+  <form method="post" action="${htmlEscape(buildAdminActionUrl(`/admin/delete/${ad.id}`, 'ads', pagination.page))}" style="display:inline">
+    <button class="link-button" type="submit" onclick="return confirm('Удалить объявление?')">Удалить</button>
+  </form>
+  ${moderationActions}
 </div>`;
+          return renderUnifiedAdCard(env, ad, actions);
         })
-        .join('')
+        .join('')}</div>`
     : '<div class="empty">Объявлений на этой странице нет.</div>';
 
   return shell(
