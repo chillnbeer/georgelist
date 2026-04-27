@@ -179,9 +179,19 @@ import {
   truncateText,
   verifyPassword,
 } from './utils';
+import {
+  deleteTelegramMessage,
+  editUserBotMediaMessage,
+  editUserBotMessage,
+  getTelegramUserBotToken,
+  getTelegramUserBotUsername,
+  sendUserBotDocument,
+  sendUserBotMessageWithId,
+  sendUserBotPhotoMessageWithId,
+  userBotApi,
+} from './user-bot-api';
+import { clearBotDraft, getBotDraft, upsertBotDraft } from './bot-drafts';
 
-let cachedTelegramUserBotUsername: string | null = null;
-let cachedTelegramUserBotUsernamePromise: Promise<string | null> | null = null;
 let cachedEnsureAdImageColumnsPromise: Promise<void> | null = null;
 let cachedEnsureAdImagesTablePromise: Promise<void> | null = null;
 let cachedEnsureUserAvatarColumnsPromise: Promise<void> | null = null;
@@ -318,53 +328,6 @@ function getCurrentCityFromRequest(request: Request, currentUser: CurrentUser | 
   }
 
   return normalizeCity(currentUser?.city);
-}
-
-function resolveUserBotToken(env: Env): string | undefined {
-  return env.USER_TELEGRAM_BOT_TOKEN || env.TELEGRAM_USER_BOT_TOKEN;
-}
-
-async function getTelegramUserBotToken(env: Env): Promise<string> {
-  const token = resolveUserBotToken(env);
-  if (!token) {
-    throw new Error('Missing user Telegram bot token');
-  }
-
-  return token;
-}
-
-async function getTelegramUserBotUsername(env: Env): Promise<string | null> {
-  if (cachedTelegramUserBotUsername) {
-    return cachedTelegramUserBotUsername;
-  }
-
-  const configuredUsername = env.USER_TELEGRAM_BOT_USERNAME || env.TELEGRAM_USER_BOT_USERNAME || null;
-  if (configuredUsername) {
-    cachedTelegramUserBotUsername = configuredUsername;
-    return configuredUsername;
-  }
-
-  if (!cachedTelegramUserBotUsernamePromise) {
-    cachedTelegramUserBotUsernamePromise = (async () => {
-      const token = await getTelegramUserBotToken(env);
-      const response = await fetch(`https://api.telegram.org/bot${token}/getMe`);
-      if (!response.ok) {
-        return null;
-      }
-
-      const data = (await response.json()) as { ok?: boolean; result?: { username?: string } };
-      const username = data.result?.username || null;
-      if (username) {
-        cachedTelegramUserBotUsername = username;
-      }
-
-      return username;
-    })().finally(() => {
-      cachedTelegramUserBotUsernamePromise = null;
-    });
-  }
-
-  return cachedTelegramUserBotUsernamePromise;
 }
 
 async function getTelegramAuthSecret(env: Env): Promise<string> {
@@ -2924,22 +2887,6 @@ async function telegramApi(env: Env, method: string, payload: Record<string, unk
   });
 }
 
-async function userBotApi(env: Env, method: string, payload: Record<string, unknown>): Promise<Response> {
-  const token = resolveUserBotToken(env);
-
-  if (!token) {
-    throw new Error('Missing user Telegram bot token');
-  }
-
-  return fetch(`https://api.telegram.org/bot${token}/${method}`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(payload),
-  });
-}
-
 function getPublicSiteUrl(env: Env): string {
   return (env.PUBLIC_SITE_URL || env.SITE_URL || 'https://georgelist.chillnbeer.workers.dev').replace(/\/+$/, '');
 }
@@ -2947,161 +2894,6 @@ function getPublicSiteUrl(env: Env): string {
 function buildPublicSiteUrl(env: Env, path = '/'): string {
   const normalizedPath = path.startsWith('/') ? path : `/${path}`;
   return `${getPublicSiteUrl(env)}${normalizedPath}`;
-}
-
-async function sendUserBotMessage(
-  env: Env,
-  chatId: number,
-  text: string,
-  replyMarkup?: Record<string, unknown>
-): Promise<void> {
-  const payload: Record<string, unknown> = {
-    chat_id: chatId,
-    text,
-  };
-
-  if (replyMarkup) {
-    payload.reply_markup = replyMarkup;
-  }
-
-  const response = await userBotApi(env, 'sendMessage', payload);
-  if (!response.ok) {
-    throw new Error(`Telegram sendMessage failed with status ${response.status}`);
-  }
-}
-
-async function sendUserBotMessageWithId(
-  env: Env,
-  chatId: number,
-  text: string,
-  replyMarkup?: Record<string, unknown>
-): Promise<number | null> {
-  const payload: Record<string, unknown> = {
-    chat_id: chatId,
-    text,
-  };
-
-  if (replyMarkup) {
-    payload.reply_markup = replyMarkup;
-  }
-
-  const response = await userBotApi(env, 'sendMessage', payload);
-  if (!response.ok) {
-    throw new Error(`Telegram sendMessage failed with status ${response.status}`);
-  }
-
-  const body = (await response.json().catch(() => null)) as { ok?: boolean; result?: { message_id?: number } } | null;
-  return typeof body?.result?.message_id === 'number' ? body.result.message_id : null;
-}
-
-async function sendUserBotDocument(
-  env: Env,
-  chatId: number,
-  file: File,
-  caption?: string,
-  replyMarkup?: Record<string, unknown>
-): Promise<void> {
-  const payload = new FormData();
-  payload.set('chat_id', String(chatId));
-  payload.set('document', file, file.name);
-
-  if (caption) {
-    payload.set('caption', caption);
-  }
-
-  if (replyMarkup) {
-    payload.set('reply_markup', JSON.stringify(replyMarkup));
-  }
-
-  const token = resolveUserBotToken(env);
-  if (!token) {
-    throw new Error('Missing user Telegram bot token');
-  }
-
-  const response = await fetch(`https://api.telegram.org/bot${token}/sendDocument`, {
-    method: 'POST',
-    body: payload,
-  });
-  if (!response.ok) {
-    throw new Error(`Telegram sendDocument failed with status ${response.status}`);
-  }
-}
-
-async function editUserBotMessage(
-  env: Env,
-  chatId: number,
-  messageId: number,
-  text: string,
-  replyMarkup?: Record<string, unknown>
-): Promise<void> {
-  const payload: Record<string, unknown> = {
-    chat_id: chatId,
-    message_id: messageId,
-    text,
-  };
-
-  if (replyMarkup) {
-    payload.reply_markup = replyMarkup;
-  }
-
-  const response = await userBotApi(env, 'editMessageText', payload);
-  if (!response.ok) {
-    throw new Error(`Telegram editMessageText failed with status ${response.status}`);
-  }
-}
-
-async function sendUserBotPhotoMessageWithId(
-  env: Env,
-  chatId: number,
-  photo: string,
-  caption: string,
-  replyMarkup?: Record<string, unknown>
-): Promise<number | null> {
-  const payload: Record<string, unknown> = {
-    chat_id: chatId,
-    photo,
-    caption,
-  };
-
-  if (replyMarkup) {
-    payload.reply_markup = replyMarkup;
-  }
-
-  const response = await userBotApi(env, 'sendPhoto', payload);
-  if (!response.ok) {
-    throw new Error(`Telegram sendPhoto failed with status ${response.status}`);
-  }
-
-  const body = (await response.json().catch(() => null)) as { ok?: boolean; result?: { message_id?: number } } | null;
-  return typeof body?.result?.message_id === 'number' ? body.result.message_id : null;
-}
-
-async function editUserBotMediaMessage(
-  env: Env,
-  chatId: number,
-  messageId: number,
-  photo: string,
-  caption: string,
-  replyMarkup?: Record<string, unknown>
-): Promise<void> {
-  const payload: Record<string, unknown> = {
-    chat_id: chatId,
-    message_id: messageId,
-    media: {
-      type: 'photo',
-      media: photo,
-      caption,
-    },
-  };
-
-  if (replyMarkup) {
-    payload.reply_markup = replyMarkup;
-  }
-
-  const response = await userBotApi(env, 'editMessageMedia', payload);
-  if (!response.ok) {
-    throw new Error(`Telegram editMessageMedia failed with status ${response.status}`);
-  }
 }
 
 type UserBotScreenRef = {
@@ -4549,17 +4341,6 @@ async function sendTelegramMessage(
   }
 }
 
-async function deleteTelegramMessage(env: Env, chatId: number, messageId: number): Promise<void> {
-  const response = await userBotApi(env, 'deleteMessage', {
-    chat_id: chatId,
-    message_id: messageId,
-  });
-
-  if (!response.ok) {
-    throw new Error(`Telegram deleteMessage failed with status ${response.status}`);
-  }
-}
-
 async function answerCallbackQuery(env: Env, callbackQueryId: string, text?: string): Promise<void> {
   await telegramApi(env, 'answerCallbackQuery', {
     callback_query_id: callbackQueryId,
@@ -5872,134 +5653,6 @@ async function findTelegramIdentityByUserId(env: Env, userId: number): Promise<U
     .first<UserIdentityRow>();
 
   return result ?? null;
-}
-
-async function getBotDraft(env: Env, telegramUserId: string): Promise<BotDraftRow | null> {
-  const result = await env.DB.prepare(
-    `
-      SELECT id, telegram_user_id, action, step, ui_chat_id, ui_message_id, ad_id, login, email, category, ad_type, reply_user_id, reply_ad_id, password_current, password_new, title, body, created_at, updated_at
-      FROM bot_drafts
-      WHERE telegram_user_id = ?
-      LIMIT 1
-    `
-  )
-    .bind(telegramUserId)
-    .first<BotDraftRow>();
-
-  return result ?? null;
-}
-
-async function upsertBotDraft(
-  env: Env,
-  telegramUserId: string,
-  action: string,
-  step: string,
-  category: string | null = null,
-  title: string | null = null,
-  body: string | null = null,
-  adId: number | null = null,
-  login: string | null = null,
-  email: string | null = null,
-  uiChatId: number | null = null,
-  uiMessageId: number | null = null,
-  adType: string | null = null,
-  replyUserId: number | null = null,
-  replyAdId: number | null = null,
-  passwordCurrent: string | null = null,
-  passwordNew: string | null = null
-): Promise<void> {
-  await env.DB.prepare(
-    `
-      INSERT INTO bot_drafts (
-        telegram_user_id,
-        action,
-        step,
-        ui_chat_id,
-        ui_message_id,
-        ad_id,
-        login,
-        email,
-        category,
-        ad_type,
-        reply_user_id,
-        reply_ad_id,
-        password_current,
-        password_new,
-        title,
-        body,
-        created_at,
-        updated_at
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-      ON CONFLICT(telegram_user_id) DO UPDATE SET
-        action = excluded.action,
-        step = excluded.step,
-        ui_chat_id = CASE
-          WHEN excluded.ui_chat_id IS NULL THEN ui_chat_id
-          ELSE excluded.ui_chat_id
-        END,
-        ui_message_id = CASE
-          WHEN excluded.ui_message_id IS NULL THEN ui_message_id
-          ELSE excluded.ui_message_id
-        END,
-        ad_id = excluded.ad_id,
-        login = excluded.login,
-        email = excluded.email,
-        category = excluded.category,
-        ad_type = excluded.ad_type,
-        reply_user_id = excluded.reply_user_id,
-        reply_ad_id = excluded.reply_ad_id,
-        password_current = excluded.password_current,
-        password_new = excluded.password_new,
-        title = excluded.title,
-        body = excluded.body,
-        updated_at = CURRENT_TIMESTAMP
-    `
-  )
-    .bind(
-      telegramUserId,
-      action,
-      step,
-      uiChatId,
-      uiMessageId,
-      adId,
-      login,
-      email,
-      category,
-      adType,
-      replyUserId,
-      replyAdId,
-      passwordCurrent,
-      passwordNew,
-      title,
-      body
-    )
-    .run();
-}
-
-async function clearBotDraft(env: Env, telegramUserId: string): Promise<void> {
-  await env.DB.prepare(
-    `
-      UPDATE bot_drafts
-      SET action = 'idle',
-          step = 'menu',
-          ad_id = NULL,
-          login = NULL,
-          email = NULL,
-          category = NULL,
-          ad_type = NULL,
-          reply_user_id = NULL,
-          reply_ad_id = NULL,
-          password_current = NULL,
-          password_new = NULL,
-          title = NULL,
-          body = NULL,
-          updated_at = CURRENT_TIMESTAMP
-      WHERE telegram_user_id = ?
-    `
-  )
-    .bind(telegramUserId)
-    .run();
 }
 
 async function getTelegramIdentityUserId(env: Env, telegramUserId: string): Promise<number | null> {
