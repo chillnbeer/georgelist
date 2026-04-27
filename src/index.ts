@@ -2267,7 +2267,7 @@ ${nav(currentUser, currentUser.city, currentPath)}
   ${message ? `<p class="empty">${htmlEscape(message)}</p>` : ''}
   <p>Пользователь: ${htmlEscape(currentUser.login)}</p>
   <h3>Объявления</h3>
-  <div class="ad-grid">${items}</div>
+  ${items}
   ${renderAdminPagination('ads', pagination)}
 </div>`,
     currentUser
