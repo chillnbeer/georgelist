@@ -995,7 +995,7 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
       margin: 0 0 10px;
     }
     textarea { min-height: 120px; }
-    .link-button { background: none; border: 0; padding: 0; font: inherit; cursor: pointer; }
+    .link-button { background: none; border: 0; padding: 0; font: inherit; cursor: pointer; color: blue; text-decoration: underline; }
     .category-grid {
       display: grid;
       grid-template-columns: 1fr 1.25fr 1fr;
