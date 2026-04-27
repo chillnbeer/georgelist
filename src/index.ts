@@ -976,16 +976,16 @@ function shell(title: string, body: string, currentUser: CurrentUser | null = nu
     .nav {
       margin: 0 0 10px;
       display: flex;
-      flex-wrap: wrap;
+      flex-wrap: nowrap;
       align-items: center;
-      gap: 8px 12px;
+      gap: 20px;
     }
     .nav-links,
     .nav-auth {
       display: flex;
-      flex-wrap: wrap;
+      flex-wrap: nowrap;
       align-items: center;
-      gap: 10px 14px;
+      gap: 14px;
     }
     .nav-auth {
       margin-left: auto;
