@@ -1928,17 +1928,12 @@ ${nav(currentUser, currentCity, currentPath)}
 function renderPublicUserPage(env: Env, user: PublicUserRow, ads: AdCardRow[], currentUser: CurrentUser | null = null, currentCity: string | null = null, currentPath = '/'): Response {
   const isOwner = currentUser?.login === user.login;
   const adItems = ads.length
-    ? `<div class="ads-list">${ads
+    ? `<div class="ad-cards-grid">${ads
         .map((ad) => {
-          const city = ad.city ? ` (${htmlEscape(cityLabel(ad.city))})` : '';
-          const dateStr = new Date(ad.created_at).toLocaleDateString('ru-RU', { month: 'short', day: 'numeric' });
           const actions = isOwner
-            ? ` <span style="color: #666; font-size: 12px;">
-      [<a href="/my/edit/${ad.id}">редактировать</a> ·
-      <a href="#" onclick="return confirm('Удалить объявление?') && fetch('/my/delete/${ad.id}', {method: 'POST'})">удалить</a>]
-    </span>`
+            ? `[<a href="/my/edit/${ad.id}">ред</a> · <a href="#" onclick="return confirm('Удалить?') && fetch('/my/delete/${ad.id}', {method: 'POST'})">del</a>]`
             : '';
-          return `<div class="ad-row"><a href="/ad/${ad.id}">${htmlEscape(ad.title)}</a> ${city} <span class="ad-row-date">${dateStr}</span>${actions}</div>`;
+          return renderUnifiedAdCard(env, ad, actions);
         })
         .join('')}</div>`
     : '<div class="empty">Пока нет объявлений.</div>';
